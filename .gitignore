@@ -1,0 +1,16 @@
+# Compiled SBCL bytecode
+*.fasl
+
+# Python virtual environment
+.venv/
+
+# Saved states (generated at runtime)
+uhma-states/
+
+# Log files
+*.log
+
+# Editor backups
+*~
+\#*\#
+*.swp

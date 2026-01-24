@@ -235,8 +235,9 @@
 ;;; ============================================================================
 
 (defparameter *feed-files*
-  '("uhma.lisp"
-    "uhma-forward-decl.lisp"
+  '("uhma-forward-decl.lisp"
+    "uhma-stubs.lisp"
+    "uhma-vsa-substrate.lisp"
     "uhma-v6.1-core-homoiconic.lisp"
     "uhma-v6.1-adaptive-homoiconic.lisp"
     "uhma-v6.1-sequence.lisp"
@@ -255,17 +256,17 @@
     "uhma-presence-integration.lisp"
     "uhma-continuous.lisp"
     "uhma-active-self-modification.lisp"
-    "uhma-goal-driven-generation.lisp"
+    "uhma-self-awareness-loop.lisp"
+    "uhma-predictive-self-modification.lisp"
     "uhma-state-persistence.lisp"
-    "uhma-persistence.lisp"
     "uhma-memory-bounds.lisp"
-    "uhma-holographic-substrate.lisp"
-    "uhma-holographic-memory.lisp"
     "uhma-holographic-substrate-v2.lisp"
     "uhma-holographic-integration.lisp"
     "uhma-deep-wiring.lisp"
     "uhma-complete-wiring.lisp"
-    "uhma-self-awareness-loop.lisp"
+    "uhma-save-restore.lisp"
+    "uhma-feed.lisp"
+    "start.lisp"
     "uhma-diagnostic.lisp"))
 
 ;;; ============================================================================
