@@ -1,0 +1,6 @@
+(handler-bind ((warning #'print)
+              (error (lambda (c)
+                       (format t "~%ERROR DURING LOAD: ~A~%" c)
+                       (sb-ext:quit :unix-status 1))))
+  (load "load.lisp"))
+(sb-ext:quit :unix-status 0)
