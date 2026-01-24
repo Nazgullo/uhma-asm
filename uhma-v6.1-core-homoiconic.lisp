@@ -1383,10 +1383,10 @@
           (my-knowledge (expert-knowledge *current-expert*))
           (my-neighborhood (expert-neighborhood *current-expert*))
           (my-centroid (expert-centroid *current-expert*))
-          (otherwise 
+          (otherwise
            (if (boundp var)
                (symbol-value var)
-               (error "Unbound variable: ~S" var)))))))
+               nil))))))  ; Unknown bindings → nil (graceful ignorance)
 
 (defun sexp-set! (var val)
   "Set variable: local env if bound there, else symbol-value"

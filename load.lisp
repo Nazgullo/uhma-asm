@@ -103,6 +103,9 @@
 ;; 12. Save/Restore System (replaces incomplete persistence)
 (load (module-file "uhma-save-restore.lisp"))
 
+;; 13. Feed System (Universal file ingestion)
+(load (module-file "uhma-feed.lisp"))
+
 ;;;; [SECTION-END:3:PRESENCE-AND-WIRING]
 
 ;;;; [SECTION-START:4:VERIFICATION]
