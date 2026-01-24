@@ -561,7 +561,154 @@
     grand-total))
 
 ;;; ============================================================================
-;;; SECTION 10: INITIALIZATION
+;;; SECTION 10: TRAINING SCHEDULER
+;;; ============================================================================
+;;; Alternates between FEED (fast ingestion) and LIVE (cognitive digestion).
+;;;
+;;; Usage:
+;;;   (train! '((:feed 60) (:live 15)) :loops 3)
+;;;   (train! '((:feed 60 :source :directory) (:live 15)) :loops :infinite)
+;;;   (train! '((:feed 60) (:live 15) (:feed 120) (:live 60)))
+;;;
+;;; Duration is in MINUTES. Ctrl+C stops gracefully.
+;;; FEED phase: synthesis cooldown suppressed, raw token learning at speed.
+;;; LIVE phase: full cognitive loop — self-awareness, dreams, modification.
+;;; ============================================================================
+
+(defvar *train-stop-requested* nil
+  "Set to T to gracefully stop the training scheduler.")
+
+(defvar *default-synthesis-cooldown* 100
+  "Normal synthesis cooldown (restored during LIVE phases).")
+
+(defun train-stop! ()
+  "Signal the training scheduler to stop after current phase."
+  (setf *train-stop-requested* t)
+  (format t "~%[TRAIN] Stop requested — finishing current phase...~%"))
+
+(defun run-feed-phase! (duration-minutes &key (source :self))
+  "Run a FEED phase for DURATION-MINUTES.
+   Temporarily clears all hooks for raw speed — only prediction+learning runs.
+   :source :self feeds own source code, :directory feeds FEED/ directory."
+  (let ((deadline (+ (get-internal-real-time)
+                     (* duration-minutes 60 internal-time-units-per-second)))
+        (pass-count 0)
+        (total-tokens 0)
+        (saved-hooks (make-hash-table :test 'eq)))
+    ;; Save and clear all hooks
+    (maphash (lambda (k v) (setf (gethash k saved-hooks) v)) *hooks*)
+    (clrhash *hooks*)
+    (unwind-protect
+        (loop until (or *train-stop-requested*
+                        (> (get-internal-real-time) deadline))
+              do (incf pass-count)
+                 (let ((tokens (case source
+                                 (:directory
+                                  (multiple-value-bind (p toks)
+                                      (ingest-feed! :force t :passes 1)
+                                    (declare (ignore p))
+                                    toks))
+                                 (otherwise
+                                  (feed-own-source! :passes 1)))))
+                   (incf total-tokens (or tokens 0))
+                   (format t "[FEED] Phase pass ~D complete (~:D tokens cumulative)~%"
+                           pass-count total-tokens)))
+      ;; Always restore hooks
+      (clrhash *hooks*)
+      (maphash (lambda (k v) (setf (gethash k *hooks*) v)) saved-hooks))
+    (values pass-count total-tokens)))
+
+(defun run-live-phase! (duration-minutes)
+  "Run a LIVE phase for DURATION-MINUTES.
+   Full cognitive loop: self-awareness, dreams, goals, modification."
+  (let ((deadline (+ (get-internal-real-time)
+                     (* duration-minutes 60 internal-time-units-per-second)))
+        (steps 0))
+    ;; Ensure normal synthesis cooldown
+    (setf *synthesis-cooldown* *default-synthesis-cooldown*)
+    (format t "[LIVE] Cognitive digestion active...~%")
+    (loop until (or *train-stop-requested*
+                    (> (get-internal-real-time) deadline))
+          do (internal-step!)
+             (incf steps)
+             (when (zerop (mod steps 500))
+               (let ((remaining (/ (- deadline (get-internal-real-time))
+                                   (* 60.0 internal-time-units-per-second))))
+                 (format t "[LIVE] ~D steps, ~,1F min remaining~%" steps remaining))))
+    (format t "[LIVE] Phase complete: ~D internal steps~%" steps)
+    steps))
+
+(defun train! (schedule &key (loops 1))
+  "Run a training schedule alternating FEED and LIVE phases.
+
+   SCHEDULE is a list of phase specs:
+     (:feed MINUTES)                    ; Feed own source for N minutes
+     (:feed MINUTES :source :directory) ; Feed FEED/ directory for N minutes
+     (:live MINUTES)                    ; Live mode for N minutes
+
+   LOOPS: number of times to repeat the schedule, or :infinite.
+
+   Examples:
+     (train! '((:feed 60) (:live 15)) :loops 3)
+     (train! '((:feed 60) (:live 15) (:feed 120) (:live 60)))
+     (train! '((:feed 30 :source :directory) (:live 10)) :loops :infinite)
+
+   Ctrl+C or (train-stop!) to stop gracefully."
+  (setf *train-stop-requested* nil)
+  (let ((loop-count 0)
+        (infinite-p (eq loops :infinite))
+        (total-feed-tokens 0)
+        (total-live-steps 0)
+        (start-time (get-internal-real-time)))
+    (format t "~%========================================~%")
+    (format t "UHMA TRAINING SCHEDULER~%")
+    (format t "========================================~%")
+    (format t "Schedule: ~D phase~:P per loop~%" (length schedule))
+    (format t "Loops: ~:[~D~;infinite~]~%" infinite-p loops)
+    (format t "Ctrl+C or (train-stop!) to stop~%")
+    (format t "========================================~%")
+    (unwind-protect
+        (handler-case
+            (loop until (or *train-stop-requested*
+                            (and (not infinite-p) (>= loop-count loops)))
+                  do (incf loop-count)
+                     (format t "~%~%=== Loop ~D~:[/~D~;~] ===~%"
+                             loop-count (not infinite-p) loops)
+                     (dolist (phase schedule)
+                       (when *train-stop-requested* (return))
+                       (let ((type (first phase))
+                             (minutes (second phase))
+                             (source (getf (cddr phase) :source :self)))
+                         (format t "~%--- ~A phase: ~D min~:[~; (source: ~A)~] ---~%"
+                                 type minutes (eq type :feed) source)
+                         (case type
+                           (:feed
+                            (multiple-value-bind (passes tokens)
+                                (run-feed-phase! minutes :source source)
+                              (declare (ignore passes))
+                              (incf total-feed-tokens tokens)))
+                           (:live
+                            (incf total-live-steps (run-live-phase! minutes)))
+                           (otherwise
+                            (format t "[TRAIN] Unknown phase type: ~A~%" type))))))
+          (#+sbcl sb-sys:interactive-interrupt ()
+            (format t "~%~%[TRAIN] Interrupted by user.~%")))
+      ;; Always restore cooldown
+      (setf *synthesis-cooldown* *default-synthesis-cooldown*))
+    ;; Final report
+    (let ((elapsed-min (/ (- (get-internal-real-time) start-time)
+                          (* 60.0 internal-time-units-per-second))))
+      (format t "~%========================================~%")
+      (format t "TRAINING COMPLETE~%")
+      (format t "  Loops completed: ~D~%" loop-count)
+      (format t "  Total feed tokens: ~:D~%" total-feed-tokens)
+      (format t "  Total live steps: ~:D~%" total-live-steps)
+      (format t "  Total time: ~,1F min~%" elapsed-min)
+      (format t "========================================~%"))
+    (values loop-count total-feed-tokens total-live-steps)))
+
+;;; ============================================================================
+;;; SECTION 11: INITIALIZATION
 ;;; ============================================================================
 
 (eval-when (:load-toplevel :execute)

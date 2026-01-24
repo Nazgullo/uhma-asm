@@ -16,6 +16,7 @@
 
 (defparameter *uhma-foundation*
   '("uhma-forward-decl.lisp"             ; Defines the UHMA package
+    "uhma-stubs.lisp"                    ; Stubs for unimplemented features
     "uhma-vsa-substrate.lisp"          ; CRITICAL: RESET! depends on this
     "uhma-v6.1-core-homoiconic.lisp"
     "uhma-v6.1-adaptive-homoiconic.lisp"
@@ -47,7 +48,8 @@
   '("uhma-v6.10-episodic-core.lisp"
     "uhma-v6.10-episodic-memory.lisp"
     "uhma-presence-substrate.lisp"
-    "uhma-holographic-substrate-v2.lisp"))
+    "uhma-holographic-substrate-v2.lisp"
+    "uhma-holographic-impl.lisp"))
 
 (defparameter *uhma-integration-and-fixes*
   '("uhma-v6.3-fixes.lisp"

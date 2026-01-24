@@ -105,6 +105,28 @@ Place any files in the `FEED/` subdirectory, then ingest them:
 (live!)                                 ; Continuous self-feeding (Ctrl+C to stop)
 ```
 
+### Training Scheduler
+
+Alternates between fast FEED phases (hooks cleared, raw learning) and LIVE phases (full cognitive loop — self-awareness, dreams, self-modification).
+
+```lisp
+;; 1 hour feed + 15 min digest, repeat 3 times
+(train! '((:feed 60) (:live 15)) :loops 3)
+
+;; Feed FEED/ directory for 30 min, digest 10 min, infinite loop
+(train! '((:feed 30 :source :directory) (:live 10)) :loops :infinite)
+
+;; Custom multi-phase schedule
+(train! '((:feed 60) (:live 15) (:feed 120) (:live 60)))
+
+;; Stop gracefully from another thread/REPL
+(train-stop!)
+```
+
+Phases:
+- **`:feed N`** — Feeds own source code for N minutes. All maintenance hooks are temporarily cleared for raw speed (only prediction + learning runs). Use `:source :directory` to feed from `FEED/` instead.
+- **`:live N`** — Runs the full cognitive loop (`internal-step!`) for N minutes. Self-awareness, dreams, goals, and self-modification all active.
+
 ### Generation
 
 ```lisp
