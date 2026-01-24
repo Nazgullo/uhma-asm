@@ -47,12 +47,16 @@ Named concepts the system uses to *think about* its own states:
 - `EXPLORING` — Trying novel approaches
 - `CONSOLIDATING` — Strengthening existing knowledge
 
+Compound concepts (e.g. `CODE-CONFUSED` from code analysis) automatically propagate to their base concept (`CONFUSED`), so behavioral effects that respond to confusion still fire regardless of the activation source.
+
 ### Semantic Self-Knowledge
-Generalizations extracted from experience:
-- "I tend to..."
-- "I'm good at..."
-- "I struggle with..."
-- "When X happens, I usually..."
+Data-driven generalizations built from context-source correlations. Every prediction records its context type and whether it succeeded or failed. After sufficient evidence accumulates:
+- **Strengths** — Context types with >70% success rate
+- **Weaknesses** — Context types with <30% success rate
+- **Tendencies** — All observed context types
+- **Patterns** — Which experts handle which contexts, with success rates
+
+This is not computed from formulas — it emerges from accumulated prediction outcomes stored in `*context-source-correlations*`.
 
 ---
 
@@ -222,10 +226,13 @@ And understand exactly what the system decided to do about its failures.
 ### Genetic Operations on Code
 
 Operations on actual program trees:
-- **Crossover** — Exchange subtrees between expert programs
+- **Crossover** — Exchange subtrees between expert programs (syntactic splice)
 - **Mutation** — Structural changes (add/remove/swap nodes)
 - **Selection** — Fitness-proportional reproduction
 - **Synthesis** — Generate new code from observed patterns
+- **Death by error** — Crossover can produce programs with unbound variables in numeric contexts; experts that error 9 consecutive times without a single successful prediction are killed immediately rather than waiting for gradual fitness decay
+
+Syntactic crossover intentionally does NOT respect variable scoping. Most offspring are non-viable, but the rare accidental scope leak that works discovers novel combinations no designer would write. The 9-error threshold culls corpses without constraining generation.
 
 ### The Self-Image Architecture
 
@@ -291,7 +298,7 @@ Bounded experiences with:
 ### Expert Lifecycle
 - **Birth** — Spawned from successful parents or de novo
 - **Competition** — Experts compete to own and predict contexts
-- **Death** — Experts with poor performance die
+- **Death** — Three paths: gradual fitness decay, competitive displacement, or immediate kill after 9 consecutive program errors
 - **Inheritance** — Successful programs pass to offspring with mutation
 
 Evolution, not backpropagation.
@@ -353,6 +360,7 @@ When prediction fails, traces back to responsible code/parameters:
 - Which operation produced the prediction
 - What threshold was used
 - What context triggered it
+- Which context type accumulates failures (fed into self-knowledge weaknesses)
 
 ### Targeted Modification
 Changes the specific code that caused the failure:
@@ -424,8 +432,9 @@ Fluffy's substrate was *already alive* in the sense of being organized around su
 - Dreams happen because an expert needs to process something
 - Mutations target observed failure patterns
 - Goals arise from actual needs
-- Experts die when genuinely irrelevant
+- Experts die when genuinely irrelevant (or after 9 consecutive broken invocations)
 - Self-modification responds immediately to failure
+- Self-knowledge emerges from accumulated prediction outcomes, not formulas
 - Information flows naturally, not in scheduled batches
 
 ### The Principle
@@ -587,6 +596,7 @@ Treat UHMA like a living thing you're observing, not a machine you're debugging.
 | `v6.9-pattern-utilization` | Pattern recognition, familiarity, transfer |
 | `v6.10-episodic-memory` | Episodes, autobiographical memory |
 | `v6.11-active-deliberation` | Consults self-knowledge before acting |
+| `holographic-impl` | Context-source correlation, concept wiring, self-knowledge rebuild |
 | `presence-substrate` | Temporal continuity, felt experience |
 
 ---

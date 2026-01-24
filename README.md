@@ -170,11 +170,11 @@ sbcl --dynamic-space-size 8192 --noinform --non-interactive \
 
 ## Architecture
 
-### Load Order (32 modules)
+### Load Order (33 modules)
 
 ```
 1. uhma-forward-decl         Package, exports, global declarations
-2. uhma-stubs                Stub definitions for circular dependencies
+2. uhma-stubs                Forward declarations + memory/hypothesis/concept impls
 3. uhma-vsa-substrate        1024-dim vector symbolic architecture
 4. uhma-v6.1-core-homoiconic Foundation: tokenizer, experts, programs, interpreter
 5. uhma-v6.1-adaptive        Self-tuning parameters
@@ -193,18 +193,19 @@ sbcl --dynamic-space-size 8192 --noinform --non-interactive \
 18. uhma-v6.10-episodic-int   Episodic integration hooks
 19. uhma-holographic-v2       Unified holographic memory store
 20. uhma-holographic-integ    Holographic integration with experts
-21. uhma-active-self-mod      Self-modification execution hooks
-22. uhma-presence-integration Wires presence into all subsystems
-23. uhma-self-awareness-loop  Observe-introspect-modify feedback loop
-24. uhma-predictive-self-mod  Predictive gating of modifications
-25. uhma-continuous           Live mode, continuous operation
-26. uhma-state-persistence    Session persistence (checkpoints)
-27. uhma-memory-bounds        Memory pressure management
-28. uhma-deep-wiring          Inter-module connections
-29. uhma-complete-wiring      Final hook installation
-30. start.lisp                Convenience functions (start!, status, etc.)
-31. uhma-save-restore         Full state serialization/deserialization
-32. uhma-feed                 Universal file ingestion system
+21. uhma-holographic-impl     Context-source correlation, concept wiring
+22. uhma-active-self-mod      Self-modification execution hooks
+23. uhma-presence-integration Wires presence into all subsystems
+24. uhma-self-awareness-loop  Observe-introspect-modify feedback loop
+25. uhma-predictive-self-mod  Predictive gating of modifications
+26. uhma-continuous           Live mode, continuous operation
+27. uhma-state-persistence    Session persistence (checkpoints)
+28. uhma-memory-bounds        Memory pressure management
+29. uhma-deep-wiring          Inter-module connections
+30. uhma-complete-wiring      Final hook installation
+31. start.lisp                Convenience functions (start!, status, etc.)
+32. uhma-save-restore         Full state serialization/deserialization
+33. uhma-feed                 Universal file ingestion system
 ```
 
 ### Key Data Structures
@@ -223,6 +224,7 @@ sbcl --dynamic-space-size 8192 --noinform --non-interactive \
 | `episode` | Episodic memory unit with constituent events |
 | `holo-store` | VSA-backed holographic pattern storage |
 | `modification-prediction` | Predicted outcome of a self-modification |
+| `context-source-correlations` | Per-context-type success/failure rates driving self-knowledge |
 
 ### Processing Pipeline
 
@@ -251,7 +253,7 @@ STARWARS/
 ├── load.lisp                    Main entry point (loads all modules)
 ├── start.lisp                   Convenience functions
 ├── uhma-forward-decl.lisp       Package definition
-├── uhma-stubs.lisp              Forward stubs
+├── uhma-stubs.lisp              Forward decls + early implementations
 ├── uhma-vsa-substrate.lisp      VSA core math
 ├── uhma-v6.1-*.lisp             Core substrate (3 files)
 ├── uhma-v6.2-*.lisp             Deep mind (4 sub-files)
@@ -264,7 +266,7 @@ STARWARS/
 ├── uhma-v6.9-pattern-util.lisp  Patterns
 ├── uhma-v6.10-*.lisp            Episodic memory (3 sub-files)
 ├── uhma-presence-*.lisp         Presence (2 files)
-├── uhma-holographic-*.lisp      Holographic memory (2 files)
+├── uhma-holographic-*.lisp      Holographic memory (3 files)
 ├── uhma-active-self-mod.lisp    Self-modification
 ├── uhma-self-awareness-loop.lisp Self-awareness
 ├── uhma-predictive-self-mod.lisp Predictive gating
@@ -281,8 +283,7 @@ STARWARS/
 ├── test-66-claims.lisp          Comprehensive test suite
 ├── test-feed-quick.lisp         Feed system test
 ├── uhma-diagnostic.lisp         Diagnostics
-├── UHMA-DESIGN-SPEC.md          Design philosophy & claims
-└── GEMINI.md                    Design goals document
+└── UHMA-DESIGN-SPEC.md          Design philosophy & claims
 ```
 
 ---
