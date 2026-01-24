@@ -39,8 +39,36 @@ vsa_init_random:
     mov rax, SYS_GETRANDOM
     syscall
 
-    ; Random bits are treated as f64 values, then normalized
-    ; to unit length — this gives a uniform random direction
+    ; Convert random u64 bits to valid f64 in [-1.0, 1.0):
+    ;   1. Extract sign bit from random data
+    ;   2. Force exponent to 0x3FF → value in [1.0, 2.0)
+    ;   3. Subtract 1.0 → [0.0, 1.0)
+    ;   4. Apply sign → [-1.0, 1.0)
+    mov rdi, r13
+    mov ecx, VSA_DIM
+.conv_loop:
+    mov rax, [rdi]            ; random u64
+    mov rdx, rax
+    shr rdx, 63              ; sign bit → rdx[0]
+    shl rdx, 63              ; sign bit back to bit 63
+    ; Force exponent = 0x3FF, keep mantissa (bits 51:0)
+    mov r8, 0x000FFFFFFFFFFFFF
+    and rax, r8              ; keep only mantissa
+    mov r8, 0x3FF0000000000000
+    or rax, r8               ; set exponent to 0x3FF → [1.0, 2.0)
+    mov [rdi], rax
+    movsd xmm0, [rdi]
+    mov r8, 0x3FF0000000000000
+    movq xmm1, r8            ; 1.0
+    subsd xmm0, xmm1         ; [0.0, 1.0)
+    movq xmm1, rdx           ; sign bit
+    orpd xmm0, xmm1          ; apply sign → [-1.0, 1.0)
+    movsd [rdi], xmm0
+    add rdi, 8
+    dec ecx
+    jnz .conv_loop
+
+    ; Normalize to unit length
     mov rdi, r13
     call vsa_normalize
 
