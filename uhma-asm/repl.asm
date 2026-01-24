@@ -6,7 +6,7 @@ section .data
     prompt_str:     db "uhma> ", 0
     prompt_len      equ 6
     banner_str:     db "UHMA x86_64 — Unified Holographic Memory Architecture", 10
-                    db "Surface: 8GB RWX | VSA: 1024-dim f32 | Self-modifying dispatch", 10
+                    db "Surface: 8GB RWX | VSA: 1024-dim f64 | Self-modifying dispatch", 10
                     db "Type 'help' for commands, text to process, or Ctrl-D to exit.", 10, 10, 0
     help_str:       db "Commands:", 10
                     db "  help          Show this help", 10
@@ -58,6 +58,9 @@ extern persist_save
 extern persist_load
 extern drives_show
 extern presence_show
+extern vocab_count
+extern holo_dot_f64
+extern holo_magnitude_f64
 
 ;; ============================================================
 ;; repl_run
@@ -142,51 +145,108 @@ repl_run:
     cmp dword [rbx], 'help'
     je .cmd_help
 
-    ; "status"
+    ; "status" (full 6-char match + boundary)
     mov eax, [rbx]
     cmp eax, 'stat'
     jne .not_status
     cmp word [rbx + 4], 'us'
     jne .not_status
-    jmp .cmd_status
+    movzx eax, byte [rbx + 6]
+    test eax, eax
+    jz .cmd_status
+    cmp eax, ' '
+    je .cmd_status
+    cmp eax, 10
+    je .cmd_status
+    jmp .not_status
 .not_status:
 
-    ; "regions"
+    ; "regions" (full 7-char match + boundary)
     cmp dword [rbx], 'regi'
     jne .not_regions
     cmp word [rbx + 4], 'on'
     jne .not_regions
-    jmp .cmd_regions
+    cmp byte [rbx + 6], 's'
+    jne .not_regions
+    movzx eax, byte [rbx + 7]
+    test eax, eax
+    jz .cmd_regions
+    cmp eax, ' '
+    je .cmd_regions
+    jmp .not_regions
 .not_regions:
 
-    ; "presence"
+    ; "presence" (full 8-char match + boundary)
     cmp dword [rbx], 'pres'
     jne .not_presence
-    jmp .cmd_presence
+    cmp dword [rbx + 4], 'ence'
+    jne .not_presence
+    movzx eax, byte [rbx + 8]
+    test eax, eax
+    jz .cmd_presence
+    cmp eax, ' '
+    je .cmd_presence
+    jmp .not_presence
 .not_presence:
 
-    ; "drives"
+    ; "drives" (full 6-char match + boundary)
     cmp dword [rbx], 'driv'
     jne .not_drives
-    jmp .cmd_drives
+    cmp word [rbx + 4], 'es'
+    jne .not_drives
+    movzx eax, byte [rbx + 6]
+    test eax, eax
+    jz .cmd_drives
+    cmp eax, ' '
+    je .cmd_drives
+    jmp .not_drives
 .not_drives:
 
-    ; "observe"
+    ; "observe" (full 7-char match + boundary)
     cmp dword [rbx], 'obse'
     jne .not_observe
-    jmp .cmd_observe
+    cmp word [rbx + 4], 'rv'
+    jne .not_observe
+    cmp byte [rbx + 6], 'e'
+    jne .not_observe
+    movzx eax, byte [rbx + 7]
+    test eax, eax
+    jz .cmd_observe
+    cmp eax, ' '
+    je .cmd_observe
+    cmp eax, 10
+    je .cmd_observe
+    jmp .not_observe
 .not_observe:
 
-    ; "dream"
+    ; "dream" (full 5-char match + boundary)
     cmp dword [rbx], 'drea'
     jne .not_dream
-    jmp .cmd_dream
+    cmp byte [rbx + 4], 'm'
+    jne .not_dream
+    movzx eax, byte [rbx + 5]
+    test eax, eax
+    jz .cmd_dream
+    cmp eax, ' '
+    je .cmd_dream
+    cmp eax, 10
+    je .cmd_dream
+    jmp .not_dream
 .not_dream:
 
-    ; "compact"
+    ; "compact" (full 7-char match + boundary)
     cmp dword [rbx], 'comp'
     jne .not_compact
-    jmp .cmd_compact
+    cmp word [rbx + 4], 'ac'
+    jne .not_compact
+    cmp byte [rbx + 6], 't'
+    jne .not_compact
+    movzx eax, byte [rbx + 7]
+    test eax, eax
+    jz .cmd_compact
+    cmp eax, ' '
+    je .cmd_compact
+    jmp .not_compact
 .not_compact:
 
     ; "save"
@@ -456,6 +516,72 @@ repl_show_status:
 .expect_done:
     call print_newline
 
+    ; --- Holographic Memory Stats (f64 precision) ---
+    ; Vocabulary count
+    lea rdi, [rel holo_vocab_lbl]
+    call print_cstr
+    call vocab_count
+    mov edi, eax
+    call print_u64
+    call print_newline
+
+    ; Holo density: average magnitude of first 16 traces (f64 vectors)
+    lea rdi, [rel holo_density_lbl]
+    call print_cstr
+    sub rsp, 16               ; [rsp]=sum(f64), [rsp+8]=counter
+    xorpd xmm0, xmm0
+    movsd [rsp], xmm0         ; sum = 0.0
+    mov dword [rsp + 8], 0    ; counter
+.holo_density_loop:
+    cmp dword [rsp + 8], 16
+    jge .holo_density_done
+    push rbx                  ; save across call
+    mov eax, [rsp + 16]       ; counter (+8 for pushed rbx)
+    imul rax, rax, HOLO_VEC_BYTES
+    lea rdi, [rbx + HOLO_OFFSET]
+    add rdi, rax              ; trace ptr (f64[1024])
+    call holo_magnitude_f64   ; → xmm0 (f64)
+    pop rbx
+    addsd xmm0, [rsp]
+    movsd [rsp], xmm0
+    inc dword [rsp + 8]
+    jmp .holo_density_loop
+.holo_density_done:
+    movsd xmm0, [rsp]
+    mov eax, 16
+    cvtsi2sd xmm1, eax
+    divsd xmm0, xmm1         ; avg magnitude (f64)
+    cvtsd2ss xmm0, xmm0      ; convert to f32 for print_f32
+    add rsp, 16
+    call print_f32
+    call print_newline
+
+    ; Holo confidence: average prediction confidence (f64)
+    lea rdi, [rel holo_conf_lbl]
+    call print_cstr
+    mov eax, [rbx + STATE_OFFSET + ST_HOLO_PREDICT_N]
+    test eax, eax
+    jz .holo_no_conf
+    movsd xmm0, [rbx + STATE_OFFSET + ST_HOLO_PREDICT_SUM]
+    cvtsi2sd xmm1, eax
+    divsd xmm0, xmm1         ; avg confidence (f64)
+    cvtsd2ss xmm0, xmm0      ; convert to f32 for print
+    jmp .holo_print_conf
+.holo_no_conf:
+    xorps xmm0, xmm0
+.holo_print_conf:
+    call print_f32
+    lea rdi, [rel holo_conf_n_lbl]
+    call print_cstr
+    mov edi, [rbx + STATE_OFFSET + ST_HOLO_PREDICT_N]
+    call print_u64
+    lea rdi, [rel holo_conf_end]
+    call print_cstr
+    call print_newline
+
+    ; --- Graph Dynamics Stats ---
+    call show_graph_stats
+
     pop rbx
     ret
 
@@ -566,6 +692,190 @@ compute_total_accuracy:
 .azero:
     xorps xmm0, xmm0
 .aret:
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; show_graph_stats
+;; Compute and display graph dynamics metrics:
+;; connections, avg prime, avg activation, avg resonance,
+;; graph depth, entry table occupancy
+;; ============================================================
+show_graph_stats:
+    push rbx
+    push r12
+    push r13
+    push r14
+    sub rsp, 32               ; [0]=conn_count, [4]=region_count_f
+                              ; [8]=sum_prime(f64), [16]=sum_activ(f64), [24]=sum_reson(f64)
+    mov rbx, SURFACE_BASE
+    lea r12, [rbx + REGION_TABLE_OFFSET]
+    mov r13d, [rbx + STATE_OFFSET + ST_REGION_COUNT]
+
+    mov dword [rsp + 0], 0    ; connection count
+    ; Zero f64 sums
+    xorpd xmm0, xmm0
+    movsd [rsp + 8], xmm0
+    movsd [rsp + 16], xmm0
+    movsd [rsp + 24], xmm0
+    xor r14d, r14d            ; active region count
+
+    xor ecx, ecx
+.gs_loop:
+    cmp ecx, r13d
+    jge .gs_done_scan
+    push rcx
+
+    imul rdi, rcx, RTE_SIZE
+    add rdi, r12
+    movzx eax, word [rdi + RTE_FLAGS]
+    test eax, RFLAG_CONDEMNED
+    jnz .gs_next
+
+    mov rsi, [rdi + RTE_ADDR]
+    inc r14d                  ; active count
+
+    ; Count non-zero connections
+    ; NOTE: push rcx above shifted rsp by 8, so all frame offsets are +8
+    cmp qword [rsi + RHDR_NEXT_A], 0
+    je .gs_c1
+    inc dword [rsp + 8]
+.gs_c1:
+    cmp qword [rsi + RHDR_NEXT_B], 0
+    je .gs_c2
+    inc dword [rsp + 8]
+.gs_c2:
+    cmp qword [rsi + RHDR_EXCITE_A], 0
+    je .gs_c3
+    inc dword [rsp + 8]
+.gs_c3:
+    cmp qword [rsi + RHDR_EXCITE_B], 0
+    je .gs_c4
+    inc dword [rsp + 8]
+.gs_c4:
+    cmp qword [rsi + RHDR_INHIBIT_A], 0
+    je .gs_c5
+    inc dword [rsp + 8]
+.gs_c5:
+    cmp qword [rsi + RHDR_INHIBIT_B], 0
+    je .gs_c6
+    inc dword [rsp + 8]
+.gs_c6:
+    ; Accumulate prime
+    movsd xmm0, [rsi + RHDR_PRIME]
+    addsd xmm0, [rsp + 16]
+    movsd [rsp + 16], xmm0
+    ; Accumulate activation
+    movsd xmm0, [rsi + RHDR_ACTIVATION]
+    addsd xmm0, [rsp + 24]
+    movsd [rsp + 24], xmm0
+    ; Accumulate resonance
+    movsd xmm0, [rsi + RHDR_RESONANCE]
+    addsd xmm0, [rsp + 32]
+    movsd [rsp + 32], xmm0
+
+.gs_next:
+    pop rcx
+    inc ecx
+    jmp .gs_loop
+
+.gs_done_scan:
+    ; Print connections
+    lea rdi, [rel conn_lbl]
+    call print_cstr
+    mov edi, [rsp + 0]
+    call print_u64
+    call print_newline
+
+    ; Compute averages (divide by active count)
+    test r14d, r14d
+    jz .gs_skip_avg
+
+    ; Avg prime
+    lea rdi, [rel avg_prime_lbl]
+    call print_cstr
+    cvtsi2sd xmm7, r14d      ; reload divisor (destroyed by calls)
+    movsd xmm0, [rsp + 8]
+    divsd xmm0, xmm7
+    cvtsd2ss xmm0, xmm0      ; convert to f32 for print
+    call print_f32
+    call print_newline
+
+    ; Avg activation
+    lea rdi, [rel avg_activ_lbl]
+    call print_cstr
+    cvtsi2sd xmm7, r14d      ; reload divisor
+    movsd xmm0, [rsp + 16]
+    divsd xmm0, xmm7
+    cvtsd2ss xmm0, xmm0
+    call print_f32
+    call print_newline
+
+    ; Avg resonance
+    lea rdi, [rel avg_reson_lbl]
+    call print_cstr
+    cvtsi2sd xmm7, r14d      ; reload divisor
+    movsd xmm0, [rsp + 24]
+    divsd xmm0, xmm7
+    cvtsd2ss xmm0, xmm0
+    call print_f32
+    call print_newline
+    jmp .gs_depth
+
+.gs_skip_avg:
+    ; No active regions — print zeros
+    lea rdi, [rel avg_prime_lbl]
+    call print_cstr
+    xorps xmm0, xmm0
+    call print_f32
+    call print_newline
+    lea rdi, [rel avg_activ_lbl]
+    call print_cstr
+    xorps xmm0, xmm0
+    call print_f32
+    call print_newline
+    lea rdi, [rel avg_reson_lbl]
+    call print_cstr
+    xorps xmm0, xmm0
+    call print_f32
+    call print_newline
+
+.gs_depth:
+    ; Graph depth (last traversal)
+    lea rdi, [rel graph_depth_lbl]
+    call print_cstr
+    mov edi, [rbx + STATE_OFFSET + ST_GRAPH_DEPTH]
+    call print_u64
+    call print_newline
+
+    ; Entry table occupancy
+    lea rdi, [rel entry_occ_lbl]
+    call print_cstr
+    lea rsi, [rbx + STATE_OFFSET + ST_ENTRY_TABLE]
+    xor eax, eax              ; occupied count
+    xor ecx, ecx
+.gs_entry_loop:
+    cmp ecx, ST_ENTRY_TABLE_CAP
+    jge .gs_entry_done
+    cmp qword [rsi + rcx * 8], 0
+    je .gs_entry_next
+    inc eax
+.gs_entry_next:
+    inc ecx
+    jmp .gs_entry_loop
+.gs_entry_done:
+    mov edi, eax
+    push rax
+    call print_u64
+    pop rax
+    lea rdi, [rel of_16_lbl]
+    call print_cstr
+    call print_newline
+
+    add rsp, 32
+    pop r14
     pop r13
     pop r12
     pop rbx
@@ -1086,3 +1396,17 @@ section .rodata
     self_hits_lbl:      db " (hits=", 0
     self_acc_lbl:       db " (acc=", 0
     self_indent:        db "             region ", 0
+    ; Holographic memory labels
+    holo_vocab_lbl:     db "  Vocabulary: ", 0
+    holo_density_lbl:   db "  Holo density: ", 0
+    holo_conf_lbl:      db "  Holo confidence: ", 0
+    holo_conf_n_lbl:    db " (n=", 0
+    holo_conf_end:      db ")", 0
+    ; Graph dynamics labels
+    conn_lbl:           db "  Connections: ", 0
+    avg_prime_lbl:      db "  Avg prime: ", 0
+    avg_activ_lbl:      db "  Avg activation: ", 0
+    avg_reson_lbl:      db "  Avg resonance: ", 0
+    graph_depth_lbl:    db "  Graph depth: ", 0
+    entry_occ_lbl:      db "  Entry table: ", 0
+    of_16_lbl:          db "/16", 0

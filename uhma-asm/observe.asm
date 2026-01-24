@@ -9,6 +9,12 @@ section .data
     obs_condemned:  db " condemned=", 0
     obs_nl:         db 10, 0
 
+    ; f64 constants for connection weight decay
+    align 8
+    obs_weight_decay:   dq 0.995
+    obs_weight_floor:   dq 0.01
+    obs_f64_zero:       dq 0.0
+
 section .text
 
 extern print_cstr
@@ -212,6 +218,12 @@ observe_cycle:
 
     ; --- Compute accuracy variance across regions ---
     call compute_accuracy_variance
+
+    ; --- Decay connection weights (forgetting) ---
+    call decay_connection_weights
+
+    ; --- Repair dead-end routing ---
+    call repair_routing
 
     ; --- Auto-trigger dream if misses exceed threshold ---
     lea rax, [rbx + STATE_OFFSET + ST_MISS_POS]
@@ -1039,6 +1051,206 @@ compute_accuracy_variance:
 
 .vret:
     add rsp, 16
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; decay_connection_weights
+;; Walk all regions, multiply all 4 weights by WEIGHT_DECAY.
+;; Clear connections where weight < WEIGHT_FLOOR.
+;; This is the "forgetting" that prevents graph saturation.
+;; ============================================================
+global decay_connection_weights
+decay_connection_weights:
+    push rbx
+    push r12
+    push r13
+
+    mov rbx, SURFACE_BASE
+    lea r12, [rbx + REGION_TABLE_OFFSET]
+    mov r13d, [rbx + STATE_OFFSET + ST_REGION_COUNT]
+
+    ; Preload constants
+    movsd xmm4, [rel obs_weight_decay]   ; 0.995
+    movsd xmm5, [rel obs_weight_floor]   ; 0.01
+    movsd xmm6, [rel obs_f64_zero]       ; 0.0
+
+    xor ecx, ecx
+.wdecay_loop:
+    cmp ecx, r13d
+    jge .wdecay_done
+    push rcx
+
+    imul rdi, rcx, RTE_SIZE
+    add rdi, r12
+    movzx eax, word [rdi + RTE_FLAGS]
+    test eax, RFLAG_CONDEMNED
+    jnz .wdecay_next
+
+    mov rsi, [rdi + RTE_ADDR]
+
+    ; --- w_excite_a ---
+    movsd xmm0, [rsi + RHDR_W_EXCITE_A]
+    mulsd xmm0, xmm4
+    ucomisd xmm0, xmm5
+    ja .wdecay_ea_ok
+    ; Below floor — clear connection
+    movsd [rsi + RHDR_W_EXCITE_A], xmm6
+    mov qword [rsi + RHDR_EXCITE_A], 0
+    jmp .wdecay_eb
+.wdecay_ea_ok:
+    movsd [rsi + RHDR_W_EXCITE_A], xmm0
+
+.wdecay_eb:
+    ; --- w_excite_b ---
+    movsd xmm0, [rsi + RHDR_W_EXCITE_B]
+    mulsd xmm0, xmm4
+    ucomisd xmm0, xmm5
+    ja .wdecay_eb_ok
+    movsd [rsi + RHDR_W_EXCITE_B], xmm6
+    mov qword [rsi + RHDR_EXCITE_B], 0
+    jmp .wdecay_ia
+.wdecay_eb_ok:
+    movsd [rsi + RHDR_W_EXCITE_B], xmm0
+
+.wdecay_ia:
+    ; --- w_inhibit_a ---
+    movsd xmm0, [rsi + RHDR_W_INHIBIT_A]
+    mulsd xmm0, xmm4
+    ucomisd xmm0, xmm5
+    ja .wdecay_ia_ok
+    movsd [rsi + RHDR_W_INHIBIT_A], xmm6
+    mov qword [rsi + RHDR_INHIBIT_A], 0
+    jmp .wdecay_ib
+.wdecay_ia_ok:
+    movsd [rsi + RHDR_W_INHIBIT_A], xmm0
+
+.wdecay_ib:
+    ; --- w_inhibit_b ---
+    movsd xmm0, [rsi + RHDR_W_INHIBIT_B]
+    mulsd xmm0, xmm4
+    ucomisd xmm0, xmm5
+    ja .wdecay_ib_ok
+    movsd [rsi + RHDR_W_INHIBIT_B], xmm6
+    mov qword [rsi + RHDR_INHIBIT_B], 0
+    jmp .wdecay_next
+.wdecay_ib_ok:
+    movsd [rsi + RHDR_W_INHIBIT_B], xmm0
+
+.wdecay_next:
+    pop rcx
+    inc ecx
+    jmp .wdecay_loop
+
+.wdecay_done:
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; repair_routing
+;; Find regions with no next links but neighbors exist.
+;; Wire isolated nodes into the graph by scanning for regions
+;; with similar context (masked comparison).
+;; ============================================================
+global repair_routing
+repair_routing:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+
+    mov rbx, SURFACE_BASE
+    lea r12, [rbx + REGION_TABLE_OFFSET]
+    mov r13d, [rbx + STATE_OFFSET + ST_REGION_COUNT]
+
+    xor ecx, ecx
+.repair_loop:
+    cmp ecx, r13d
+    jge .repair_done
+    push rcx
+
+    imul rdi, rcx, RTE_SIZE
+    add rdi, r12
+    movzx eax, word [rdi + RTE_TYPE]
+    cmp eax, RTYPE_DISPATCH
+    jne .repair_next
+    movzx eax, word [rdi + RTE_FLAGS]
+    test eax, RFLAG_CONDEMNED
+    jnz .repair_next
+
+    mov r14, [rdi + RTE_ADDR]  ; region header
+
+    ; Check if isolated (next_a == 0 AND next_b == 0)
+    cmp qword [r14 + RHDR_NEXT_A], 0
+    jne .repair_next
+    cmp qword [r14 + RHDR_NEXT_B], 0
+    jne .repair_next
+
+    ; This region has no routing — try to find a neighbor
+    ; Get this region's context (if valid dispatch pattern)
+    cmp byte [r14 + RHDR_SIZE], 0x3D
+    jne .repair_next
+    mov r15d, [r14 + RHDR_SIZE + 1]  ; this region's context
+
+    ; Scan for another DISPATCH region with similar context
+    pop rcx
+    push rcx
+    xor edx, edx
+.repair_inner:
+    cmp edx, r13d
+    jge .repair_next
+    cmp edx, [rsp]            ; skip self (ecx is at [rsp])
+    je .repair_inner_next
+
+    push rdx
+    imul rdi, rdx, RTE_SIZE
+    add rdi, r12
+    movzx eax, word [rdi + RTE_TYPE]
+    cmp eax, RTYPE_DISPATCH
+    jne .repair_inner_skip
+    movzx eax, word [rdi + RTE_FLAGS]
+    test eax, RFLAG_CONDEMNED
+    jnz .repair_inner_skip
+
+    mov rsi, [rdi + RTE_ADDR]
+    cmp rsi, r14
+    je .repair_inner_skip      ; same region
+
+    ; Check context similarity (same masked context)
+    cmp byte [rsi + RHDR_SIZE], 0x3D
+    jne .repair_inner_skip
+    mov eax, [rsi + RHDR_SIZE + 1]
+    ; Masked comparison: (ctx_a & 0xFFFFFFF0) == (ctx_b & 0xFFFFFFF0)
+    mov edi, r15d
+    and edi, 0xFFFFFFF0
+    and eax, 0xFFFFFFF0
+    cmp eax, edi
+    jne .repair_inner_skip
+
+    ; Found a neighbor! Wire isolated region → neighbor
+    mov [r14 + RHDR_NEXT_A], rsi
+    pop rdx
+    jmp .repair_next
+
+.repair_inner_skip:
+    pop rdx
+.repair_inner_next:
+    inc edx
+    jmp .repair_inner
+
+.repair_next:
+    pop rcx
+    inc ecx
+    jmp .repair_loop
+
+.repair_done:
+    pop r15
+    pop r14
     pop r13
     pop r12
     pop rbx

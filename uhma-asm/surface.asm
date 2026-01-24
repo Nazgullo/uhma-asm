@@ -61,6 +61,32 @@ surface_init:
     mov rax, FNV64_INIT
     mov [rdx], rax
 
+    ; Zero holographic trace memory (2MB = HOLO_TOTAL, f64 vectors)
+    lea rdi, [rbx + HOLO_OFFSET]
+    xor eax, eax
+    mov ecx, HOLO_TOTAL / 8  ; zero 8 bytes at a time (2MB / 8 = 262144 iters)
+.zero_holo:
+    mov [rdi], rax
+    add rdi, 8
+    dec ecx
+    jnz .zero_holo
+
+    ; Zero vocabulary area (first 64KB — enough for 8192 entries)
+    lea rdi, [rbx + VOCAB_OFFSET]
+    xor eax, eax
+    mov ecx, 65536 / 8
+.zero_vocab:
+    mov [rdi], rax
+    add rdi, 8
+    dec ecx
+    jnz .zero_vocab
+
+    ; Zero holographic state fields
+    mov dword [rbx + STATE_OFFSET + ST_VOCAB_COUNT], 0
+    mov dword [rbx + STATE_OFFSET + ST_VOCAB_TOP_DIRTY], 0
+    mov qword [rbx + STATE_OFFSET + ST_HOLO_PREDICT_SUM], 0  ; f64
+    mov dword [rbx + STATE_OFFSET + ST_HOLO_PREDICT_N], 0
+
     mov rax, rbx              ; return surface base
     pop r12
     pop rbx
@@ -99,12 +125,23 @@ region_alloc:
     add rcx, 15
     and rcx, ~15
 
-    ; Write region header
+    ; Zero-initialize all 128 bytes of extended header
+    push rdi
+    push rcx
+    mov rdi, rcx
+    xor eax, eax
+    mov ecx, RHDR_SIZE
+    rep stosb
+    pop rcx
+    pop rdi
+
+    ; Write core header fields
     mov dword [rcx + RHDR_HITS], 0
     mov dword [rcx + RHDR_MISSES], 0
     mov dword [rcx + RHDR_BIRTH], r14d
     mov word [rcx + RHDR_CODE_LEN], r12w
     mov word [rcx + RHDR_FLAGS], RFLAG_ACTIVE
+    ; Connection ptrs, weights, dynamics all zeroed by rep stosb above
 
     ; Save the region in region table
     push rcx                  ; save header ptr

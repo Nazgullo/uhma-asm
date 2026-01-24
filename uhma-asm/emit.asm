@@ -16,6 +16,7 @@ extern print_hex64
 extern print_newline
 extern region_alloc
 extern fire_hook
+extern wire_new_region
 
 ;; ============================================================
 ;; emit_dispatch_pattern(ctx_hash_32, token_id, birth_step)
@@ -43,8 +44,8 @@ emit_dispatch_pattern:
     mov r13d, esi             ; token_id
     mov r14d, edx             ; birth_step
 
-    ; Allocate region: 23 bytes of code
-    mov rdi, 23               ; code size
+    ; Allocate region: 17 bytes of code
+    mov rdi, 17               ; code size
     mov rsi, RTYPE_DISPATCH   ; type
     mov edx, r14d             ; birth step
     call region_alloc
@@ -139,6 +140,11 @@ emit_dispatch_pattern:
     mov edi, HOOK_ON_EMIT
     mov esi, r12d
     call fire_hook
+
+    ; Wire new region into connectivity graph
+    mov rdi, rbx              ; header ptr
+    mov esi, r13d             ; token_id (for finding same-token regions)
+    call wire_new_region
 
     mov rax, rbx              ; return header ptr
     pop r14

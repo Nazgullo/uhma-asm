@@ -10,6 +10,19 @@ section .data
     no_predict_msg: db " [NEW]", 10, 0
     process_hdr:    db "Processing: ", 0
 
+    ; f64 constants for graph dynamics
+    align 8
+    prime_decay:    dq 0.9
+    activ_decay:    dq 0.85
+    one_point_o:    dq 1.0
+    zero_point_o:   dq 0.0
+    half_point_o:   dq 0.5
+    activ_thresh:   dq 0.1
+
+    ; Holographic threshold (f64)
+    align 8
+    holo_thresh:    dq 0.15
+
 section .bss
     word_buf:       resb MAX_WORD_LEN
 
@@ -26,6 +39,10 @@ extern vsa_get_token_vec
 extern vsa_superpose
 extern region_alloc
 extern find_existing_pattern
+extern learn_connections
+extern observe_cycle
+extern holo_predict
+extern holo_decay_all
 
 ;; ============================================================
 ;; dispatch_init
@@ -76,6 +93,11 @@ process_input:
     mov r13, rsi              ; text len
     xor r14d, r14d            ; current position
     mov r15, SURFACE_BASE
+
+    ; Reset context hash for this line — makes context line-local
+    ; so patterns are recognized by local structure, not absolute position
+    mov qword [r15 + STATE_OFFSET + ST_CTX_HASH], 0
+    mov qword [r15 + STATE_OFFSET + ST_LAST_CTX], 0
 
     ; Print header
     push r12
@@ -149,11 +171,60 @@ process_input:
     test ecx, ecx
     jz .next_word             ; empty word, skip
 
-    ; Hash the word → token ID
+    ; --- Categorical abstraction ---
+    ; Check if word contains hex literal (0X...) → abstract to class token
+    ; This is chunking: "0x0000000100010110" and "0xDEADBEEF" are both "HEX"
+    push rcx                  ; save word_len
+    cmp ecx, 3
+    jl .not_hex
+    xor edx, edx
+.hex_scan:
+    cmp edx, ecx
+    jge .not_hex
+    cmp byte [rbx + rdx], '0'
+    jne .hex_scan_next
+    cmp edx, ecx
+    jge .not_hex
+    lea eax, [edx + 1]
+    cmp eax, ecx
+    jge .hex_scan_next
+    cmp byte [rbx + rax], 'X'
+    je .is_hex
+.hex_scan_next:
+    inc edx
+    jmp .hex_scan
+.is_hex:
+    pop rcx
+    mov eax, 0x48455821       ; TOKEN_HEX class ("HEX!" as u32)
+    jmp .token_ready
+
+.not_hex:
+    ; Check if word is all digits (len > 1) → abstract to class token
+    pop rcx
+    cmp ecx, 2
+    jl .no_abstract
+    xor edx, edx
+.num_scan:
+    cmp edx, ecx
+    jge .is_num
+    movzx eax, byte [rbx + rdx]
+    cmp al, '0'
+    jl .no_abstract
+    cmp al, '9'
+    jg .no_abstract
+    inc edx
+    jmp .num_scan
+.is_num:
+    mov eax, 0x4e554d21       ; TOKEN_NUM class ("NUM!" as u32)
+    jmp .token_ready
+
+.no_abstract:
+    ; Normal tokenization — hash the word
     mov rdi, rbx              ; word_buf
     mov esi, ecx              ; word_len
     call tokenize_word        ; → eax = token_id
 
+.token_ready:
     ; Process this token through the dispatch system
     mov edi, eax
     call process_token
@@ -161,6 +232,12 @@ process_input:
     jmp .next_word
 
 .done:
+    ; Holographic decay (interference traces)
+    call holo_decay_all
+
+    ; Decay dynamics once per line (not per token)
+    call decay_all_regions
+
     ; Fire post-step hook
     mov edi, HOOK_POST_STEP
     xor esi, esi
@@ -262,6 +339,12 @@ process_token:
     test rcx, rcx
     jz .after_counter
     inc dword [rcx + RHDR_HITS]
+
+    ; STDP connection learning — strengthen temporal links
+    push rcx
+    mov rdi, rcx              ; firing region ptr
+    call learn_connections
+    pop rcx
 
     ; Schema coverage: did a generalized pattern match this context?
     ; (flag set during dispatch_predict scan)
@@ -487,7 +570,8 @@ process_token:
 ;; ============================================================
 ;; dispatch_predict(ctx_hash) → eax (predicted token, 0=none)
 ;; rdi=context hash (u64, we use lower 32 bits for comparison)
-;; Walks the dispatch tree (region table) looking for matching context
+;; Graph-based dispatch: entry table → traverse links → fallback
+;; Spreads activation, decays dynamics, records fires.
 ;; ============================================================
 global dispatch_predict
 dispatch_predict:
@@ -496,160 +580,391 @@ dispatch_predict:
     push r13
     push r14
     push r15
-    sub rsp, 16                ; [rsp+0]=best_token, [rsp+4]=best_hits, [rsp+8]=best_region_ptr
+    sub rsp, 48               ; locals:
+                              ; [rsp+0]  = best_token (u32)
+                              ; [rsp+8]  = best_weight (f64)
+                              ; [rsp+16] = best_region_ptr (u64)
+                              ; [rsp+24] = depth (u32)
+                              ; [rsp+28] = visited (u32)
+                              ; [rsp+32] = entry_slot (u32)
+                              ; [rsp+36] = ctx_hash_copy (u32)
 
     mov r12d, edi             ; context hash (lower 32 bits)
+    mov [rsp + 36], edi       ; save copy
     mov rbx, SURFACE_BASE
 
-    ; Read dispatch mode
-    lea rax, [rbx + STATE_OFFSET + ST_DISPATCH_MODE]
-    mov r14d, [rax]           ; dispatch mode
-
-    ; Walk all DISPATCH regions looking for a match
-    lea r13, [rbx + REGION_TABLE_OFFSET]
-    lea rax, [rbx + STATE_OFFSET + ST_REGION_COUNT]
-    mov ecx, [rax]            ; region count
-
-    ; Initialize best-match tracking (for DMODE_BEST/EXPLORE)
-    mov dword [rsp + 0], 0    ; best_token
-    mov dword [rsp + 4], 0    ; best_hits (or inverse for EXPLORE)
-    mov qword [rsp + 8], 0    ; best_region_ptr
-
-    ; Zero trace counters and schema flag for this dispatch cycle
+    ; Zero trace counters
     mov dword [rbx + STATE_OFFSET + ST_TRACE_CANDIDATES], 0
     mov dword [rbx + STATE_OFFSET + ST_TRACE_MATCHED], 0
     mov dword [rbx + STATE_OFFSET + ST_EXPECT_IS_SCHEMA], 0
 
-    ; Start from index 1 (index 0 is the empty bootstrap dispatch)
-    mov edx, 1
+    ; Initialize best-match tracking
+    mov dword [rsp + 0], 0    ; best_token
+    mov rax, 0xBFF0000000000000  ; -1.0 f64 (any valid weight beats this)
+    mov [rsp + 8], rax        ; best_weight = -1.0
+    mov qword [rsp + 16], 0   ; best_region_ptr
+    mov dword [rsp + 24], 0   ; depth
+    mov dword [rsp + 28], 0   ; visited
 
-.search:
+    ; --- TRY HOLOGRAPHIC PREDICTION FIRST ---
+    mov edi, r12d             ; ctx_hash
+    call holo_predict
+    ; eax = best_token, xmm0 = confidence (f64)
+    ; Check if confidence > threshold (f64 comparison)
+    ucomisd xmm0, [rel holo_thresh]
+    jbe .holo_miss
+
+    ; Holographic hit — record and return
+    mov [rsp + 0], eax        ; best_token
+    ; Update holo prediction stats (f64 accumulator)
+    movsd xmm1, [rbx + STATE_OFFSET + ST_HOLO_PREDICT_SUM]
+    addsd xmm1, xmm0
+    movsd [rbx + STATE_OFFSET + ST_HOLO_PREDICT_SUM], xmm1
+    inc dword [rbx + STATE_OFFSET + ST_HOLO_PREDICT_N]
+    ; Store as expectation (convert f64 confidence to f32 for compat)
+    mov [rbx + STATE_OFFSET + ST_EXPECT_TOKEN], eax
+    cvtsd2ss xmm1, xmm0
+    movss [rbx + STATE_OFFSET + ST_EXPECT_CONF], xmm1
+    mov qword [rbx + STATE_OFFSET + ST_EXPECT_REGION], 0
+    mov qword [rbx + STATE_OFFSET + ST_PREDICT_REGION], 0
+    jmp .predict_return
+
+.holo_miss:
+
+    ; --- Entry point selection ---
+    ; entry_slot = (ctx_hash >> 4) & 0xF
+    mov eax, r12d
+    shr eax, 4
+    and eax, 0xF
+    mov [rsp + 32], eax       ; save slot
+    mov r14d, eax             ; r14d = slot
+
+    ; Lookup entry table
+    lea rax, [rbx + STATE_OFFSET + ST_ENTRY_TABLE]
+    mov r13, [rax + r14 * 8]  ; r13 = entry_ptr (region header ptr)
+
+    ; If entry_ptr is 0, skip to linear fallback
+    test r13, r13
+    jz .graph_fallback
+
+    ; --- Graph Traversal Loop ---
+.graph_traverse:
+    ; Check depth limit
+    cmp dword [rsp + 24], MAX_TRAVERSE_DEPTH
+    jge .graph_done
+
+    ; Validate current region pointer (basic sanity)
+    ; Must be within dispatch area
+    mov rax, SURFACE_BASE + DISPATCH_OFFSET
+    cmp r13, rax
+    jb .graph_done
+    lea rax, [rax + DISPATCH_MAX_SIZE]
+    cmp r13, rax
+    jae .graph_done
+
+    ; Check flags — skip condemned
+    movzx eax, word [r13 + RHDR_FLAGS]
+    test eax, RFLAG_ACTIVE
+    jz .graph_follow_next
+    test eax, RFLAG_CONDEMNED
+    jnz .graph_follow_next
+
+    ; Trace: candidate considered
+    inc dword [rbx + STATE_OFFSET + ST_TRACE_CANDIDATES]
+    inc dword [rsp + 28]      ; visited++
+
+    ; Check context match (same bytecode inspection as before)
+    cmp byte [r13 + RHDR_SIZE], 0x3D
+    jne .graph_follow_next
+
+    mov eax, [r13 + RHDR_SIZE + 1]   ; stored context (imm32)
+
+    ; Schema handling
+    test eax, 0x0F
+    jnz .graph_exact_cmp
+    ; Schema pattern — mask incoming context
+    mov edi, r12d
+    and edi, 0xFFFFFFF0
+    cmp eax, edi
+    jne .graph_no_match
+    mov dword [rbx + STATE_OFFSET + ST_EXPECT_IS_SCHEMA], 1
+    jmp .graph_ctx_matched
+.graph_exact_cmp:
+    cmp eax, r12d
+    jne .graph_no_match
+.graph_ctx_matched:
+
+    ; --- MATCH: compute effective_weight ---
+    inc dword [rbx + STATE_OFFSET + ST_TRACE_MATCHED]
+
+    ; effective_weight = hits/(hits+misses) + activation + prime_level
+    mov eax, [r13 + RHDR_HITS]
+    mov edx, [r13 + RHDR_MISSES]
+    add edx, eax
+    test edx, edx
+    jz .graph_ew_zero
+    cvtsi2sd xmm0, eax
+    cvtsi2sd xmm1, edx
+    divsd xmm0, xmm1          ; accuracy ratio (f64)
+    jmp .graph_ew_add
+.graph_ew_zero:
+    xorpd xmm0, xmm0
+.graph_ew_add:
+    addsd xmm0, [r13 + RHDR_ACTIVATION]
+    addsd xmm0, [r13 + RHDR_PRIME]
+    ; xmm0 = effective_weight
+
+    ; Compare with best
+    ucomisd xmm0, [rsp + 8]
+    jbe .graph_not_best
+
+    ; New best match
+    mov eax, [r13 + RHDR_SIZE + 8]   ; predicted token (B8 imm32)
+    mov [rsp + 0], eax        ; best_token
+    movsd [rsp + 8], xmm0    ; best_weight
+    mov [rsp + 16], r13       ; best_region_ptr
+
+.graph_not_best:
+    ; --- Spread activation to excite targets ---
+    mov rdi, r13
+    call spread_activation
+
+    ; Follow excite_a for depth search (refinement)
+    mov r13, [r13 + RHDR_EXCITE_A]
+    inc dword [rsp + 24]      ; depth++
+    test r13, r13
+    jnz .graph_traverse
+    jmp .graph_done
+
+.graph_no_match:
+    ; No context match — fall through to follow next
+.graph_follow_next:
+    inc dword [rsp + 24]      ; depth++ (any link traversal counts)
+    mov rax, [r13 + RHDR_NEXT_A]
+    test rax, rax
+    jnz .graph_follow_a
+    ; Try next_b
+    mov rax, [r13 + RHDR_NEXT_B]
+    test rax, rax
+    jnz .graph_follow_b
+    ; Both dead — done with graph traversal
+    jmp .graph_done
+.graph_follow_a:
+    mov r13, rax
+    jmp .graph_traverse
+.graph_follow_b:
+    mov r13, rax
+    jmp .graph_traverse
+
+.graph_done:
+    ; Check if graph traversal found anything
+    cmp qword [rsp + 16], 0
+    jne .dispatch_found
+
+.graph_fallback:
+    ; --- Fallback: scan primed regions (activation > threshold) ---
+    lea r13, [rbx + REGION_TABLE_OFFSET]
+    lea rax, [rbx + STATE_OFFSET + ST_REGION_COUNT]
+    mov ecx, [rax]            ; region count
+    mov edx, 1                ; start from index 1
+
+.fallback_scan:
     cmp edx, ecx
-    jge .search_done
+    jge .fallback_done
     push rcx
     push rdx
 
-    ; Get region table entry
     imul rdi, rdx, RTE_SIZE
     add rdi, r13
     movzx eax, word [rdi + RTE_TYPE]
     cmp eax, RTYPE_DISPATCH
-    jne .skip_region
-
-    ; Check flags — skip condemned
+    jne .fallback_skip
     movzx eax, word [rdi + RTE_FLAGS]
     test eax, RFLAG_CONDEMNED
-    jnz .skip_region
+    jnz .fallback_skip
 
-    ; Get the region header address
     mov rsi, [rdi + RTE_ADDR]
 
-    ; Trace: candidate considered
+    ; Check if primed (activation > threshold) or no graph match yet
+    movsd xmm0, [rsi + RHDR_PRIME]
+    addsd xmm0, [rsi + RHDR_ACTIVATION]
+    movsd xmm1, [rel activ_thresh]
+    ucomisd xmm0, xmm1
+    jb .fallback_skip          ; not primed enough
+
+    ; Trace: candidate
     inc dword [rbx + STATE_OFFSET + ST_TRACE_CANDIDATES]
 
-    ; Check if this region's stored context matches ours
-    cmp byte [rsi + RHDR_SIZE], 0x3D   ; is it cmp eax, imm32?
-    jne .skip_region
-
-    mov eax, [rsi + RHDR_SIZE + 1]     ; the imm32 (stored context)
-    ; Schema handling: if stored context has low 4 bits = 0, do masked compare
+    ; Check context match
+    cmp byte [rsi + RHDR_SIZE], 0x3D
+    jne .fallback_skip
+    mov eax, [rsi + RHDR_SIZE + 1]
     test eax, 0x0F
-    jnz .exact_cmp
-    ; Schema pattern — mask incoming context too
+    jnz .fallback_exact
     mov edi, r12d
     and edi, 0xFFFFFFF0
     cmp eax, edi
-    jne .skip_region
-    ; Schema matched this context
+    jne .fallback_skip
     mov dword [rbx + STATE_OFFSET + ST_EXPECT_IS_SCHEMA], 1
-    jmp .ctx_matched
-.exact_cmp:
-    cmp eax, r12d                       ; exact match
-    jne .skip_region
-.ctx_matched:
-
-    ; Trace: matched
+    jmp .fallback_matched
+.fallback_exact:
+    cmp eax, r12d
+    jne .fallback_skip
+.fallback_matched:
     inc dword [rbx + STATE_OFFSET + ST_TRACE_MATCHED]
 
-    ; MATCH found. Behavior depends on dispatch mode.
-    ; Read the predicted token (B8 opcode at +7, imm32 at +8)
-    mov r15d, [rsi + RHDR_SIZE + 8] ; the predicted token
-
-    ; DMODE_FAST: first match wins (return immediately)
-    cmp r14d, DMODE_FAST
-    je .fast_match
-
-    ; DMODE_BEST: pick highest-accuracy match
-    cmp r14d, DMODE_BEST
-    je .best_match
-
-    ; DMODE_EXPLORE: prefer low-hit (novel) regions
-    cmp r14d, DMODE_EXPLORE
-    je .explore_match
-
-    ; DMODE_DELIBERATE or unknown: treat as BEST
-    jmp .best_match
-
-.fast_match:
-    ; Return immediately with this match
-    mov eax, r15d
-    lea rcx, [rbx + STATE_OFFSET + ST_PREDICT_REGION]
-    mov [rcx], rsi
-    pop rdx
-    pop rcx
-    jmp .fill_expect
-
-.best_match:
-    ; Compare this region's hits with current best
+    ; Compute effective_weight
     mov eax, [rsi + RHDR_HITS]
-    cmp eax, [rsp + 16 + 4]   ; best_hits (adjusted for two pushes)
-    jle .skip_region
+    mov edx, [rsi + RHDR_MISSES]
+    add edx, eax
+    test edx, edx
+    jz .fb_ew_zero
+    cvtsi2sd xmm0, eax
+    cvtsi2sd xmm1, edx
+    divsd xmm0, xmm1
+    jmp .fb_ew_add
+.fb_ew_zero:
+    xorpd xmm0, xmm0
+.fb_ew_add:
+    addsd xmm0, [rsi + RHDR_ACTIVATION]
+    addsd xmm0, [rsi + RHDR_PRIME]
+
+    ; Compare with best
+    ucomisd xmm0, [rsp + 16 + 8]   ; adjust for 2 pushes
+    jbe .fallback_skip
     ; New best
-    mov [rsp + 16 + 0], r15d   ; best_token
-    mov [rsp + 16 + 4], eax    ; best_hits
-    mov [rsp + 16 + 8], rsi    ; best_region_ptr
-    jmp .skip_region
+    mov eax, [rsi + RHDR_SIZE + 8]
+    mov [rsp + 16 + 0], eax
+    movsd [rsp + 16 + 8], xmm0
+    mov [rsp + 16 + 16], rsi
 
-.explore_match:
-    ; Prefer regions with FEWER hits (more novel)
-    mov eax, [rsi + RHDR_HITS]
-    mov ecx, [rsp + 16 + 4]    ; current "best" (lowest hits so far)
-    test ecx, ecx
-    jz .explore_first           ; first match always wins
-    cmp eax, ecx
-    jge .skip_region            ; this one has more hits, skip
-.explore_first:
-    mov [rsp + 16 + 0], r15d
-    inc eax                     ; store hits+1 so 0-hit regions still register
-    mov [rsp + 16 + 4], eax
-    mov [rsp + 16 + 8], rsi
-    jmp .skip_region
+    ; Repair routing: if we came from a dead-end graph, wire it
+    ; (The last graph node should get next_a → this region)
 
-.skip_region:
+.fallback_skip:
     pop rdx
     pop rcx
     inc edx
-    jmp .search
+    jmp .fallback_scan
 
-.search_done:
-    ; Check if we found anything (for non-FAST modes)
-    cmp qword [rsp + 8], 0
-    je .no_match
+.fallback_done:
+    ; Check if fallback found anything
+    cmp qword [rsp + 16], 0
+    jne .dispatch_found
 
-    ; Use the best match
-    mov eax, [rsp + 0]        ; best_token
-    mov rsi, [rsp + 8]        ; best_region_ptr
-    lea rcx, [rbx + STATE_OFFSET + ST_PREDICT_REGION]
-    mov [rcx], rsi
-    jmp .fill_expect
+    ; --- Last resort: full linear scan (no priming filter) ---
+    lea r13, [rbx + REGION_TABLE_OFFSET]
+    lea rax, [rbx + STATE_OFFSET + ST_REGION_COUNT]
+    mov ecx, [rax]
+    mov edx, 1
+
+.linear_scan:
+    cmp edx, ecx
+    jge .linear_done
+    push rcx
+    push rdx
+
+    imul rdi, rdx, RTE_SIZE
+    add rdi, r13
+    movzx eax, word [rdi + RTE_TYPE]
+    cmp eax, RTYPE_DISPATCH
+    jne .linear_skip
+    movzx eax, word [rdi + RTE_FLAGS]
+    test eax, RFLAG_CONDEMNED
+    jnz .linear_skip
+
+    mov rsi, [rdi + RTE_ADDR]
+    inc dword [rbx + STATE_OFFSET + ST_TRACE_CANDIDATES]
+
+    cmp byte [rsi + RHDR_SIZE], 0x3D
+    jne .linear_skip
+    mov eax, [rsi + RHDR_SIZE + 1]
+    test eax, 0x0F
+    jnz .linear_exact
+    mov edi, r12d
+    and edi, 0xFFFFFFF0
+    cmp eax, edi
+    jne .linear_skip
+    mov dword [rbx + STATE_OFFSET + ST_EXPECT_IS_SCHEMA], 1
+    jmp .linear_matched
+.linear_exact:
+    cmp eax, r12d
+    jne .linear_skip
+.linear_matched:
+    inc dword [rbx + STATE_OFFSET + ST_TRACE_MATCHED]
+
+    ; Compute effective_weight
+    mov eax, [rsi + RHDR_HITS]
+    mov edx, [rsi + RHDR_MISSES]
+    add edx, eax
+    test edx, edx
+    jz .lin_ew_zero
+    cvtsi2sd xmm0, eax
+    cvtsi2sd xmm1, edx
+    divsd xmm0, xmm1
+    jmp .lin_ew_add
+.lin_ew_zero:
+    xorpd xmm0, xmm0
+.lin_ew_add:
+    addsd xmm0, [rsi + RHDR_ACTIVATION]
+    addsd xmm0, [rsi + RHDR_PRIME]
+
+    ucomisd xmm0, [rsp + 16 + 8]
+    jbe .linear_skip
+    mov eax, [rsi + RHDR_SIZE + 8]
+    mov [rsp + 16 + 0], eax
+    movsd [rsp + 16 + 8], xmm0
+    mov [rsp + 16 + 16], rsi
+
+.linear_skip:
+    pop rdx
+    pop rcx
+    inc edx
+    jmp .linear_scan
+
+.linear_done:
+    ; Check if linear scan found anything
+    cmp qword [rsp + 16], 0
+    jne .dispatch_found
 
 .no_match:
     xor eax, eax             ; no prediction
     lea rcx, [rbx + STATE_OFFSET + ST_PREDICT_REGION]
     mov qword [rcx], 0
-    ; Clear expectation bundle
     mov qword [rbx + STATE_OFFSET + ST_EXPECT_REGION], 0
-    jmp .found
+
+    jmp .predict_return
+
+.dispatch_found:
+    ; --- We have a match ---
+    mov eax, [rsp + 0]        ; best_token
+    mov rsi, [rsp + 16]       ; best_region_ptr
+
+    ; Store as predicting region
+    lea rcx, [rbx + STATE_OFFSET + ST_PREDICT_REGION]
+    mov [rcx], rsi
+
+    ; --- Record firing in fire ring ---
+    push rax
+    push rsi
+    mov rdi, rsi
+    call record_fire
+    pop rsi
+    pop rax
+
+    ; --- Update entry table for this context slot ---
+    mov ecx, [rsp + 32]       ; entry_slot
+    lea rdx, [rbx + STATE_OFFSET + ST_ENTRY_TABLE]
+    mov [rdx + rcx * 8], rsi  ; entry_table[slot] = winning region
+
+    ; --- Store graph trace metrics ---
+    mov ecx, [rsp + 24]
+    mov [rbx + STATE_OFFSET + ST_GRAPH_DEPTH], ecx
+    mov ecx, [rsp + 28]
+    mov [rbx + STATE_OFFSET + ST_GRAPH_VISITED], ecx
+
+    ; --- Fill expectation bundle ---
+    jmp .fill_expect
 
 .fill_expect:
     ; Fill self-expectation bundle
@@ -672,31 +987,209 @@ dispatch_predict:
     movss [rbx + STATE_OFFSET + ST_EXPECT_CONF], xmm0
     pop rax
     mov [rbx + STATE_OFFSET + ST_EXPECT_TOKEN], eax
-    ; Is schema? Lower 4 bits of stored context = 0
-    mov edx, [rsi + RHDR_SIZE + 1]
-    test edx, 0x0F
-    jnz .not_schema_e
-    mov dword [rbx + STATE_OFFSET + ST_EXPECT_IS_SCHEMA], 1
-    jmp .found
-.not_schema_e:
-    ; Check if a schema pattern covers this exact context
-    ; (in FAST mode, scan exits before reaching schemas)
-    push rax                  ; save predicted token (our return value)
-    mov edi, edx              ; edx = stored context from test above
-    and edi, 0xFFFFFFF0       ; mask to schema form
-    mov esi, eax              ; predicted token
-    call find_existing_pattern
-    test rax, rax
-    pop rax                   ; restore predicted token
-    jz .found                 ; no schema exists for this context
-    mov dword [rbx + STATE_OFFSET + ST_EXPECT_IS_SCHEMA], 1
 
-.found:
-    add rsp, 16
+.predict_return:
+    add rsp, 48
     pop r15
     pop r14
     pop r13
     pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; spread_activation(region_ptr)
+;; rdi = firing region header ptr
+;; Updates excite/inhibit targets' prime and activation levels.
+;; ============================================================
+global spread_activation
+spread_activation:
+    push rbx
+    push r12
+    mov r12, rdi              ; firing region
+
+    ; Load source activation
+    movsd xmm0, [r12 + RHDR_ACTIVATION]   ; source.activation
+
+    ; --- Excite target A ---
+    mov rax, [r12 + RHDR_EXCITE_A]
+    test rax, rax
+    jz .spread_excite_b
+    ; target_a.prime += source.activation * w_excite_a
+    movsd xmm1, [r12 + RHDR_W_EXCITE_A]
+    movsd xmm2, xmm0
+    mulsd xmm2, xmm1          ; source.activation * w_excite_a
+    addsd xmm2, [rax + RHDR_PRIME]
+    movsd [rax + RHDR_PRIME], xmm2
+    ; target_a.activation += source.prime * w_excite_a * 0.5
+    movsd xmm2, [r12 + RHDR_PRIME]
+    mulsd xmm2, xmm1
+    mulsd xmm2, [rel half_point_o]
+    addsd xmm2, [rax + RHDR_ACTIVATION]
+    ; Clamp to [0.0, 1.0]
+    xorpd xmm3, xmm3
+    maxsd xmm2, xmm3
+    movsd xmm3, [rel one_point_o]
+    minsd xmm2, xmm3
+    movsd [rax + RHDR_ACTIVATION], xmm2
+
+.spread_excite_b:
+    ; --- Excite target B ---
+    mov rax, [r12 + RHDR_EXCITE_B]
+    test rax, rax
+    jz .spread_inhibit_a
+    movsd xmm1, [r12 + RHDR_W_EXCITE_B]
+    movsd xmm2, xmm0
+    mulsd xmm2, xmm1
+    addsd xmm2, [rax + RHDR_PRIME]
+    movsd [rax + RHDR_PRIME], xmm2
+    ; target_b.activation += source.prime * w_excite_b * 0.5
+    movsd xmm2, [r12 + RHDR_PRIME]
+    mulsd xmm2, xmm1
+    mulsd xmm2, [rel half_point_o]
+    addsd xmm2, [rax + RHDR_ACTIVATION]
+    xorpd xmm3, xmm3
+    maxsd xmm2, xmm3
+    movsd xmm3, [rel one_point_o]
+    minsd xmm2, xmm3
+    movsd [rax + RHDR_ACTIVATION], xmm2
+
+.spread_inhibit_a:
+    ; --- Inhibit target A ---
+    mov rax, [r12 + RHDR_INHIBIT_A]
+    test rax, rax
+    jz .spread_inhibit_b
+    ; target.activation -= source.activation * w_inhibit_a
+    movsd xmm1, [r12 + RHDR_W_INHIBIT_A]
+    movsd xmm2, xmm0
+    mulsd xmm2, xmm1
+    movsd xmm3, [rax + RHDR_ACTIVATION]
+    subsd xmm3, xmm2
+    ; Clamp to >= 0
+    xorpd xmm4, xmm4
+    maxsd xmm3, xmm4
+    movsd [rax + RHDR_ACTIVATION], xmm3
+
+.spread_inhibit_b:
+    ; --- Inhibit target B ---
+    mov rax, [r12 + RHDR_INHIBIT_B]
+    test rax, rax
+    jz .spread_done
+    movsd xmm1, [r12 + RHDR_W_INHIBIT_B]
+    movsd xmm2, xmm0
+    mulsd xmm2, xmm1
+    movsd xmm3, [rax + RHDR_ACTIVATION]
+    subsd xmm3, xmm2
+    xorpd xmm4, xmm4
+    maxsd xmm3, xmm4
+    movsd [rax + RHDR_ACTIVATION], xmm3
+
+.spread_done:
+    ; Set firing region's activation to 1.0 (it just fired)
+    movsd xmm0, [rel one_point_o]
+    movsd [r12 + RHDR_ACTIVATION], xmm0
+
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; decay_all_regions
+;; Walk all regions: prime *= PRIME_DECAY, activation *= ACTIVATION_DECAY
+;; ============================================================
+global decay_all_regions
+decay_all_regions:
+    push rbx
+    push r12
+    push r13
+
+    mov rbx, SURFACE_BASE
+    lea r12, [rbx + REGION_TABLE_OFFSET]
+    lea rax, [rbx + STATE_OFFSET + ST_REGION_COUNT]
+    mov r13d, [rax]
+
+    ; Preload decay constants
+    movsd xmm4, [rel prime_decay]     ; 0.9
+    movsd xmm5, [rel activ_decay]     ; 0.85
+
+    xor ecx, ecx
+.decay_loop:
+    cmp ecx, r13d
+    jge .decay_done
+    push rcx
+
+    imul rdi, rcx, RTE_SIZE
+    add rdi, r12
+    movzx eax, word [rdi + RTE_FLAGS]
+    test eax, RFLAG_CONDEMNED
+    jnz .decay_next
+
+    mov rsi, [rdi + RTE_ADDR]
+
+    ; prime *= PRIME_DECAY
+    movsd xmm0, [rsi + RHDR_PRIME]
+    mulsd xmm0, xmm4
+    movsd [rsi + RHDR_PRIME], xmm0
+
+    ; activation *= ACTIVATION_DECAY
+    movsd xmm0, [rsi + RHDR_ACTIVATION]
+    mulsd xmm0, xmm5
+    movsd [rsi + RHDR_ACTIVATION], xmm0
+
+.decay_next:
+    pop rcx
+    inc ecx
+    jmp .decay_loop
+
+.decay_done:
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; record_fire(region_ptr)
+;; rdi = region header ptr that just fired
+;; Writes (ptr, timestamp_f64) to ST_FIRE_RING
+;; ============================================================
+global record_fire
+record_fire:
+    push rbx
+    mov rbx, SURFACE_BASE
+
+    ; Get fire ring position
+    lea rax, [rbx + STATE_OFFSET + ST_FIRE_POS]
+    mov ecx, [rax]
+
+    ; Calculate ring entry address
+    lea rdx, [rbx + STATE_OFFSET + ST_FIRE_RING]
+    imul r8d, ecx, ST_FIRE_RING_ENTRY  ; 16 bytes per entry
+    add rdx, r8
+
+    ; Store region ptr
+    mov [rdx], rdi
+
+    ; Store timestamp as f64 (convert global_step to f64)
+    mov rax, [rbx + STATE_OFFSET + ST_GLOBAL_STEP]
+    cvtsi2sd xmm0, rax
+    movsd [rdx + 8], xmm0
+
+    ; Update fire_recency on the region
+    movsd [rdi + RHDR_FIRE_RECENCY], xmm0
+
+    ; Advance ring position
+    lea rax, [rbx + STATE_OFFSET + ST_FIRE_POS]
+    inc ecx
+    cmp ecx, ST_FIRE_RING_CAP
+    jl .fire_no_wrap
+    xor ecx, ecx
+.fire_no_wrap:
+    mov [rax], ecx
+
+    ; Increment total fire count
+    lea rax, [rbx + STATE_OFFSET + ST_FIRE_COUNT]
+    inc qword [rax]
+
     pop rbx
     ret
 

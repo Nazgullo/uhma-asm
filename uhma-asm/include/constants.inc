@@ -7,7 +7,7 @@
 ;; ============================================================
 
 %define SURFACE_BASE        0x100000000
-%define SURFACE_SIZE        0x20100000        ; ~513MB (practical size)
+%define SURFACE_SIZE        0x31000000        ; ~784MB (f64 VSA + holographic memory + vocab)
 
 %define BOOTSTRAP_OFFSET    0x0
 %define BOOTSTRAP_SIZE      0x10000           ; 64KB
@@ -20,21 +20,41 @@
 %define REGION_TABLE_MAX    256
 
 %define VSA_OFFSET          0x10020000
-%define VSA_SIZE            0x10000000        ; 256MB (65K tokens × 4KB each)
+%define VSA_SIZE            0x20000000        ; 512MB (65K tokens × 8KB each, f64)
 
-%define STATE_OFFSET        0x20020000
+%define STATE_OFFSET        0x30020000
 %define STATE_SIZE          0x10000           ; 64KB
 
 ;; ============================================================
-;; Region Header (16 bytes prefix)
+;; Region Header (128 bytes prefix — 2 cache lines)
+;; Each region is a node in a learned connectivity graph.
 ;; ============================================================
 
+; --- original fields ---
 %define RHDR_HITS           0                 ; u32
 %define RHDR_MISSES         4                 ; u32
 %define RHDR_BIRTH          8                 ; u32
 %define RHDR_CODE_LEN       12                ; u16
 %define RHDR_FLAGS          14                ; u16
-%define RHDR_SIZE           16
+; --- connection addresses (direct 64-bit pointers into surface) ---
+%define RHDR_NEXT_A         16                ; u64 ptr — follow on miss (learned routing)
+%define RHDR_NEXT_B         24                ; u64 ptr — alternate miss route
+%define RHDR_EXCITE_A       32                ; u64 ptr — prime this region on hit
+%define RHDR_EXCITE_B       40                ; u64 ptr — alternate excitation target
+%define RHDR_INHIBIT_A      48                ; u64 ptr — suppress this region on hit
+%define RHDR_INHIBIT_B      56                ; u64 ptr — alternate inhibition target
+; --- connection weights (f64 for smooth Hebbian dynamics) ---
+%define RHDR_W_EXCITE_A     64                ; f64 excitation strength [0.0, 1.0]
+%define RHDR_W_EXCITE_B     72                ; f64 excitation strength
+%define RHDR_W_INHIBIT_A    80                ; f64 inhibition strength [0.0, 1.0]
+%define RHDR_W_INHIBIT_B    88                ; f64 inhibition strength
+; --- continuous dynamics state ---
+%define RHDR_PRIME          96                ; f64 accumulated excitation from neighbors
+%define RHDR_FIRE_RECENCY   104               ; f64 timestamp of last fire
+%define RHDR_ACTIVATION     112               ; f64 current activation level
+%define RHDR_RESONANCE      120               ; f64 running average of co-fire correlation
+
+%define RHDR_SIZE           128
 
 ; Region flags
 %define RFLAG_ACTIVE        0x0001
@@ -71,8 +91,22 @@
 ;; ============================================================
 
 %define VSA_DIM             1024
-%define VSA_VEC_BYTES       (VSA_DIM * 4)     ; 4096 bytes per vector
+%define VSA_VEC_BYTES       (VSA_DIM * 8)     ; 8192 bytes per vector (f64)
 %define VSA_MAX_TOKENS      65536
+
+;; ============================================================
+;; Holographic Associative Memory Layout (f64 precision)
+;; ============================================================
+
+%define HOLO_OFFSET         0x30030000        ; after STATE block
+%define HOLO_TRACES         256               ; independent interference traces
+%define HOLO_DIM            1024              ; elements per trace vector
+%define HOLO_VEC_BYTES      (HOLO_DIM * 8)    ; 8192 bytes per trace (1024 x f64)
+%define HOLO_TOTAL          (HOLO_TRACES * HOLO_VEC_BYTES)  ; 2MB
+
+%define VOCAB_OFFSET        (HOLO_OFFSET + 0x200000)  ; token registry after 2MB traces
+%define VOCAB_ENTRY_SIZE    8                 ; (u32 token_id, u32 count)
+%define VOCAB_MAX_SCAN      256               ; top-N tokens to scan during predict
 
 ;; ============================================================
 ;; State Block Offsets (from state_base)
@@ -199,6 +233,52 @@
 
 ; Recent condemnation count (for presence decay field)
 %define ST_RECENT_CONDEMNS  (ST_PREV_DISPATCH_MODE + 4)     ; u32
+
+;; ============================================================
+;; Graph Dynamics State Block (fire ring, entry table)
+;; ============================================================
+
+; Fire ring buffer: 64 entries × (u64 region_ptr + f64 timestamp) = 16 bytes each
+%define ST_FIRE_RING        (ST_RECENT_CONDEMNS + 4)
+%define ST_FIRE_RING_CAP    64
+%define ST_FIRE_RING_ENTRY  16                ; 8 bytes ptr + 8 bytes f64 timestamp
+%define ST_FIRE_RING_END    (ST_FIRE_RING + ST_FIRE_RING_CAP * ST_FIRE_RING_ENTRY)
+
+; Fire ring write position and total count
+%define ST_FIRE_POS         ST_FIRE_RING_END                ; u64
+%define ST_FIRE_COUNT       (ST_FIRE_POS + 8)               ; u64
+
+; Entry table: 16 context-hashed entry points into the graph
+%define ST_ENTRY_TABLE      (ST_FIRE_COUNT + 8)             ; 16 × u64 = 128 bytes
+%define ST_ENTRY_TABLE_CAP  16
+%define ST_ENTRY_TABLE_END  (ST_ENTRY_TABLE + ST_ENTRY_TABLE_CAP * 8)
+
+; Graph dispatch trace metrics
+%define ST_GRAPH_DEPTH      (ST_ENTRY_TABLE_END)            ; u32 last traversal depth
+%define ST_GRAPH_VISITED    (ST_GRAPH_DEPTH + 4)            ; u32 nodes visited in last dispatch
+
+; Holographic memory state
+%define ST_VOCAB_COUNT      (ST_GRAPH_VISITED + 4)          ; u32 vocabulary entries
+%define ST_VOCAB_TOP_DIRTY  (ST_VOCAB_COUNT + 4)            ; u32 flag: recache top-256
+%define ST_HOLO_PREDICT_SUM (ST_VOCAB_TOP_DIRTY + 4)        ; f64 running sum of confidences
+%define ST_HOLO_PREDICT_N   (ST_HOLO_PREDICT_SUM + 8)       ; u32 count of predictions
+
+;; ============================================================
+;; Graph Dynamics Tuning Constants
+;; ============================================================
+
+%define PRIME_DECAY_HEX         0x3FECCCCCCCCCCCCD  ; 0.9 f64
+%define ACTIVATION_DECAY_HEX    0x3FEB333333333333  ; 0.85 f64
+%define LEARNING_RATE_HEX       0x3FA999999999999A  ; 0.05 f64
+%define TAU_HEX                 0x4010000000000000  ; 4.0 f64
+%define TAU_WINDOW_HEX          0x4020000000000000  ; 8.0 f64
+%define WEIGHT_DECAY_HEX        0x3FEFEFEFEFEFEFEF  ; 0.995 f64
+%define WEIGHT_FLOOR_HEX        0x3F847AE147AE147B  ; 0.01 f64
+%define ACTIVATION_THRESH_HEX   0x3FB999999999999A  ; 0.1 f64
+
+%define MAX_TRAVERSE_DEPTH  16
+%define FIRE_RING_CAP       64
+%define INITIAL_WEIGHT      0x3FB999999999999A      ; 0.1 f64 (initial excite weight)
 
 ;; Goal enums
 %define GOAL_NONE           0

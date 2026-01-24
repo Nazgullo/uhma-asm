@@ -5,10 +5,15 @@
 section .data
     prune_msg:      db "[PRUNE] Condemned region at index ", 0
     promote_msg:    db "[PROMOTE] Region ", 0
-    promote_to:     db " → position ", 0
+    promote_to:     db " activation boost", 0
     specialize_msg: db "[SPECIALIZE] Region duplicated", 10, 0
     generalize_msg: db "[GENERALIZE] Context relaxed", 10, 0
     modify_nl:      db 10, 0
+
+    ; f64 constants for promote boost
+    align 8
+    mod_boost_val:  dq 0.5
+    mod_f64_one:    dq 1.0
 
 section .text
 
@@ -63,6 +68,10 @@ modify_prune:
     add rax, rcx
     or word [rax + RTE_FLAGS], RFLAG_CONDEMNED
 
+    ; Clear all connections POINTING TO this condemned region
+    mov rdi, [rax + RTE_ADDR]  ; condemned region header ptr
+    call clear_connections_to
+
     ; Fire prune hook
     mov edi, HOOK_ON_PRUNE
     mov esi, r12d
@@ -77,89 +86,69 @@ modify_prune:
 
 ;; ============================================================
 ;; modify_promote(region_index, target_position)
-;; edi=current index, esi=target position (lower = earlier in search)
-;; Swaps the region table entries to move high-hit regions forward
+;; edi=current index, esi=target position (unused, kept for API compat)
+;; Graph routing handles priority. Instead of swapping table entries,
+;; boost the promoted region's activation and its excite targets.
 ;; ============================================================
 global modify_promote
 modify_promote:
     push rbx
     push r12
-    push r13
 
-    mov r12d, edi             ; source index
-    mov r13d, esi             ; target position
-
-    ; Don't promote to same or higher position
-    cmp r12d, r13d
-    jle .done
-
+    mov r12d, edi             ; region index
     mov rbx, SURFACE_BASE
 
     ; Print
     push r12
-    push r13
     lea rdi, [rel promote_msg]
     call print_cstr
     movzx rdi, r12w
     call print_u64
     lea rdi, [rel promote_to]
     call print_cstr
-    movzx rdi, r13w
-    call print_u64
     call print_newline
-    pop r13
     pop r12
 
-    ; Swap entries in region table
+    ; Get region header
     lea rax, [rbx + REGION_TABLE_OFFSET]
-
-    ; Source entry address
     imul rcx, r12, RTE_SIZE
-    lea rsi, [rax + rcx]      ; source
+    add rax, rcx
+    mov rsi, [rax + RTE_ADDR]
+    test rsi, rsi
+    jz .promote_done
 
-    ; Target entry address
-    imul rcx, r13, RTE_SIZE
-    lea rdi, [rax + rcx]      ; target
+    ; Boost this region's activation
+    movsd xmm0, [rsi + RHDR_ACTIVATION]
+    addsd xmm0, [rel mod_boost_val]   ; +0.5
+    minsd xmm0, [rel mod_f64_one]     ; clamp to 1.0
+    movsd [rsi + RHDR_ACTIVATION], xmm0
 
-    ; Swap 32 bytes (RTE_SIZE)
-    ; Use stack as temp
-    sub rsp, RTE_SIZE
-    ; Copy target to temp
-    mov rax, [rdi]
-    mov [rsp], rax
-    mov rax, [rdi + 8]
-    mov [rsp + 8], rax
-    mov rax, [rdi + 16]
-    mov [rsp + 16], rax
-    mov rax, [rdi + 24]
-    mov [rsp + 24], rax
-    ; Copy source to target
-    mov rax, [rsi]
-    mov [rdi], rax
-    mov rax, [rsi + 8]
-    mov [rdi + 8], rax
-    mov rax, [rsi + 16]
-    mov [rdi + 16], rax
-    mov rax, [rsi + 24]
-    mov [rdi + 24], rax
-    ; Copy temp to source
-    mov rax, [rsp]
-    mov [rsi], rax
-    mov rax, [rsp + 8]
-    mov [rsi + 8], rax
-    mov rax, [rsp + 16]
-    mov [rsi + 16], rax
-    mov rax, [rsp + 24]
-    mov [rsi + 24], rax
-    add rsp, RTE_SIZE
+    ; Boost excite_a target's prime
+    mov rax, [rsi + RHDR_EXCITE_A]
+    test rax, rax
+    jz .promote_try_b
+    movsd xmm0, [rax + RHDR_PRIME]
+    addsd xmm0, [rel mod_boost_val]
+    minsd xmm0, [rel mod_f64_one]
+    movsd [rax + RHDR_PRIME], xmm0
 
+.promote_try_b:
+    ; Boost excite_b target's prime
+    mov rax, [rsi + RHDR_EXCITE_B]
+    test rax, rax
+    jz .promote_fire_hook
+    movsd xmm0, [rax + RHDR_PRIME]
+    addsd xmm0, [rel mod_boost_val]
+    minsd xmm0, [rel mod_f64_one]
+    movsd [rax + RHDR_PRIME], xmm0
+
+.promote_fire_hook:
     ; Fire promote hook
     mov edi, HOOK_ON_PROMOTE
     mov esi, r12d
     call fire_hook
 
-.done:
-    pop r13
+.promote_done:
     pop r12
     pop rbx
     ret
@@ -333,6 +322,79 @@ modify_restructure:
     jmp .outer
 
 .sort_done:
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; clear_connections_to(condemned_ptr)
+;; rdi = region header ptr being condemned
+;; Walk all regions, clear any connection pointers that reference
+;; this region (excite_a/b, inhibit_a/b, next_a/b).
+;; ============================================================
+global clear_connections_to
+clear_connections_to:
+    push rbx
+    push r12
+    push r13
+    push r14
+
+    mov r12, rdi              ; condemned region ptr
+    mov rbx, SURFACE_BASE
+    lea r13, [rbx + REGION_TABLE_OFFSET]
+    mov r14d, [rbx + STATE_OFFSET + ST_REGION_COUNT]
+
+    xor ecx, ecx
+.clr_loop:
+    cmp ecx, r14d
+    jge .clr_done
+    push rcx
+
+    imul rdi, rcx, RTE_SIZE
+    add rdi, r13
+    movzx eax, word [rdi + RTE_FLAGS]
+    test eax, RFLAG_CONDEMNED
+    jnz .clr_next
+
+    mov rsi, [rdi + RTE_ADDR]
+
+    ; Check and clear each connection pointer
+    cmp [rsi + RHDR_NEXT_A], r12
+    jne .clr_n1
+    mov qword [rsi + RHDR_NEXT_A], 0
+.clr_n1:
+    cmp [rsi + RHDR_NEXT_B], r12
+    jne .clr_n2
+    mov qword [rsi + RHDR_NEXT_B], 0
+.clr_n2:
+    cmp [rsi + RHDR_EXCITE_A], r12
+    jne .clr_n3
+    mov qword [rsi + RHDR_EXCITE_A], 0
+    mov qword [rsi + RHDR_W_EXCITE_A], 0   ; clear weight too (0 bits = 0.0 f64)
+.clr_n3:
+    cmp [rsi + RHDR_EXCITE_B], r12
+    jne .clr_n4
+    mov qword [rsi + RHDR_EXCITE_B], 0
+    mov qword [rsi + RHDR_W_EXCITE_B], 0
+.clr_n4:
+    cmp [rsi + RHDR_INHIBIT_A], r12
+    jne .clr_n5
+    mov qword [rsi + RHDR_INHIBIT_A], 0
+    mov qword [rsi + RHDR_W_INHIBIT_A], 0
+.clr_n5:
+    cmp [rsi + RHDR_INHIBIT_B], r12
+    jne .clr_next
+    mov qword [rsi + RHDR_INHIBIT_B], 0
+    mov qword [rsi + RHDR_W_INHIBIT_B], 0
+
+.clr_next:
+    pop rcx
+    inc ecx
+    jmp .clr_loop
+
+.clr_done:
+    pop r14
     pop r13
     pop r12
     pop rbx

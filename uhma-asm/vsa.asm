@@ -1,4 +1,4 @@
-; vsa.asm — Pure AVX2 SIMD operations on flat float32[1024] arrays
+; vsa.asm — Pure AVX2 SIMD operations on flat float64[1024] arrays
 %include "syscalls.inc"
 %include "constants.inc"
 
@@ -29,19 +29,18 @@ vsa_init_random:
 
     ; Calculate vector address
     mov rdi, r12
-    shl rdi, 12               ; * 4096
+    shl rdi, 13               ; * 8192 (VSA_VEC_BYTES for f64)
     add rdi, rbx              ; vsa_base + token_id * VSA_VEC_BYTES
 
     ; Fill with random bytes
     mov r13, rdi              ; save vec ptr
-    mov rsi, VSA_VEC_BYTES    ; 4096 bytes
+    mov rsi, VSA_VEC_BYTES    ; 8192 bytes
     xor edx, edx             ; flags = 0
     mov rax, SYS_GETRANDOM
     syscall
 
-    ; Convert random u32s to floats in [-1, 1] range
-    ; For each element: float = (int / 2^31) - 1.0... simplified:
-    ; Just treat as random bits, then normalize the whole vector
+    ; Random bits are treated as f64 values, then normalized
+    ; to unit length — this gives a uniform random direction
     mov rdi, r13
     call vsa_normalize
 
@@ -55,29 +54,28 @@ vsa_init_random:
     ret
 
 ;; ============================================================
-;; vsa_dot(a_ptr, b_ptr) → xmm0
+;; vsa_dot(a_ptr, b_ptr) → xmm0 (f64)
 ;; rdi=a, rsi=b
-;; Returns dot product of two 1024-element f32 vectors
+;; Returns dot product of two 1024-element f64 vectors
 ;; ============================================================
 global vsa_dot
 vsa_dot:
-    vxorps ymm0, ymm0, ymm0  ; accumulator
-    mov ecx, VSA_DIM / 8     ; 128 iterations of 8 floats
+    vxorpd ymm0, ymm0, ymm0  ; accumulator (4 doubles)
+    mov ecx, VSA_DIM / 4     ; 256 iterations of 4 doubles
 
 .dot_loop:
-    vmovups ymm1, [rdi]
-    vmovups ymm2, [rsi]
-    vfmadd231ps ymm0, ymm1, ymm2  ; acc += a * b
+    vmovupd ymm1, [rdi]
+    vmovupd ymm2, [rsi]
+    vfmadd231pd ymm0, ymm1, ymm2  ; acc += a * b
     add rdi, 32
     add rsi, 32
     dec ecx
     jnz .dot_loop
 
-    ; Horizontal sum of ymm0 (8 floats → 1)
+    ; Horizontal sum: 4 doubles → 1 double
     vextractf128 xmm1, ymm0, 1
-    vaddps xmm0, xmm0, xmm1  ; 4 floats
-    vhaddps xmm0, xmm0, xmm0 ; 2 floats
-    vhaddps xmm0, xmm0, xmm0 ; 1 float in xmm0[0]
+    vaddpd xmm0, xmm0, xmm1  ; 2 doubles
+    vhaddpd xmm0, xmm0, xmm0 ; 1 double in xmm0[0]
 
     vzeroupper
     ret
@@ -90,8 +88,8 @@ vsa_dot:
 global vsa_magnitude
 vsa_magnitude:
     mov rsi, rdi              ; b = a
-    call vsa_dot              ; dot(a, a) in xmm0
-    sqrtss xmm0, xmm0        ; sqrt
+    call vsa_dot              ; dot(a, a) in xmm0 (f64)
+    sqrtsd xmm0, xmm0        ; sqrt
     ret
 
 ;; ============================================================
@@ -104,47 +102,47 @@ vsa_cosim:
     push rbx
     push r12
     push r13
-    sub rsp, 16               ; space for intermediate results
+    sub rsp, 32               ; space for intermediate results (f64)
 
     mov r12, rdi              ; save a
     mov r13, rsi              ; save b
 
     ; dot(a, b)
     call vsa_dot
-    movss [rsp], xmm0        ; save dot product
+    movsd [rsp], xmm0        ; save dot product (f64)
 
     ; |a|
     mov rdi, r12
     mov rsi, r12
     call vsa_dot
-    sqrtss xmm0, xmm0
-    movss [rsp + 4], xmm0    ; save |a|
+    sqrtsd xmm0, xmm0
+    movsd [rsp + 8], xmm0    ; save |a| (f64)
 
     ; |b|
     mov rdi, r13
     mov rsi, r13
     call vsa_dot
-    sqrtss xmm0, xmm0        ; |b| in xmm0
+    sqrtsd xmm0, xmm0        ; |b| in xmm0 (f64)
 
     ; result = dot / (|a| * |b|)
-    movss xmm1, [rsp + 4]    ; |a|
-    mulss xmm0, xmm1         ; |a| * |b|
+    movsd xmm1, [rsp + 8]    ; |a|
+    mulsd xmm0, xmm1         ; |a| * |b|
 
     ; Check for zero magnitude
-    xorps xmm2, xmm2
-    comiss xmm0, xmm2
+    xorpd xmm2, xmm2
+    ucomisd xmm0, xmm2
     je .zero_mag
 
-    movss xmm1, [rsp]        ; dot product
-    divss xmm1, xmm0
-    movaps xmm0, xmm1
+    movsd xmm1, [rsp]        ; dot product
+    divsd xmm1, xmm0
+    movapd xmm0, xmm1
     jmp .cosim_done
 
 .zero_mag:
-    xorps xmm0, xmm0         ; return 0 if zero magnitude
+    xorpd xmm0, xmm0         ; return 0 if zero magnitude
 
 .cosim_done:
-    add rsp, 16
+    add rsp, 32
     pop r13
     pop r12
     pop rbx
@@ -159,13 +157,13 @@ vsa_cosim:
 ;; ============================================================
 global vsa_bind
 vsa_bind:
-    mov ecx, VSA_DIM / 8     ; 128 iterations
+    mov ecx, VSA_DIM / 4     ; 256 iterations of 4 doubles
 
 .bind_loop:
-    vmovups ymm0, [rdi]
-    vmovups ymm1, [rsi]
-    vmulps ymm2, ymm0, ymm1  ; element-wise multiply
-    vmovups [rdx], ymm2
+    vmovupd ymm0, [rdi]
+    vmovupd ymm1, [rsi]
+    vmulpd ymm2, ymm0, ymm1  ; element-wise multiply
+    vmovupd [rdx], ymm2
     add rdi, 32
     add rsi, 32
     add rdx, 32
@@ -182,13 +180,13 @@ vsa_bind:
 ;; ============================================================
 global vsa_superpose
 vsa_superpose:
-    mov ecx, VSA_DIM / 8
+    mov ecx, VSA_DIM / 4     ; 256 iterations of 4 doubles
 
 .super_loop:
-    vmovups ymm0, [rdi]
-    vmovups ymm1, [rsi]
-    vaddps ymm0, ymm0, ymm1
-    vmovups [rdi], ymm0
+    vmovupd ymm0, [rdi]
+    vmovupd ymm1, [rsi]
+    vaddpd ymm0, ymm0, ymm1
+    vmovupd [rdi], ymm0
     add rdi, 32
     add rsi, 32
     dec ecx
@@ -208,27 +206,27 @@ vsa_normalize:
 
     ; First compute magnitude
     mov rsi, rdi
-    call vsa_dot              ; dot(v,v) in xmm0
-    sqrtss xmm0, xmm0        ; magnitude
+    call vsa_dot              ; dot(v,v) in xmm0 (f64)
+    sqrtsd xmm0, xmm0        ; magnitude
 
     ; Check for zero
-    xorps xmm1, xmm1
-    comiss xmm0, xmm1
+    xorpd xmm1, xmm1
+    ucomisd xmm0, xmm1
     je .norm_zero
 
     ; Compute 1/magnitude and broadcast
-    mov eax, 0x3F800000       ; 1.0f
-    movd xmm1, eax
-    divss xmm1, xmm0         ; 1/mag
-    vbroadcastss ymm2, xmm1  ; broadcast scalar
+    mov rax, 0x3FF0000000000000  ; 1.0 f64
+    movq xmm1, rax
+    divsd xmm1, xmm0         ; 1/mag
+    vbroadcastsd ymm2, xmm1  ; broadcast scalar
 
     ; Scale all elements
     mov rdi, rbx
-    mov ecx, VSA_DIM / 8
+    mov ecx, VSA_DIM / 4     ; 256 iterations of 4 doubles
 .norm_loop:
-    vmovups ymm0, [rdi]
-    vmulps ymm0, ymm0, ymm2
-    vmovups [rdi], ymm0
+    vmovupd ymm0, [rdi]
+    vmulpd ymm0, ymm0, ymm2
+    vmovupd [rdi], ymm0
     add rdi, 32
     dec ecx
     jnz .norm_loop
@@ -278,9 +276,9 @@ vsa_permute:
     jl .no_wrap
     sub eax, VSA_DIM
 .no_wrap:
-    ; dst[i] = src[src_idx]
-    mov edx, [rbx + rax * 4]
-    mov [r12 + rcx * 4], edx
+    ; dst[i] = src[src_idx] (8 bytes per f64 element)
+    mov rdx, [rbx + rax * 8]
+    mov [r12 + rcx * 8], rdx
 
     inc ecx
     jmp .perm_loop
@@ -297,10 +295,10 @@ vsa_permute:
 ;; ============================================================
 global vsa_zero
 vsa_zero:
-    vxorps ymm0, ymm0, ymm0
-    mov ecx, VSA_DIM / 8
+    vxorpd ymm0, ymm0, ymm0
+    mov ecx, VSA_DIM / 4     ; 256 iterations of 4 doubles
 .zero_loop:
-    vmovups [rdi], ymm0
+    vmovupd [rdi], ymm0
     add rdi, 32
     dec ecx
     jnz .zero_loop
@@ -313,12 +311,12 @@ vsa_zero:
 ;; ============================================================
 global vsa_scale
 vsa_scale:
-    vbroadcastss ymm1, xmm0
-    mov ecx, VSA_DIM / 8
+    vbroadcastsd ymm1, xmm0  ; broadcast f64 scalar
+    mov ecx, VSA_DIM / 4     ; 256 iterations of 4 doubles
 .scale_loop:
-    vmovups ymm0, [rdi]
-    vmulps ymm0, ymm0, ymm1
-    vmovups [rdi], ymm0
+    vmovupd ymm0, [rdi]
+    vmulpd ymm0, ymm0, ymm1
+    vmovupd [rdi], ymm0
     add rdi, 32
     dec ecx
     jnz .scale_loop
@@ -333,7 +331,7 @@ vsa_scale:
 global vsa_get_token_vec
 vsa_get_token_vec:
     mov eax, edi
-    shl rax, 12               ; * 4096 (VSA_VEC_BYTES)
+    shl rax, 13               ; * 8192 (VSA_VEC_BYTES for f64)
     mov rcx, SURFACE_BASE + VSA_OFFSET
     add rax, rcx
     ret
@@ -344,6 +342,490 @@ vsa_get_token_vec:
 ;; Encodes a sequence as superposition of permuted token vectors
 ;; context = sum(permute(vec[token[i]], i))
 ;; ============================================================
+extern print_cstr
+
+;; ============================================================
+;; Holographic Memory Section — ALL f64 (double precision)
+;; Vectors are f64[1024] = 8192 bytes each.
+;; Traces, binding, superposition, decay — all f64.
+;; ============================================================
+
+section .data
+    align 8
+    holo_learn_rate:  dq 0.1
+    holo_decay_val:   dq 0.9995
+    holo_threshold:   dq 0.15
+    holo_one:         dq 1.0
+
+section .text
+
+;; ============================================================
+;; holo_dot_f64(a, b) → xmm0 (f64 scalar)
+;; rdi=a (f64[1024]), rsi=b (f64[1024])
+;; AVX2 fused multiply-add dot product in double precision.
+;; ============================================================
+global holo_dot_f64
+holo_dot_f64:
+    vxorpd ymm0, ymm0, ymm0  ; accumulator (4 doubles)
+    mov ecx, HOLO_DIM / 4    ; 256 iterations of 4 doubles
+
+.hdot_loop:
+    vmovupd ymm1, [rdi]
+    vmovupd ymm2, [rsi]
+    vfmadd231pd ymm0, ymm1, ymm2  ; acc += a * b
+    add rdi, 32
+    add rsi, 32
+    dec ecx
+    jnz .hdot_loop
+
+    ; Horizontal sum: 4 doubles → 1 double
+    vextractf128 xmm1, ymm0, 1
+    vaddpd xmm0, xmm0, xmm1  ; 2 doubles
+    vhaddpd xmm0, xmm0, xmm0 ; 1 double in xmm0[0]
+
+    vzeroupper
+    ret
+
+;; ============================================================
+;; holo_bind_f64(a, b, out)
+;; rdi=a, rsi=b, rdx=out — all f64[1024]
+;; Element-wise multiply (binding operation) in f64.
+;; ============================================================
+global holo_bind_f64
+holo_bind_f64:
+    mov ecx, HOLO_DIM / 4    ; 256 iterations
+
+.hbind_loop:
+    vmovupd ymm0, [rdi]
+    vmovupd ymm1, [rsi]
+    vmulpd ymm2, ymm0, ymm1
+    vmovupd [rdx], ymm2
+    add rdi, 32
+    add rsi, 32
+    add rdx, 32
+    dec ecx
+    jnz .hbind_loop
+
+    vzeroupper
+    ret
+
+;; ============================================================
+;; holo_superpose_f64(a, b)
+;; rdi=a (modified: a += b), rsi=b — f64[1024]
+;; Vector addition (bundling) in f64.
+;; ============================================================
+global holo_superpose_f64
+holo_superpose_f64:
+    mov ecx, HOLO_DIM / 4
+
+.hsuper_loop:
+    vmovupd ymm0, [rdi]
+    vmovupd ymm1, [rsi]
+    vaddpd ymm0, ymm0, ymm1
+    vmovupd [rdi], ymm0
+    add rdi, 32
+    add rsi, 32
+    dec ecx
+    jnz .hsuper_loop
+
+    vzeroupper
+    ret
+
+;; ============================================================
+;; holo_scale_f64(vec, scalar)
+;; rdi=vec (f64[1024], modified in place), xmm0=scalar (f64)
+;; ============================================================
+global holo_scale_f64
+holo_scale_f64:
+    vbroadcastsd ymm1, xmm0
+    mov ecx, HOLO_DIM / 4
+
+.hscale_loop:
+    vmovupd ymm0, [rdi]
+    vmulpd ymm0, ymm0, ymm1
+    vmovupd [rdi], ymm0
+    add rdi, 32
+    dec ecx
+    jnz .hscale_loop
+
+    vzeroupper
+    ret
+
+;; ============================================================
+;; holo_normalize_f64(vec)
+;; rdi=vec (f64[1024], modified to unit length)
+;; ============================================================
+global holo_normalize_f64
+holo_normalize_f64:
+    push rbx
+    mov rbx, rdi
+
+    ; dot(v, v)
+    mov rsi, rdi
+    call holo_dot_f64         ; xmm0 = dot product (f64)
+    sqrtsd xmm0, xmm0        ; magnitude
+
+    ; Check for zero
+    xorpd xmm1, xmm1
+    ucomisd xmm0, xmm1
+    je .hnorm_zero
+
+    ; 1.0 / magnitude
+    movsd xmm1, [rel holo_one]
+    divsd xmm1, xmm0
+    movapd xmm0, xmm1        ; scalar = 1/mag
+
+    mov rdi, rbx
+    call holo_scale_f64
+
+.hnorm_zero:
+    vzeroupper
+    pop rbx
+    ret
+
+;; ============================================================
+;; holo_magnitude_f64(vec) → xmm0 (f64)
+;; rdi=vec (f64[1024])
+;; Returns sqrt(dot(v, v)) without modifying the vector.
+;; ============================================================
+global holo_magnitude_f64
+holo_magnitude_f64:
+    mov rsi, rdi
+    call holo_dot_f64
+    sqrtsd xmm0, xmm0
+    ret
+
+;; ============================================================
+;; holo_gen_vec(hash, out_ptr)
+;; edi=hash (u32), rsi=output vector ptr (f64[1024])
+;; Generates a unique 1024-dim f64 vector from a 32-bit hash:
+;;   basis_idx = hash & 0xFF → one of 256 orthogonal basis vectors
+;;   shift = (hash >> 8) & 0x3FF → circular rotation
+;;   Reads f64 basis directly and permutes into output.
+;; ============================================================
+global holo_gen_vec
+holo_gen_vec:
+    push rbx
+    push r12
+    push r13
+    push r14
+
+    mov r12d, edi             ; hash
+    mov r13, rsi              ; output ptr (f64[1024])
+
+    ; basis_idx = hash & 0xFF
+    movzx eax, r12b
+    shl rax, 13               ; * 8192 (VSA_VEC_BYTES for f64 basis)
+    mov rbx, SURFACE_BASE + VSA_OFFSET
+    add rbx, rax              ; rbx = f64 basis vector ptr
+
+    ; shift = (hash >> 8) & 0x3FF
+    mov r14d, r12d
+    shr r14d, 8
+    and r14d, 0x3FF           ; shift amount (0-1023)
+
+    ; Permute: out[i] = basis[(i + shift) % 1024] (all f64)
+    xor ecx, ecx             ; i = 0
+.gen_loop:
+    cmp ecx, HOLO_DIM
+    jge .gen_done
+
+    ; src_idx = (i + shift) % 1024
+    mov eax, ecx
+    add eax, r14d
+    cmp eax, HOLO_DIM
+    jl .gen_no_wrap
+    sub eax, HOLO_DIM
+.gen_no_wrap:
+    ; Load f64 basis[src_idx], store to out[i]
+    mov rdx, [rbx + rax * 8]         ; f64 load (as u64)
+    mov [r13 + rcx * 8], rdx         ; f64 store
+
+    inc ecx
+    jmp .gen_loop
+
+.gen_done:
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; holo_store(ctx_hash, token_id, strength)
+;; edi=ctx_hash, esi=token_id, xmm0=strength (f64)
+;; Binds context and token f64 vectors, scales by strength,
+;; and superposes into the appropriate f64 trace.
+;; ============================================================
+global holo_store
+holo_store:
+    push rbx
+    push r12
+    push r13
+    push r14
+    sub rsp, HOLO_VEC_BYTES * 3 + 16  ; 3 temp f64 vectors + strength storage
+
+    mov r12d, edi             ; ctx_hash
+    mov r13d, esi             ; token_id
+    ; Save strength (f64) in the padding area
+    movsd [rsp + HOLO_VEC_BYTES * 3], xmm0
+
+    ; 1. ctx_vec = holo_gen_vec(ctx_hash) → f64[1024]
+    mov edi, r12d
+    lea rsi, [rsp]            ; ctx_vec at [rsp]
+    call holo_gen_vec
+
+    ; 2. tok_vec = holo_gen_vec(token_id) → f64[1024]
+    mov edi, r13d
+    lea rsi, [rsp + HOLO_VEC_BYTES]
+    call holo_gen_vec
+
+    ; 3. bound = holo_bind_f64(ctx_vec, tok_vec)
+    lea rdi, [rsp]
+    lea rsi, [rsp + HOLO_VEC_BYTES]
+    lea rdx, [rsp + HOLO_VEC_BYTES * 2]
+    call holo_bind_f64
+
+    ; 4. holo_scale_f64(bound, strength)
+    lea rdi, [rsp + HOLO_VEC_BYTES * 2]
+    movsd xmm0, [rsp + HOLO_VEC_BYTES * 3]  ; reload strength
+    call holo_scale_f64
+
+    ; 5. trace_idx = ctx_hash & 0xFF
+    movzx eax, r12b
+    ; trace_ptr = SURFACE_BASE + HOLO_OFFSET + trace_idx * HOLO_VEC_BYTES
+    imul rax, rax, HOLO_VEC_BYTES
+    mov rbx, SURFACE_BASE + HOLO_OFFSET
+    add rbx, rax
+
+    ; 6. holo_superpose_f64(trace, bound)
+    mov rdi, rbx
+    lea rsi, [rsp + HOLO_VEC_BYTES * 2]
+    call holo_superpose_f64
+
+    add rsp, HOLO_VEC_BYTES * 3 + 16
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; holo_predict(ctx_hash) → eax=best_token_id, xmm0=confidence (f64)
+;; edi=ctx_hash
+;; Unbinds context from trace, normalizes, scans vocabulary.
+;; All operations in f64 for maximum fidelity.
+;; ============================================================
+global holo_predict
+holo_predict:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, HOLO_VEC_BYTES * 2 + 16  ; ctx_vec, candidate, + locals
+    ; locals at [rsp + HOLO_VEC_BYTES*2]:
+    ;   [+0] = best_token (u32)
+    ;   [+4] = pad
+    ;   [+8] = best_sim (f64)
+
+    mov r12d, edi             ; ctx_hash
+
+    ; 1. ctx_vec = holo_gen_vec(ctx_hash) → f64[1024]
+    mov edi, r12d
+    lea rsi, [rsp]
+    call holo_gen_vec
+
+    ; 2. trace_idx = ctx_hash & 0xFF
+    movzx eax, r12b
+    imul rax, rax, HOLO_VEC_BYTES
+    mov r14, SURFACE_BASE + HOLO_OFFSET
+    add r14, rax              ; r14 = trace ptr (f64[1024])
+
+    ; 3. candidate = holo_bind_f64(trace, ctx_vec) — unbind
+    mov rdi, r14
+    lea rsi, [rsp]
+    lea rdx, [rsp + HOLO_VEC_BYTES]
+    call holo_bind_f64
+
+    ; Normalize candidate for clean cosine matching
+    lea rdi, [rsp + HOLO_VEC_BYTES]
+    call holo_normalize_f64
+
+    ; Initialize best tracking
+    lea rbx, [rsp + HOLO_VEC_BYTES * 2]
+    mov dword [rbx], 0               ; best_token = 0
+    xorpd xmm0, xmm0
+    movsd [rbx + 8], xmm0            ; best_sim = 0.0 (f64)
+
+    ; 4. Scan vocabulary
+    mov r15, SURFACE_BASE
+    mov r13d, [r15 + STATE_OFFSET + ST_VOCAB_COUNT]
+    test r13d, r13d
+    jz .holo_pred_done
+
+    ; Cap scan at VOCAB_MAX_SCAN (256)
+    cmp r13d, VOCAB_MAX_SCAN
+    jle .scan_count_ok
+    mov r13d, VOCAB_MAX_SCAN
+.scan_count_ok:
+
+    ; r15 = vocab base ptr
+    mov r15, SURFACE_BASE + VOCAB_OFFSET
+    xor ecx, ecx             ; vocab scan index
+
+.holo_scan_loop:
+    cmp ecx, r13d
+    jge .holo_pred_done
+    push rcx
+
+    ; Load token_id from vocab entry
+    imul rax, rcx, VOCAB_ENTRY_SIZE
+    add rax, r15
+    mov edi, [rax]            ; token_id
+
+    ; Generate token vector — reuse ctx_vec space (candidate already computed)
+    lea rsi, [rsp + 8]        ; +8 for pushed rcx
+    call holo_gen_vec
+
+    ; dot_f64(candidate, tok_vec)
+    lea rdi, [rsp + HOLO_VEC_BYTES + 8]   ; candidate (+8 for pushed rcx)
+    lea rsi, [rsp + 8]                     ; tok_vec (+8 for pushed rcx)
+    call holo_dot_f64
+    ; xmm0 = similarity (f64)
+
+    ; Compare with best (f64)
+    lea rbx, [rsp + HOLO_VEC_BYTES * 2 + 8]  ; +8 for pushed rcx
+    ucomisd xmm0, [rbx + 8]
+    jbe .holo_not_better
+
+    ; New best
+    movsd [rbx + 8], xmm0            ; best_sim = sim (f64)
+    pop rcx
+    push rcx
+    ; Reload token_id
+    imul rax, rcx, VOCAB_ENTRY_SIZE
+    add rax, r15
+    mov eax, [rax]
+    mov [rbx], eax                    ; best_token = token_id
+
+.holo_not_better:
+    pop rcx
+    inc ecx
+    jmp .holo_scan_loop
+
+.holo_pred_done:
+    ; Return best_token in eax, confidence in xmm0 (f64)
+    lea rbx, [rsp + HOLO_VEC_BYTES * 2]
+    mov eax, [rbx]            ; best_token
+    movsd xmm0, [rbx + 8]    ; best_sim (f64 confidence)
+
+    add rsp, HOLO_VEC_BYTES * 2 + 16
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; holo_decay_all()
+;; Scales all f64 trace vectors by HOLO_DECAY (0.9995)
+;; Inlined loop: broadcasts decay, walks all traces.
+;; ============================================================
+global holo_decay_all
+holo_decay_all:
+    push rbx
+
+    mov rbx, SURFACE_BASE + HOLO_OFFSET
+
+    ; Broadcast decay constant to all 4 lanes
+    movsd xmm0, [rel holo_decay_val]
+    vbroadcastsd ymm2, xmm0  ; ymm2 = [0.9995, 0.9995, 0.9995, 0.9995]
+
+    ; Total elements = HOLO_TRACES * HOLO_DIM = 256 * 1024 = 262144 doubles
+    ; Process 4 at a time = 65536 iterations
+    mov ecx, (HOLO_TRACES * HOLO_DIM) / 4
+
+.decay_all_loop:
+    vmovupd ymm0, [rbx]
+    vmulpd ymm0, ymm0, ymm2
+    vmovupd [rbx], ymm0
+    add rbx, 32
+    dec ecx
+    jnz .decay_all_loop
+
+    vzeroupper
+    pop rbx
+    ret
+
+;; ============================================================
+;; vocab_register(token_id)
+;; edi=token_id
+;; Appends token to vocabulary or increments its count.
+;; ============================================================
+global vocab_register
+vocab_register:
+    push rbx
+    push r12
+    push r13
+
+    mov r12d, edi             ; token_id
+    mov rbx, SURFACE_BASE
+    mov r13, SURFACE_BASE + VOCAB_OFFSET
+
+    ; Get current vocab count
+    mov ecx, [rbx + STATE_OFFSET + ST_VOCAB_COUNT]
+
+    ; Search for existing entry
+    xor edx, edx
+.vocab_search:
+    cmp edx, ecx
+    jge .vocab_append
+
+    imul rax, rdx, VOCAB_ENTRY_SIZE
+    add rax, r13
+    cmp [rax], r12d           ; compare token_id
+    je .vocab_found
+
+    inc edx
+    jmp .vocab_search
+
+.vocab_found:
+    ; Increment count
+    inc dword [rax + 4]
+    jmp .vocab_done
+
+.vocab_append:
+    ; Append new entry
+    imul rax, rcx, VOCAB_ENTRY_SIZE
+    add rax, r13
+    mov [rax], r12d           ; token_id
+    mov dword [rax + 4], 1    ; count = 1
+
+    ; Increment vocab count
+    inc dword [rbx + STATE_OFFSET + ST_VOCAB_COUNT]
+
+.vocab_done:
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; vocab_count() → eax
+;; Returns current vocabulary size.
+;; ============================================================
+global vocab_count
+vocab_count:
+    mov rax, SURFACE_BASE
+    mov eax, [rax + STATE_OFFSET + ST_VOCAB_COUNT]
+    ret
+
+;; ============================================================
+;; End Holographic Memory Section
+;; ============================================================
+
 global vsa_encode_context
 vsa_encode_context:
     push rbx
