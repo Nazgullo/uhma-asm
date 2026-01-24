@@ -420,53 +420,61 @@
 ;;; SECTION 8: MAIN API
 ;;; ============================================================================
 
-(defun ingest-feed! (&key force include-subdirs)
-  "Scan FEED/ directory and ingest all new files.
+(defun ingest-feed! (&key force include-subdirs (passes 1))
+  "Scan FEED/ directory and ingest all files.
    :force t to re-process already ingested files.
+   :passes N to run N epochs over the same content (implies force on pass 2+).
    :include-subdirs t to recurse into subdirectories."
-  (format t "~%========================================~%")
-  (format t "UHMA FEED INGESTION~%")
-  (format t "========================================~%")
-  (format t "Directory: ~A~%" *feed-directory*)
   (let ((files (scan-feed-directory :include-subdirs include-subdirs))
-        (processed 0)
-        (skipped 0)
-        (failed 0)
-        (total-new-tokens 0)
-        (start-time (get-internal-real-time)))
+        (grand-total-tokens 0))
     (unless files
       (format t "~%No files found in FEED/ directory.~%")
       (format t "Place files to ingest in: ~A~%" *feed-directory*)
       (return-from ingest-feed! nil))
-    (format t "Found ~D file~:P to process.~%~%" (length files))
-    (dolist (file files)
-      (let ((errored nil))
-        (multiple-value-bind (tokens accuracy)
-            (handler-case (ingest-file! file :force force)
-              (error (e)
-                (format t "   [ERROR] ~A: ~A~%" (file-namestring file) e)
-                (incf failed)
-                (setf errored t)
-                (values nil nil)))
-          (declare (ignore accuracy))
-          (unless errored
-            (cond
-              ((null tokens) (incf skipped))
-              (t (incf processed)
-                 (incf total-new-tokens tokens)))))))
-    (let ((elapsed (/ (- (get-internal-real-time) start-time)
-                      (float internal-time-units-per-second))))
-      (format t "~%========================================~%")
-      (format t "INGESTION COMPLETE~%")
-      (format t "  Processed: ~D file~:P (~:D new tokens)~%" processed total-new-tokens)
-      (format t "  Skipped:   ~D (already ingested)~%" skipped)
-      (when (> failed 0)
-        (format t "  Failed:    ~D~%" failed))
-      (format t "  Time:      ~,1Fs~%" elapsed)
-      (format t "  Total fed: ~:D tokens across ~D file~:P~%"
-              *feed-total-tokens* *feed-total-files*)
-      (format t "========================================~%"))
-    (values processed total-new-tokens)))
+    (dotimes (pass passes)
+      (let ((pass-force (or force (> pass 0)))
+            (processed 0)
+            (skipped 0)
+            (failed 0)
+            (total-new-tokens 0)
+            (start-time (get-internal-real-time)))
+        (format t "~%========================================~%")
+        (format t "UHMA FEED INGESTION~:[~; (pass ~D/~D)~]~%"
+                (> passes 1) (1+ pass) passes)
+        (format t "========================================~%")
+        (format t "Directory: ~A~%" *feed-directory*)
+        (format t "Found ~D file~:P to process.~%~%" (length files))
+        (dolist (file files)
+          (let ((errored nil))
+            (multiple-value-bind (tokens accuracy)
+                (handler-case (ingest-file! file :force pass-force)
+                  (error (e)
+                    (format t "   [ERROR] ~A: ~A~%" (file-namestring file) e)
+                    (incf failed)
+                    (setf errored t)
+                    (values nil nil)))
+              (declare (ignore accuracy))
+              (unless errored
+                (cond
+                  ((null tokens) (incf skipped))
+                  (t (incf processed)
+                     (incf total-new-tokens tokens)))))))
+        (incf grand-total-tokens total-new-tokens)
+        (let ((elapsed (/ (- (get-internal-real-time) start-time)
+                          (float internal-time-units-per-second))))
+          (format t "~%  Pass ~D: ~D file~:P, ~:D tokens, ~,1Fs~%"
+                  (1+ pass) processed total-new-tokens elapsed)
+          (when (> failed 0)
+            (format t "  Failed: ~D~%" failed)))))
+    ;; Final summary
+    (format t "~%========================================~%")
+    (format t "INGESTION COMPLETE~%")
+    (format t "  Passes: ~D~%" passes)
+    (format t "  Total tokens this run: ~:D~%" grand-total-tokens)
+    (format t "  Lifetime total: ~:D tokens across ~D file~:P~%"
+            *feed-total-tokens* *feed-total-files*)
+    (format t "========================================~%")
+    (values passes grand-total-tokens)))
 
 (defun feed-status ()
   "Print status of the feed system."
@@ -520,21 +528,34 @@
   "Convenience: feed a raw string directly."
   (feed-text-to-system! text source-name))
 
-(defun feed-own-source! ()
-  "Feed the system its own source code. The system consuming itself."
-  (format t "~%[FEED] Ingesting own source code...~%")
+(defun feed-own-source! (&key (passes 1))
+  "Feed the system its own source code. The system consuming itself.
+   :passes N to run N epochs over the codebase (default 1)."
   (let ((lisp-files (directory (merge-pathnames "*.lisp" cl-user::*module-base*)))
-        (total-tokens 0))
-    (dolist (f (sort lisp-files #'string< :key #'namestring))
-      ;; Skip test files and state files
-      (unless (or (search "test-" (file-namestring f))
-                  (search "uhma-state" (file-namestring f)))
-        (multiple-value-bind (tokens acc)
-            (ingest-file! f :force nil)
-          (when tokens
-            (incf total-tokens tokens)))))
-    (format t "[FEED] Self-consumption complete: ~:D tokens from source.~%" total-tokens)
-    total-tokens))
+        (grand-total 0))
+    (let ((files (sort (remove-if
+                        (lambda (f)
+                          (or (search "test-" (file-namestring f))
+                              (search "uhma-state" (file-namestring f))))
+                        lisp-files)
+                       #'string< :key #'namestring)))
+      (format t "~%[FEED] Self-consumption: ~D files, ~D ~:[pass~;passes~]~%"
+              (length files) passes (> passes 1))
+      (dotimes (pass passes)
+        (let ((pass-tokens 0))
+          (when (> passes 1)
+            (format t "~%--- Pass ~D/~D ---~%" (1+ pass) passes))
+          (dolist (f files)
+            (multiple-value-bind (tokens acc)
+                (ingest-file! f :force (or (> pass 0) (> passes 1)))
+              (declare (ignore acc))
+              (when tokens
+                (incf pass-tokens tokens))))
+          (incf grand-total pass-tokens)
+          (format t "[FEED] Pass ~D: ~:D tokens~%" (1+ pass) pass-tokens))))
+    (format t "[FEED] Self-consumption complete: ~:D total tokens (~D ~:[pass~;passes~])~%"
+            grand-total passes (> passes 1))
+    grand-total))
 
 ;;; ============================================================================
 ;;; SECTION 10: INITIALIZATION
