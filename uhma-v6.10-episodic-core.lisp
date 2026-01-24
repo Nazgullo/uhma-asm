@@ -35,6 +35,24 @@
       (setf (episodic-memory-current-episode *episodic-memory*) nil)
       ep)))
 
+(defun consolidate-episodes! (mem)
+  "Remove least significant episodes when buffer is full.
+   Keeps the top half by significance score."
+  (let* ((eps (episodic-memory-episodes mem))
+         (n (fill-pointer eps))
+         (half (max 1 (floor n 2))))
+    ;; Sort indices by significance (ascending), remove bottom half
+    (let ((indexed (loop for i below n
+                        collect (cons i (or (episode-significance (aref eps i)) 0.0)))))
+      (setf indexed (sort indexed #'> :key #'cdr))
+      ;; Keep only top half
+      (let ((keepers (mapcar #'car (subseq indexed 0 half)))
+            (new-eps (make-array (episodic-memory-max-episodes mem)
+                                 :element-type t :fill-pointer 0 :adjustable t)))
+        (dolist (idx (sort keepers #'<))
+          (vector-push-extend (aref eps idx) new-eps))
+        (setf (episodic-memory-episodes mem) new-eps)))))
+
 (defun store-episode! (ep)
   "Persist episode in the rolling store."
   (declare (type episode ep))

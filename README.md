@@ -63,7 +63,7 @@ Place any files in the `FEED/` subdirectory, then ingest them:
 (ingest-feed! :passes 10)                       ; 10 epochs over FEED/
 (ingest-file! #P"/path/to/file.txt" :force t)   ; Process single file
 (feed-own-source!)                              ; Feed system its own source
-(feed-own-source! :passes 50)                   ; 50 epochs over own code
+(feed-own-source! :passes 50)                   ; 50 epochs over own code (~5.8M tokens)
 (feed-status)                                   ; Show ingestion history
 ```
 
@@ -307,7 +307,7 @@ Run `(load "full-audit.lisp")` to verify all 66 pass.
 ```lisp
 (in-package :uhma)
 (start! :demo nil)
-(feed-own-source! :passes 20)           ; 20 epochs over own code (~2.3M tokens)
+(feed-own-source! :passes 50)           ; 50 epochs over own code
 (learning-progress)                     ; Check accuracy improvement
 (save-full-state! "self-trained")       ; Save trained state
 ```

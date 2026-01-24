@@ -542,7 +542,8 @@
       (format t "~%[FEED] Self-consumption: ~D files, ~D ~:[pass~;passes~]~%"
               (length files) passes (> passes 1))
       (dotimes (pass passes)
-        (let ((pass-tokens 0))
+        (let ((pass-tokens 0)
+              (start-time (get-internal-real-time)))
           (when (> passes 1)
             (format t "~%--- Pass ~D/~D ---~%" (1+ pass) passes))
           (dolist (f files)
@@ -552,7 +553,9 @@
               (when tokens
                 (incf pass-tokens tokens))))
           (incf grand-total pass-tokens)
-          (format t "[FEED] Pass ~D: ~:D tokens~%" (1+ pass) pass-tokens))))
+          (let ((elapsed (/ (- (get-internal-real-time) start-time)
+                            (float internal-time-units-per-second))))
+            (format t "[FEED] Pass ~D: ~:D tokens (~,1Fs)~%" (1+ pass) pass-tokens elapsed)))))
     (format t "[FEED] Self-consumption complete: ~:D total tokens (~D ~:[pass~;passes~])~%"
             grand-total passes (> passes 1))
     grand-total))
