@@ -97,6 +97,9 @@
 (load (module-file "uhma-complete-wiring.lisp"))
 (load (module-file "start.lisp"))
 
+;; 12. Save/Restore System (replaces incomplete persistence)
+(load (module-file "uhma-save-restore.lisp"))
+
 ;;;; [SECTION-END:3:PRESENCE-AND-WIRING]
 
 ;;;; [SECTION-START:4:VERIFICATION]
