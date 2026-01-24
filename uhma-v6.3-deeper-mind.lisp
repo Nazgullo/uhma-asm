@@ -40,10 +40,28 @@
 ;;; --- SECTION 9: INTEGRATION HOOKS ---
 
 (defun deeper-mind-maintenance-hook-v63 ()
-  "Periodic update cycle for self-model and hypothesis testing."
+  "Self-doubt and hypothesis invention driven by accuracy drift and interference."
   (when *deeper-mind-enabled*
-    (when (zerop (mod *step* 50)) (update-self-doubt!))
-    (when (zerop (mod *step* 100)) (invent-hypothesis))))
+    ;; Update self-doubt when accuracy drifts significantly from expectation
+    (let ((current-acc (if (and (boundp '*trace-buffer*) (> (fill-pointer *trace-buffer*) 10))
+                           (let ((correct 0) (total (min 20 (fill-pointer *trace-buffer*))))
+                             (loop for i from (1- (fill-pointer *trace-buffer*))
+                                   downto (max 0 (- (fill-pointer *trace-buffer*) total))
+                                   for trace = (aref *trace-buffer* i)
+                                   when (eq (cognitive-trace-prediction trace)
+                                            (cognitive-trace-actual trace))
+                                   do (incf correct))
+                             (/ (float correct) total))
+                           0.5)))
+      (when (> (abs (- current-acc *self-expectation-accuracy*)) 0.15)
+        (update-self-doubt!)
+        (setf *self-expectation-accuracy* current-acc)))
+    ;; Invent hypotheses when interference creates novel patterns
+    (let ((interference (if (fboundp 'compute-holographic-interference)
+                            (compute-holographic-interference)
+                            0.0)))
+      (when (> interference 0.7)
+        (invent-hypothesis)))))
 
 (defun initialize-deeper-mind! ()
   "Initialize the deeper mind module."

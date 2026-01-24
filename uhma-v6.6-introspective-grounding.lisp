@@ -14,7 +14,7 @@
 ;;; --- SECTION 8: INTEGRATION LOGIC ---
 
 (defun detect-active-concepts ()
-  "Detect current qualitative state using seeds and learned thresholds."
+  "Detect current qualitative state using detection functions and learned VSA signatures."
   (when (and (boundp '*step*) (= *last-concept-detection-step* *step*))
     (return-from detect-active-concepts *cached-active-concepts*))
   (let ((state (gather-current-state)) (active nil))
@@ -23,7 +23,10 @@
                               (ignore-errors (funcall (introspective-concept-detection-fn concept) state)))
                          (concept-applies-via-learned-p concept state))
                  (push name active)
-                 (incf (introspective-concept-activation-count concept))))
+                 (incf (introspective-concept-activation-count concept))
+                 ;; Learn state signature for future pattern-based detection
+                 (when (fboundp 'record-concept-state-signature!)
+                   (record-concept-state-signature! concept state))))
              *introspective-vocabulary*)
     (setf *last-concept-detection-step* *step*
           *cached-active-concepts* active)

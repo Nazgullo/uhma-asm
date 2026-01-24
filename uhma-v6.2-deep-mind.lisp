@@ -75,10 +75,16 @@
     (correlate-context-with-source! ctx got-it)))
 
 (defun deep-mind-maintenance-hook ()
-  "Standardized periodic self-examination loop."
-  (when (zerop (mod *step* 100)) (introspect! 1))
-  (when (zerop (mod *step* 500)) (introspect! 2) (evolve-schemas!))
-  (when (and (> *step* 50) (zerop (mod *step* 50)))
+  "Interference-driven self-examination. No timers — the NN's own noise triggers action."
+  (let ((interference (if (fboundp 'compute-holographic-interference)
+                          (compute-holographic-interference)
+                          0.0)))
+    ;; Introspect when holographic patterns are noisy (interference high)
+    (when (> interference 0.6) (introspect! 1))
+    ;; Deep introspect + schema evolution when very noisy
+    (when (> interference 0.85) (introspect! 2) (evolve-schemas!)))
+  ;; Test hypotheses when concept detection signals problems
+  (when (intersection *cached-active-concepts* '(STUCK CONFUSED))
     (maphash (lambda (id hyp) (declare (ignore id))
                (when (eq (self-hypothesis-status hyp) :active) (test-hypothesis! hyp)))
              *hypotheses*)

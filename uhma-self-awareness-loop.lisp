@@ -12,6 +12,9 @@
 (defvar *modification-attempts* nil )
 (defvar *understanding-log* nil )
 (defvar *last-synthesis-trigger-step* 0 )
+(defvar *outcome-tracking-window* nil )
+(defvar *synthesis-cooldown* 100 )
+(defvar *radical-experimentation-mode* nil )
 
 ;;; --- SECTION 8: CORE LOOP LOGIC ---
 
@@ -38,9 +41,21 @@
   (correlate-modifications-with-outcomes!)
   (setf *self-awareness-loop-active* nil))
 
+;;; --- SECTION 9: HELPERS ---
+
+(defun presence-guided-introspection-depth ()
+  "How deep to introspect - driven by presence state, not a constant.
+   Discontinuity or being stuck demands deeper reflection."
+  (if (and (boundp '*presence*) *presence*)
+      (cond
+        ((< (presence-continuity *presence*) 0.3) 3)
+        ((member (presence-trajectory *presence*) '(:stuck :falling)) 2)
+        ((> (presence-self-surprise-residue *presence*) 0.5) 2)
+        (t 1))
+      1))
+
 ;;; --- SECTION 10: INITIALIZATION ---
 (eval-when (:load-toplevel :execute)
-  (register-hook +hook-maintenance+ (lambda () (when (zerop (mod *step* 50)) (run-self-awareness-loop!))) :priority 70)
   (format t "[AWARENESS-LOOP] Reflective cognition synchronized.~%"))
 
 ;;; ============================================================================
@@ -544,9 +559,14 @@
   ;; Step 6: Correlate modifications with outcomes
   (correlate-modifications-with-outcomes!)
 
-  ;; Step 7: Extract understanding periodically (every 100 steps, was 500)
-  (when (zerop (mod *step* 100))
+  ;; Step 7: Extract understanding when modification attempts exist (driven by activity, not timer)
+  (when (and *modification-attempts*
+             (> (length *modification-attempts*) 0))
     (extract-circuit-outcome-mapping!))
+
+  ;; Step 8: Update semantic self-knowledge from accumulated traces
+  (when (fboundp 'update-semantic-self-knowledge!)
+    (update-semantic-self-knowledge!))
 
   ;; Trim modification attempts (keep recent 20)
   (when (> (length *modification-attempts*) 20)
@@ -559,13 +579,16 @@
 ;;; ============================================================================
 
 (defun install-self-awareness-loop! ()
-  "Install the self-awareness loop into maintenance."
+  "Install the self-awareness loop into maintenance.
+   Triggered by organic signals (problems detected or holographic interference), not timers."
   (register-hook +hook-maintenance+
                  (lambda ()
-                   ;; Run every 50 steps
-                   (when (zerop (mod *step* 50))
+                   ;; Run when problems are felt or interference is high
+                   (when (or (problem-detected-p)
+                             (and (fboundp 'compute-holographic-interference)
+                                  (> (compute-holographic-interference) 0.75)))
                      (run-self-awareness-loop!)))
-                 :priority 70)  ; After normal maintenance, before cleanup
+                 :priority 70)
 
   ;; Also hook into concept detection to catch STUCK immediately
   (when (boundp '+hook-post-concept-detection+)

@@ -36,12 +36,48 @@
   (cooldown 100 :type fixnum))
 
 (defun check-modification-triggers! ()
-  "Check if any conditions trigger self-modification."
-  nil)
+  "Check if holographic interference patterns indicate need for modification.
+   Triggered by pattern quality degradation, not timers."
+  (let ((interference (if (fboundp 'compute-holographic-interference)
+                          (compute-holographic-interference)
+                          0.0)))
+    (when (and (> interference 0.8)
+               (boundp '*cached-active-concepts*)
+               (intersection *cached-active-concepts* '(STUCK FAILING)))
+      ;; Identify the expert with lowest fitness that contributes to interference
+      (when (and (boundp '*experts*) *experts*)
+        (let ((worst-expert nil)
+              (worst-fitness 1.0))
+          (dolist (e *experts*)
+            (when (and (> (+ (expert-hits e) (expert-misses e)) 10)
+                       (< (expert-life e) worst-fitness))
+              (setf worst-expert e worst-fitness (expert-life e))))
+          (when worst-expert
+            (push (list :step *step*
+                        :target worst-expert
+                        :reason :interference-degradation
+                        :interference interference)
+                  *pending-modifications*)))))))
 
 (defun validate-pending-modifications! ()
-  "Validate and potentially apply pending modifications."
-  nil)
+  "Validate pending modifications against current system state.
+   Only applies modifications when the target expert is still weak."
+  (when *pending-modifications*
+    (let ((applied 0))
+      (dolist (mod (subseq *pending-modifications* 0 (min 3 (length *pending-modifications*))))
+        (let ((target (getf mod :target)))
+          (when (and target (typep target 'expert)
+                     (member target *experts*)  ; Still alive
+                     (< (expert-life target) 0.4))  ; Still weak
+            ;; Apply modification: mutate the expert's program
+            (when (expert-program target)
+              (setf (expert-program target)
+                    (mutate-pattern (expert-program target) 0.15))
+              (incf applied)))))
+      ;; Clear processed modifications
+      (setf *pending-modifications*
+            (nthcdr (min 3 (length *pending-modifications*)) *pending-modifications*))
+      applied)))
 
 ;;; --- SECTION 5: MODIFICATION EXECUTION ---
 

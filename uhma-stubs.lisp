@@ -138,6 +138,20 @@
 ;;; UTILITY FUNCTIONS
 ;;; ============================================================================
 
+(unless (fboundp 'compute-recent-accuracy-fast)
+  (defun compute-recent-accuracy-fast (n)
+    "Fast accuracy computation from recent trace buffer entries."
+    (if (and (boundp '*trace-buffer*) (> (fill-pointer *trace-buffer*) 0))
+        (let ((correct 0) (total (min n (fill-pointer *trace-buffer*))))
+          (loop for i from (1- (fill-pointer *trace-buffer*))
+                downto (max 0 (- (fill-pointer *trace-buffer*) total))
+                for trace = (aref *trace-buffer* i)
+                when (eq (cognitive-trace-prediction trace)
+                         (cognitive-trace-actual trace))
+                do (incf correct))
+          (/ (float correct) (max 1 total)))
+        0.5)))
+
 (unless (fboundp 'compute-uncertainty)
   (defun compute-uncertainty (&rest args)
     "Stub: Uncertainty computation not implemented"
@@ -308,12 +322,40 @@
   (weaknesses nil :type list)
   (patterns nil :type list))
 
-(defvar *semantic-self-knowledge* (make-semantic-self-knowledge
-                                    :tendencies '(:pattern-matching :repetition-detection)
-                                    :strengths '(:sequence-prediction :context-memory)
-                                    :weaknesses '(:novel-contexts :long-range-dependencies)
-                                    :patterns '(:learns-from-repetition :improves-with-context))
-  "Self-knowledge about the system's behavioral tendencies.")
+(defvar *semantic-self-knowledge* (make-semantic-self-knowledge)
+  "Self-knowledge about the system's behavioral tendencies. Learned from traces, not hardcoded.")
+
+(defun update-semantic-self-knowledge! ()
+  "Learn self-knowledge from actual trace statistics.
+   Tendencies, strengths, weaknesses emerge from holographic patterns."
+  (when (and (boundp '*trace-buffer*) (> (fill-pointer *trace-buffer*) 50))
+    (let ((context-successes (make-hash-table :test 'equal))
+          (context-totals (make-hash-table :test 'equal)))
+      ;; Analyze traces for context-specific performance
+      (loop for i from (1- (fill-pointer *trace-buffer*)) downto (max 0 (- (fill-pointer *trace-buffer*) 200))
+            for trace = (aref *trace-buffer* i)
+            when (cognitive-trace-p trace)
+            do (let ((ctx-type (when (cognitive-trace-context trace)
+                                 (first (cognitive-trace-context trace)))))
+                 (when ctx-type
+                   (incf (gethash ctx-type context-totals 0))
+                   (when (eq (cognitive-trace-prediction trace)
+                             (cognitive-trace-actual trace))
+                     (incf (gethash ctx-type context-successes 0))))))
+      ;; Build strengths/weaknesses from performance
+      (let ((strengths nil) (weaknesses nil) (tendencies nil))
+        (maphash (lambda (ctx total)
+                   (when (> total 10)
+                     (let ((rate (/ (float (gethash ctx context-successes 0)) total)))
+                       (push ctx tendencies)
+                       (if (> rate 0.7)
+                           (push ctx strengths)
+                           (when (< rate 0.3)
+                             (push ctx weaknesses))))))
+                 context-totals)
+        (setf (semantic-self-knowledge-strengths *semantic-self-knowledge*) strengths)
+        (setf (semantic-self-knowledge-weaknesses *semantic-self-knowledge*) weaknesses)
+        (setf (semantic-self-knowledge-tendencies *semantic-self-knowledge*) tendencies)))))
 
 ;;; ============================================================================
 ;;; COUNTERFACTUAL HISTORY (Claim 17)
@@ -376,6 +418,48 @@
                (subseq pattern-b (min split-b (1- (length pattern-b)))))))
     (pattern-a pattern-a)
     (t pattern-b)))
+
+;;; ============================================================================
+;;; DREAM EPISODE REPLAY (Organic VSA Consolidation)
+;;; ============================================================================
+
+(defun dream-about-episode! (episode)
+  "Consolidate an episode through holographic replay.
+   Superposes the episode's context-vector with similar stored patterns,
+   creating denser interference that strengthens or reveals structure."
+  (when episode
+    (let* ((ctx (dream-episode-context episode)))
+      (when (and ctx (listp ctx) (> (length ctx) 0)
+                 (boundp '*holographic-enabled*) *holographic-enabled*)
+        ;; Encode episode as holographic pattern
+        (let ((hp (holographic-encode ctx)))
+          (let ((similar (holographic-find-similar hp 0.3)))
+            ;; Superpose episode with similar patterns - creating interference
+            (dolist (match similar)
+              (let ((match-hp (car match)))
+                (when (holographic-pattern-activations match-hp)
+                  (incf (holographic-pattern-strength match-hp) 0.15)
+                  (incf (holographic-pattern-access-count match-hp)))))
+            ;; Store consolidated episode in episodic layer
+            (holographic-store! hp :layer :episodic)
+            ;; Generate mutations targeting failure patterns
+            (when (and (dream-episode-actual-outcome episode)
+                       (not (equal (dream-episode-original-prediction episode)
+                                   (dream-episode-actual-outcome episode))))
+              (let ((mutations (generate-dream-mutations episode)))
+                (when mutations
+                  (incf (dream-episode-insights episode) (length mutations)))))
+            ;; Extract semantic if pattern is strong enough
+            (when (> (length similar) 3)
+              (extract-semantic-from-episode! episode))))))))
+
+(defun prune-oldest-episodes! (n)
+  "Remove the N oldest episodes from the dream buffer."
+  (when (and (boundp '*dream-state*) *dream-state*)
+    (let ((buf (dream-state-episode-buffer *dream-state*)))
+      (when (> (length buf) n)
+        (setf (dream-state-episode-buffer *dream-state*)
+              (subseq buf 0 (- (length buf) n)))))))
 
 ;;; ============================================================================
 ;;; DREAM MUTATIONS & CONSOLIDATION (Claims 45, 46, 47, 54)
@@ -477,16 +561,27 @@
 ;;; ============================================================================
 
 (defun prune-dying-experts! ()
-  "Remove experts that have become irrelevant (zero hits, old age, low ownership)."
-  (when (and (boundp '*experts*) *experts*)
+  "Remove experts whose knowledge-vectors are redundant in VSA space.
+   An expert dies when another expert covers its knowledge with higher fitness.
+   This is competitive displacement, not age-based death."
+  (when (and (boundp '*experts*) *experts* (> (length *experts*) 10))
     (let ((before-count (length *experts*))
-          (current-step (if (boundp '*step*) *step* 0)))
-      (setf *experts*
-            (remove-if (lambda (e)
-                         (and (> (- current-step (expert-birth-step e)) 500)
-                              (zerop (expert-hits e))
-                              (< (expert-ownership e) 0.1)))
-                       *experts*))
+          (redundant nil))
+      ;; Find experts whose knowledge-vector is highly similar to a better expert
+      (dolist (e *experts*)
+        (when (and (expert-knowledge-vector e)
+                   (< (expert-life e) 0.5))  ; Only consider weak experts
+          (dolist (other *experts*)
+            (when (and (not (eq e other))
+                       (expert-knowledge-vector other)
+                       (> (expert-life other) (expert-life e)))
+              ;; If knowledge-vectors are very similar, e is redundant
+              (when (> (cosim (expert-knowledge-vector e)
+                              (expert-knowledge-vector other)) 0.85)
+                (pushnew e redundant)
+                (return))))))
+      ;; Remove redundant experts
+      (setf *experts* (set-difference *experts* redundant))
       (- before-count (length *experts*)))))
 
 ;;; ============================================================================

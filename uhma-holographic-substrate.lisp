@@ -41,8 +41,8 @@
 ;;; CONFIGURATION
 ;;; ============================================================================
 
-(defparameter *holographic-enabled* nil
-  "Master switch for holographic substrate. DISABLED by default - causes interference with dream consolidation.")
+(defparameter *holographic-enabled* t
+  "Master switch for holographic substrate. The VSA interconnection layer IS the neural network.")
 
 (defparameter *sparse-k-default* 5
   "Default number of experts that fire for each input.")
@@ -419,6 +419,35 @@
       best)))
 
 ;;; ============================================================================
+;;; PART 5.5: HOLOGRAPHIC INTERFERENCE METRIC
+;;; ============================================================================
+;;; Measures how much current activation patterns conflict with stored patterns.
+;;; This is the NN's "noise signal" - high interference triggers organic responses.
+
+(defun compute-holographic-interference ()
+  "Measure interference between recent holographic patterns.
+   High interference = noisy/conflicting signals in the NN.
+   Mid-range similarity between patterns indicates unresolved competition.
+   Returns 0.0-1.0 where higher = more interference."
+  (if (not *holographic-enabled*) 0.0
+    (let ((immediate (gethash :immediate (holographic-memory-by-layer *holographic-memory*)))
+          (interference 0.0)
+          (comparisons 0))
+      (when (and immediate (> (length immediate) 2))
+        (loop for i from 0 below (min 10 (length immediate))
+              for p1 = (nth i immediate)
+              do (loop for j from (1+ i) below (min 10 (length immediate))
+                       for p2 = (nth j immediate)
+                       do (let ((sim (holographic-similarity p1 p2)))
+                            ;; Mid-range similarity = interference (not same, not orthogonal)
+                            (when (and (> sim 0.2) (< sim 0.7))
+                              (incf interference (- 0.7 (abs (- sim 0.45))))
+                              (incf comparisons))))))
+      (if (> comparisons 0)
+          (min 1.0 (/ interference (float comparisons)))
+          0.0))))
+
+;;; ============================================================================
 ;;; PART 6: PRESENCE INTEGRATION - PRESENCE SEES ALL
 ;;; ============================================================================
 ;;; Presence observes holographic memory as its field of awareness.
@@ -542,8 +571,8 @@
         (setf (holographic-pattern-content hp)
               (list :token tok :correct got-it :step *step*))
         (holographic-store! hp :layer :immediate)))
-    ;; Decay patterns
-    (when (zerop (mod *step* 100))
+    ;; Decay driven by memory pressure (organic, not timer-based)
+    (when (> (holographic-memory-count *holographic-memory*) 200)
       (holographic-decay-all!))
     ;; Update presence
     (holographic-presence-update!)))

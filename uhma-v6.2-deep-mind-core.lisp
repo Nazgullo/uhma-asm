@@ -123,15 +123,16 @@
          (recent (get-traces :n 50))
          (supporting 0)
          (contradicting 0))
-    ;; Evaluate traces for evidence
+    ;; Evaluate traces for evidence (skip non-cognitive-trace entries)
     (dolist (trace recent)
-      (let ((correct-p (equal (cognitive-trace-prediction trace)
-                              (cognitive-trace-actual trace)))
-            (relevant-p (hypothesis-relevant-to-trace-p claim trace)))
-        (when relevant-p
-          (if correct-p
-              (incf supporting)
-              (incf contradicting)))))
+      (when (cognitive-trace-p trace)
+        (let ((correct-p (equal (cognitive-trace-prediction trace)
+                                (cognitive-trace-actual trace)))
+              (relevant-p (hypothesis-relevant-to-trace-p claim trace)))
+          (when relevant-p
+            (if correct-p
+                (incf supporting)
+                (incf contradicting))))))
     ;; Update hypothesis
     (incf (self-hypothesis-times-tested hyp))
     (setf (self-hypothesis-last-tested hyp) (if (boundp '*step*) *step* 0))
