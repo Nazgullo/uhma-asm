@@ -1331,8 +1331,20 @@
   "Signal a condition from expert code - can be handled or ignored"
   (signal 'expert-condition :message message :context context))
 
+(defvar *expert-consecutive-errors* (make-hash-table :test 'eql)
+  "Tracks consecutive error count per expert ID. Reset on successful prediction.")
+
 (defun expert-warn (message &key (context nil))
-  "Warn from expert code"
+  "Warn from expert code. Track consecutive errors; kill after 9."
+  (when (and (boundp '*current-expert*) *current-expert*)
+    (let* ((eid (expert-id *current-expert*))
+           (count (incf (gethash eid *expert-consecutive-errors* 0))))
+      (when (>= count 9)
+        (setf (expert-life *current-expert*) 0.0)
+        (when (boundp '*experts*)
+          (setf *experts* (remove *current-expert* *experts*)))
+        (remhash eid *expert-consecutive-errors*)
+        (format t "[PRUNE] Expert ~A killed after 9 consecutive errors~%" eid))))
   (warn 'expert-warning :message message :context context))
 
 ;;; --- Macroexpansion cache ---
@@ -2130,6 +2142,9 @@
     (let ((result (catch 'program-result
                     (execute-sexp (expert-program expert))
                     nil)))
+      (when (and result (op-result-p result) (> (op-result-confidence result) 0.0))
+        ;; Successful prediction — reset consecutive error counter
+        (remhash (expert-id expert) *expert-consecutive-errors*))
       (or result (make-op-result :type :return :value nil :confidence 0.0)))))
 
 ;;; ============================================================================
