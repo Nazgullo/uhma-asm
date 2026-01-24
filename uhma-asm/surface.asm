@@ -347,3 +347,153 @@ global get_vsa_base
 get_vsa_base:
     mov rax, SURFACE_BASE + VSA_OFFSET
     ret
+
+;; ============================================================
+;; region_merge_pass
+;; Scans dispatch regions for mergeable pairs (same token_id,
+;; similar ctx_hash — upper 20 bits match). Merges hit counts
+;; into the stronger region, condemns the weaker, then compacts.
+;; Returns: rax = number of regions reclaimed
+;; ============================================================
+global region_merge_pass
+region_merge_pass:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 8                ; alignment + merged count at [rsp]
+
+    mov rbx, SURFACE_BASE
+    mov dword [rsp], 0        ; merged count
+
+    lea r12, [rbx + REGION_TABLE_OFFSET]
+    mov r13d, [rbx + STATE_OFFSET + ST_REGION_COUNT]
+
+    ; Outer loop: for each dispatch region i
+    xor ecx, ecx             ; i = 0
+.merge_outer:
+    cmp ecx, r13d
+    jge .merge_compact
+
+    ; Get region i entry
+    push rcx
+    imul rdi, rcx, RTE_SIZE
+    add rdi, r12
+    movzx eax, word [rdi + RTE_TYPE]
+    cmp eax, RTYPE_DISPATCH
+    jne .merge_next_outer
+    movzx eax, word [rdi + RTE_FLAGS]
+    test eax, RFLAG_CONDEMNED
+    jnz .merge_next_outer
+
+    ; Get region i's header → extract ctx_hash and token_id from code
+    mov r14, [rdi + RTE_ADDR]         ; header ptr
+    mov r15d, [r14 + RHDR_SIZE + 1]   ; ctx_hash (bytes 1-4 of code)
+    mov ebx, [r14 + RHDR_SIZE + 8]    ; token_id (bytes 8-11 of code)
+
+    ; Inner loop: for each region j > i
+    pop rcx
+    push rcx
+    mov edx, ecx
+    inc edx                   ; j = i + 1
+
+.merge_inner:
+    cmp edx, r13d
+    jge .merge_next_outer
+
+    push rdx
+    imul rdi, rdx, RTE_SIZE
+    add rdi, r12
+    movzx eax, word [rdi + RTE_TYPE]
+    cmp eax, RTYPE_DISPATCH
+    jne .merge_skip_inner
+    movzx eax, word [rdi + RTE_FLAGS]
+    test eax, RFLAG_CONDEMNED
+    jnz .merge_skip_inner
+
+    ; Get region j's header
+    mov rsi, [rdi + RTE_ADDR]
+    ; Same token_id?
+    cmp [rsi + RHDR_SIZE + 8], ebx
+    jne .merge_skip_inner
+
+    ; Similar ctx_hash? (upper 20 bits match)
+    mov eax, [rsi + RHDR_SIZE + 1]    ; j's ctx_hash
+    xor eax, r15d                      ; difference
+    and eax, 0xFFFFF000                ; mask upper 20 bits
+    jnz .merge_skip_inner              ; if any upper bit differs, not similar
+
+    ; --- MERGE: same token, similar context ---
+    ; Compare hit counts: keep the stronger one
+    mov eax, [r14 + RHDR_HITS]        ; i's hits
+    mov ecx, [rsi + RHDR_HITS]        ; j's hits
+    cmp eax, ecx
+    jge .condemn_j
+
+    ; j is stronger — merge i into j, condemn i
+    add [rsi + RHDR_HITS], eax        ; j.hits += i.hits
+    mov rdi, r14
+    or word [rdi + RHDR_FLAGS], RFLAG_CONDEMNED
+    ; NOP out i's code
+    movzx eax, word [rdi + RHDR_CODE_LEN]
+    lea rdi, [rdi + RHDR_SIZE]
+    test eax, eax
+    jz .merge_did_merge
+.nop_i:
+    mov byte [rdi], 0x90      ; NOP (not INT3, safer)
+    inc rdi
+    dec eax
+    jnz .nop_i
+    jmp .merge_did_merge
+
+.condemn_j:
+    ; i is stronger — merge j into i, condemn j
+    add [r14 + RHDR_HITS], ecx        ; i.hits += j.hits
+    mov rdi, rsi
+    or word [rdi + RHDR_FLAGS], RFLAG_CONDEMNED
+    movzx eax, word [rdi + RHDR_CODE_LEN]
+    lea rdi, [rdi + RHDR_SIZE]
+    test eax, eax
+    jz .merge_did_merge
+.nop_j:
+    mov byte [rdi], 0x90
+    inc rdi
+    dec eax
+    jnz .nop_j
+
+.merge_did_merge:
+    inc dword [rsp + 16]      ; merged count (+8 rdx, +8 rcx on stack)
+    ; Limit: max 64 merges per pass to avoid O(n^2) blowup
+    cmp dword [rsp + 16], 64
+    jge .merge_done_inner
+
+.merge_skip_inner:
+    pop rdx
+    inc edx
+    jmp .merge_inner
+
+.merge_done_inner:
+    pop rdx                   ; balance the push
+
+.merge_next_outer:
+    pop rcx
+    inc ecx
+    jmp .merge_outer
+
+.merge_compact:
+    ; Compact the table (remove condemned entries)
+    mov rbx, SURFACE_BASE    ; restore rbx (clobbered above)
+    cmp dword [rsp], 0
+    je .merge_none
+    call region_compact
+
+.merge_none:
+    mov eax, [rsp]            ; return merged count
+    add rsp, 8
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret

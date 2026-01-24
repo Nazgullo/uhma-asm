@@ -36,6 +36,7 @@ extern emit_dispatch_pattern
 extern fire_hook
 extern holo_store
 extern vocab_register
+extern region_merge_pass
 
 ;; ============================================================
 ;; learn_pattern(ctx_hash, token_id)
@@ -54,20 +55,6 @@ learn_pattern:
 
     mov rbx, SURFACE_BASE
 
-    ; Print learn info
-    push r12
-    push r13
-    lea rdi, [rel learn_msg]
-    call print_cstr
-    mov edi, r12d
-    call print_hex32
-    lea rdi, [rel learn_tok_msg]
-    call print_cstr
-    mov edi, r13d
-    call print_hex32
-    pop r13
-    pop r12
-
     ; ALWAYS store holographically (never fails, interference just gets denser)
     mov edi, r12d             ; ctx_hash
     mov esi, r13d             ; token_id
@@ -85,13 +72,33 @@ learn_pattern:
     test rax, rax
     jnz .already_exists
 
-    ; Check region count limit
+    ; Check region count — trigger merge if approaching saturation
     lea rax, [rbx + STATE_OFFSET + ST_REGION_COUNT]
     mov ecx, [rax]
     cmp ecx, REGION_TABLE_MAX - 4    ; leave room
+    jl .has_room
+    ; Try to merge before giving up
+    call region_merge_pass
+    ; Re-check count after merge
+    lea rax, [rbx + STATE_OFFSET + ST_REGION_COUNT]
+    mov ecx, [rax]
+    cmp ecx, REGION_TABLE_MAX - 4
     jge .table_full
+.has_room:
 
-    ; Emit new dispatch pattern
+    ; Print learn info (only for genuinely NEW patterns)
+    push r12
+    push r13
+    lea rdi, [rel learn_msg]
+    call print_cstr
+    mov edi, r12d
+    call print_hex32
+    lea rdi, [rel learn_tok_msg]
+    call print_cstr
+    mov edi, r13d
+    call print_hex32
+    pop r13
+    pop r12
     lea rdi, [rel learn_new_msg]
     call print_cstr
 

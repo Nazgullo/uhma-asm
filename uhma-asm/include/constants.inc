@@ -16,8 +16,8 @@
 %define DISPATCH_MAX_SIZE   0x10000000        ; 256MB
 
 %define REGION_TABLE_OFFSET 0x10010000
-%define REGION_TABLE_SIZE   0x2000            ; 8KB
-%define REGION_TABLE_MAX    256
+%define REGION_TABLE_SIZE   0x10000           ; 64KB (2048 entries × 32 bytes)
+%define REGION_TABLE_MAX    2048
 
 %define VSA_OFFSET          0x10020000
 %define VSA_SIZE            0x20000000        ; 512MB (65K tokens × 8KB each, f64)

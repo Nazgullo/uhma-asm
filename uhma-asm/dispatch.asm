@@ -337,7 +337,7 @@ process_token:
     lea rax, [rbx + STATE_OFFSET + ST_PREDICT_REGION]
     mov rcx, [rax]
     test rcx, rcx
-    jz .after_counter
+    jz .holo_hit              ; holo prediction — still count as hit
     inc dword [rcx + RHDR_HITS]
 
     ; STDP connection learning — strengthen temporal links
@@ -386,9 +386,14 @@ process_token:
     pop rcx
     cmp eax, -1
     je .skip_successor
+    ; Bounds check: successor table is 256 entries
+    cmp eax, 256
+    jge .skip_successor
 
     ; Update successor_tbl[last_fired_idx] = current_idx
     movzx edx, word [rbx + STATE_OFFSET + ST_LAST_FIRED_IDX]
+    cmp edx, 256
+    jge .succ_update_idx      ; skip write if last_fired out of bounds
     lea rsi, [rbx + STATE_OFFSET + ST_SUCCESSOR_TBL]
     mov [rsi + rdx * 2], ax   ; current idx is successor of last fired
 
@@ -396,6 +401,8 @@ process_token:
     movzx edx, word [rsi + rax * 2]
     test dx, dx
     jz .successor_fallback
+    cmp edx, REGION_TABLE_MAX
+    jge .successor_fallback   ; invalid successor index
     ; Convert successor idx to region ptr
     push rax
     imul rdi, rdx, RTE_SIZE
@@ -409,7 +416,9 @@ process_token:
     ; No successor known — predict same region
     mov [rbx + STATE_OFFSET + ST_SELF_PRED_REGION], rcx
 .successor_done:
-    ; Update last_fired_idx
+.succ_update_idx:
+    ; Update last_fired_idx (bounded to u8 range for table safety)
+    and eax, 0xFF
     mov [rbx + STATE_OFFSET + ST_LAST_FIRED_IDX], ax
 .skip_successor:
 
@@ -418,7 +427,8 @@ process_token:
     mov esi, r12d
     call fire_hook
 
-    ; Print hit feedback
+.holo_hit:
+    ; Print hit feedback (graph or holographic)
     lea rdi, [rel token_msg]
     call print_cstr
     mov edi, r12d
