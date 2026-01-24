@@ -190,9 +190,14 @@
                     (> (or (getf state :accuracy-trend) 0.0) 0.05)))
   (define-introspective-concept!
     :name 'STUCK
-    :description "Low accuracy with no improvement - flat or negative trend."
+    :description "Low accuracy with no improvement - flat or negative trend.
+                  Requires sufficient data (50+ traces) to distinguish from warmup."
     :detection-fn (lambda (state)
-                    (and (< (or (getf state :accuracy) 0.5) 0.4)
+                    (and ;; Maturity guard: need enough data to judge stagnation vs warmup
+                         (boundp '*trace-buffer*)
+                         (> (fill-pointer *trace-buffer*) 50)
+                         ;; Actual stagnation detection
+                         (< (or (getf state :accuracy) 0.5) 0.4)
                          (<= (or (getf state :accuracy-trend) 0.0) 0.0))))
   (define-introspective-concept!
     :name 'EXPLORING
