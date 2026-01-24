@@ -96,57 +96,93 @@ gate_test_modification:
     jmp .fail
 
 .valid_code:
-    pop rdx
+    pop rdx                    ; rdx = baseline_total
 
-    ; --- Step 4: Run test cases ---
-    ; Use entries from the miss buffer as test cases
-    ; For each test: does the modified region predict correctly?
+    ; --- Step 4: Run test cases from miss buffer (wider scan) ---
+    ; Test the copy against ALL available miss buffer entries, not just 8
     lea rsi, [rbx + STATE_OFFSET + ST_MISS_BUF]
-    xor ecx, ecx             ; test index
-    xor r8d, r8d             ; test_hits
-    xor r9d, r9d             ; test_total
+    mov ecx, [rbx + STATE_OFFSET + ST_MISS_POS]
+    test ecx, ecx
+    jz .use_gate_count
+    cmp ecx, ST_MISS_BUF_CAP
+    jle .use_miss_pos
+.use_gate_count:
+    mov ecx, GATE_TEST_COUNT
+.use_miss_pos:
+    ; ecx = number of entries to test (up to miss_pos or GATE_TEST_COUNT)
+    xor r8d, r8d             ; test_hits (on copy)
+    xor r9d, r9d             ; test_total (context-matching tests)
+    xor edx, edx             ; test index
 
 .test_loop:
-    cmp ecx, GATE_TEST_COUNT
+    cmp edx, ecx
     jge .test_done
 
-    ; Get test case: ctx_hash at [rsi + ecx*16], token at [rsi + ecx*16 + 8]
-    imul eax, ecx, ST_MISS_ENTRY_SIZE
+    ; Get test case: ctx_hash at [rsi + edx*16], token at [rsi + edx*16 + 8]
+    push rcx
+    push rdx
+    imul eax, edx, ST_MISS_ENTRY_SIZE
     mov edi, [rsi + rax]       ; test context hash (lower 32)
     mov edx, [rsi + rax + 8]   ; expected token
 
-    ; Check if nursery region would match this context
+    ; Check if nursery copy would match this context
     cmp byte [r15 + RHDR_SIZE], 0x3D
     jne .test_next
     cmp [r15 + RHDR_SIZE + 1], edi
     jne .test_next
 
-    ; It matches — check if prediction is correct
+    ; Context matches — count this as a test case
+    inc r9d
+
+    ; Check if prediction is correct
     cmp byte [r15 + RHDR_SIZE + 7], 0xB8
     jne .test_next
     cmp [r15 + RHDR_SIZE + 8], edx
-    jne .test_miss
+    jne .test_next
 
-    ; Hit
+    ; Hit on test
     inc r8d
-.test_miss:
-    inc r9d
 
 .test_next:
-    inc ecx
+    pop rdx
+    pop rcx
+    inc edx
     jmp .test_loop
 
 .test_done:
-    ; Decision: pass if test_hits >= baseline ratio OR no test data
+    ; --- Decision: compare test accuracy with baseline ---
+    ; baseline_accuracy = r13d / (saved total from step 2)
+    ; test_accuracy = r8d / r9d
+    ; Pass if: no test data OR test_accuracy >= baseline_accuracy * 0.8
+
     test r9d, r9d
-    jz .pass                  ; no applicable tests = pass
+    jz .pass                  ; no applicable tests = optimistic pass
 
-    ; Simple check: if the modification didn't make things worse
-    ; (any hits at all means it's potentially useful)
-    test r8d, r8d
-    jnz .pass
+    ; Compute test accuracy (f32)
+    cvtsi2ss xmm0, r8d
+    cvtsi2ss xmm1, r9d
+    divss xmm0, xmm1          ; xmm0 = test_accuracy
 
-    ; No hits on test cases — modification is not helpful
+    ; Compute baseline accuracy (f32)
+    mov eax, [r15 + RHDR_HITS]
+    mov ecx, [r15 + RHDR_MISSES]
+    add ecx, eax
+    test ecx, ecx
+    jz .pass                  ; no baseline data = pass
+    cvtsi2ss xmm2, eax
+    cvtsi2ss xmm3, ecx
+    divss xmm2, xmm3          ; xmm2 = baseline_accuracy
+
+    ; threshold = baseline * 0.8 (allow slight degradation)
+    mov eax, 0x3F4CCCCD        ; 0.8f
+    movd xmm3, eax
+    mulss xmm2, xmm3          ; threshold
+
+    ; Pass if test_accuracy >= threshold
+    comiss xmm0, xmm2
+    jae .pass
+
+    ; Test accuracy degraded too much — reject modification
     jmp .fail
 
 .pass:

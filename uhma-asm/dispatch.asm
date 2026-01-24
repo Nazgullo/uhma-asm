@@ -244,6 +244,32 @@ process_input:
     ; Decay dynamics once per line (not per token)
     call decay_all_regions
 
+    ; --- Temporal rhythm: update felt tempo from presence ---
+    ; tempo = 1.0 + arousal*0.5 - fatigue*0.25, clamped to [0.5, 2.0]
+    lea rdi, [r15 + STATE_OFFSET + ST_PRESENCE]
+    movss xmm0, [rdi + PRES_AROUSAL * 4]
+    cvtss2sd xmm0, xmm0
+    mov rax, TEMPO_AROUSAL_SCALE
+    movq xmm1, rax
+    mulsd xmm0, xmm1             ; arousal * 0.5
+    movss xmm2, [rdi + PRES_FATIGUE * 4]
+    cvtss2sd xmm2, xmm2
+    mov rax, TEMPO_FATIGUE_SCALE
+    movq xmm3, rax
+    mulsd xmm2, xmm3             ; fatigue * 0.25
+    mov rax, 0x3FF0000000000000   ; 1.0
+    movq xmm1, rax
+    addsd xmm0, xmm1             ; 1.0 + arousal*0.5
+    subsd xmm0, xmm2             ; - fatigue*0.25
+    ; Clamp [0.5, 2.0]
+    mov rax, TEMPO_MIN
+    movq xmm1, rax
+    maxsd xmm0, xmm1
+    mov rax, TEMPO_MAX
+    movq xmm1, rax
+    minsd xmm0, xmm1
+    movsd [r15 + STATE_OFFSET + ST_TEMPO_MULT], xmm0
+
     ; --- Organic per-line updates ---
     ; Decay anticipatory signals (distant things fade if not reinforced)
     call decay_anticipatory
@@ -308,6 +334,23 @@ process_token:
     mov r12d, edi             ; save token_id
     mov rbx, SURFACE_BASE
 
+    ; --- Novelty tracking: bloom filter for unique token detection ---
+    ; Hash token to 3 bloom positions, check if ALL set (seen before)
+    mov eax, r12d
+    mov edx, eax
+    shr edx, 5                ; edx = token >> 5 = word index
+    and edx, 63              ; edx mod 64 = word in 256-byte bloom
+    mov ecx, eax
+    and ecx, 31              ; bit position within word
+    lea rsi, [rbx + STATE_OFFSET + ST_TOKEN_BLOOM]
+    bt dword [rsi + rdx*4], ecx
+    jc .token_seen
+    ; NEW token — set bloom bit and increment novelty
+    bts dword [rsi + rdx*4], ecx
+    inc dword [rbx + STATE_OFFSET + ST_UNIQUE_TOKENS]
+    inc dword [rbx + STATE_OFFSET + ST_NOVELTY_RECENT]
+.token_seen:
+
     ; --- Update token ring buffer ---
     lea rax, [rbx + STATE_OFFSET + ST_TOKEN_POS]
     mov ecx, [rax]            ; current pos
@@ -348,6 +391,21 @@ process_token:
     ; Clear surprise type (no surprise on hit)
     lea rax, [rbx + STATE_OFFSET + ST_SURPRISE_TYPE]
     mov dword [rax], SURPRISE_NONE
+
+    ; --- Metabolic income: hits generate energy (correct predictions are valuable) ---
+    mov rax, ENERGY_HIT_INCOME
+    movq xmm5, rax
+    movsd xmm6, [rbx + STATE_OFFSET + ST_ENERGY]
+    addsd xmm6, xmm5
+    mov rax, ENERGY_MAX
+    movq xmm5, rax
+    minsd xmm6, xmm5            ; cap at max
+    movsd [rbx + STATE_OFFSET + ST_ENERGY], xmm6
+    ; Track income
+    mov rax, ENERGY_HIT_INCOME
+    movq xmm5, rax
+    addsd xmm5, [rbx + STATE_OFFSET + ST_ENERGY_INCOME]
+    movsd [rbx + STATE_OFFSET + ST_ENERGY_INCOME], xmm5
 
     ; Increment hit counter on the predicting region
     lea rax, [rbx + STATE_OFFSET + ST_PREDICT_REGION]
@@ -550,6 +608,42 @@ process_token:
     mov rdi, [rax]            ; context hash
     mov esi, r12d             ; token to predict
     call learn_pattern
+
+    ; --- Inhibitory competition: wrong predictor should be suppressed ---
+    ; If a confident region predicted wrong, the correct region should inhibit it.
+    ; This creates lateral inhibition between competing predictions.
+    lea rax, [rbx + STATE_OFFSET + ST_PREDICT_REGION]
+    mov rcx, [rax]
+    test rcx, rcx
+    jz .after_counter          ; no predicting region to inhibit
+    ; Find the region that correctly predicts this token in this context
+    lea rax, [rbx + STATE_OFFSET + ST_LAST_CTX]
+    mov rdi, [rax]
+    mov esi, r12d
+    push rcx                   ; save wrong-predictor
+    call find_existing_pattern ; → rax = correct region (or 0)
+    pop rcx                    ; rcx = wrong predictor
+    test rax, rax
+    jz .after_counter          ; no correct pattern found yet
+    cmp rax, rcx
+    je .after_counter          ; same region (shouldn't happen, but guard)
+    ; Wire inhibition: correct → inhibits wrong (lateral suppression)
+    cmp qword [rax + RHDR_INHIBIT_A], 0
+    jne .try_inhib_b
+    mov [rax + RHDR_INHIBIT_A], rcx
+    mov rdx, INITIAL_WEIGHT
+    movq xmm0, rdx
+    movsd [rax + RHDR_W_INHIBIT_A], xmm0
+    inc dword [rbx + STATE_OFFSET + ST_INHIBIT_LEARNED]
+    jmp .after_counter
+.try_inhib_b:
+    cmp qword [rax + RHDR_INHIBIT_B], 0
+    jne .after_counter         ; both slots full
+    mov [rax + RHDR_INHIBIT_B], rcx
+    mov rdx, INITIAL_WEIGHT
+    movq xmm0, rdx
+    movsd [rax + RHDR_W_INHIBIT_B], xmm0
+    inc dword [rbx + STATE_OFFSET + ST_INHIBIT_LEARNED]
     jmp .after_counter
 
 .no_prediction:
@@ -622,6 +716,17 @@ dispatch_predict:
     mov [rsp + 36], edi       ; save copy
     mov rbx, SURFACE_BASE
 
+    ; --- Metabolic cost: prediction attempt costs energy ---
+    mov rax, ENERGY_PREDICT_COST
+    movq xmm0, rax
+    movsd xmm1, [rbx + STATE_OFFSET + ST_ENERGY]
+    subsd xmm1, xmm0
+    xorpd xmm2, xmm2
+    maxsd xmm1, xmm2            ; floor at 0
+    movsd [rbx + STATE_OFFSET + ST_ENERGY], xmm1
+    addsd xmm0, [rbx + STATE_OFFSET + ST_ENERGY_SPENT]
+    movsd [rbx + STATE_OFFSET + ST_ENERGY_SPENT], xmm0
+
     ; Zero trace counters
     mov dword [rbx + STATE_OFFSET + ST_TRACE_CANDIDATES], 0
     mov dword [rbx + STATE_OFFSET + ST_TRACE_MATCHED], 0
@@ -659,6 +764,9 @@ dispatch_predict:
     jmp .predict_return
 
 .holo_miss:
+    ; Store sub-threshold holo token for coherence comparison with graph
+    mov [rbx + STATE_OFFSET + ST_HOLO_LAST_TOKEN], eax
+
     ; Sub-threshold holographic signal → anticipatory buffer
     ; "Something forming in the distance" — not strong enough to predict,
     ; but present enough to notice. Accumulates until it materializes.
@@ -983,6 +1091,21 @@ dispatch_predict:
     ; --- We have a match ---
     mov eax, [rsp + 0]        ; best_token
     mov rsi, [rsp + 16]       ; best_region_ptr
+
+    ; --- Coherence tracking: does graph agree with holo? ---
+    mov [rbx + STATE_OFFSET + ST_GRAPH_LAST_TOKEN], eax
+    mov ecx, [rbx + STATE_OFFSET + ST_HOLO_LAST_TOKEN]
+    test ecx, ecx
+    jz .skip_coherence         ; no holo prediction to compare
+    cmp ecx, eax
+    jne .coherence_disagree
+    ; AGREE: holographic and graph both predict same thing → internal consistency
+    inc dword [rbx + STATE_OFFSET + ST_COHERENCE_AGREE]
+    jmp .skip_coherence
+.coherence_disagree:
+    ; DISAGREE: tension between memory systems → needs resolution
+    inc dword [rbx + STATE_OFFSET + ST_COHERENCE_DISAGREE]
+.skip_coherence:
 
     ; Store as predicting region
     lea rcx, [rbx + STATE_OFFSET + ST_PREDICT_REGION]

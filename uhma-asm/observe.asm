@@ -248,6 +248,40 @@ observe_cycle:
     ; --- Track recent condemnations for presence decay ---
     mov [rbx + STATE_OFFSET + ST_RECENT_CONDEMNS], r15d
 
+    ; --- Self-consumption: metabolize condemned regions into energy ---
+    ; Dead patterns become fuel. Their knowledge is recycled.
+    test r15d, r15d
+    jz .no_consume
+    ; Each condemned region yields ENERGY_CONSUME_RATE energy
+    movzx eax, r15w
+    cvtsi2sd xmm0, eax
+    mov rax, ENERGY_CONSUME_RATE
+    movq xmm1, rax
+    mulsd xmm0, xmm1            ; total energy from consumption
+    ; Add to energy pool
+    addsd xmm0, [rbx + STATE_OFFSET + ST_ENERGY]
+    ; Cap at ENERGY_MAX
+    mov rax, ENERGY_MAX
+    movq xmm1, rax
+    minsd xmm0, xmm1
+    movsd [rbx + STATE_OFFSET + ST_ENERGY], xmm0
+    ; Track consumption stats
+    add [rbx + STATE_OFFSET + ST_METABOLIZED_COUNT], r15d
+    ; Add to consumed_energy accumulator
+    movzx eax, r15w
+    cvtsi2sd xmm0, eax
+    mov rax, ENERGY_CONSUME_RATE
+    movq xmm1, rax
+    mulsd xmm0, xmm1
+    addsd xmm0, [rbx + STATE_OFFSET + ST_CONSUMED_ENERGY]
+    movsd [rbx + STATE_OFFSET + ST_CONSUMED_ENERGY], xmm0
+.no_consume:
+
+    ; --- Reset novelty window for next observation period ---
+    mov dword [rbx + STATE_OFFSET + ST_NOVELTY_RECENT], 0
+    mov eax, [rbx + STATE_OFFSET + ST_TOKEN_COUNT]
+    mov [rbx + STATE_OFFSET + ST_NOVELTY_WINDOW], eax
+
     ; Print results
     lea rdi, [rel obs_accuracy]
     call print_cstr
@@ -271,6 +305,22 @@ observe_cycle:
     movzx rdi, r15w
     call print_u64
     call print_newline
+
+    ; --- Metabolic cost: observation consumes energy ---
+    mov rax, ENERGY_OBSERVE_COST
+    movq xmm0, rax
+    movsd xmm1, [rbx + STATE_OFFSET + ST_ENERGY]
+    subsd xmm1, xmm0
+    xorpd xmm2, xmm2
+    maxsd xmm1, xmm2            ; floor at 0
+    movsd [rbx + STATE_OFFSET + ST_ENERGY], xmm1
+    ; Track spending
+    addsd xmm0, [rbx + STATE_OFFSET + ST_ENERGY_SPENT]
+    movsd [rbx + STATE_OFFSET + ST_ENERGY_SPENT], xmm0
+
+    ; --- Reset coherence tracking for next window ---
+    mov dword [rbx + STATE_OFFSET + ST_COHERENCE_AGREE], 0
+    mov dword [rbx + STATE_OFFSET + ST_COHERENCE_DISAGREE], 0
 
     ; --- Self-reading: decode own regions, understand what they do ---
     ; The system reads its own code as data — homoiconic introspection
@@ -766,15 +816,42 @@ update_drives:
     divss xmm0, xmm1
     movss [rdi + 4], xmm0     ; drive_efficiency = usage ratio
 
-    ; Drive 2: Novelty — how repetitive is recent activity
-    ; (placeholder: low value = fine)
+    ; Drive 2: Novelty — ratio of new unique tokens to total tokens in window
+    ; Genuine novelty: how many previously-unseen patterns appeared recently
+    mov ecx, [rbx + STATE_OFFSET + ST_NOVELTY_RECENT]
+    mov edx, [rbx + STATE_OFFSET + ST_NOVELTY_WINDOW]
+    test edx, edx
+    jz .novelty_zero
+    cvtsi2ss xmm0, ecx
+    cvtsi2ss xmm1, edx
+    divss xmm0, xmm1          ; novelty = new_unique / total_window
+    mov ecx, 0x3F800000        ; clamp to 1.0
+    movd xmm1, ecx
+    minss xmm0, xmm1
+    movss [rdi + 8], xmm0
+    jmp .drive_coherence
+.novelty_zero:
     xorps xmm0, xmm0
     movss [rdi + 8], xmm0
 
-    ; Drive 3: Coherence — VSA vs dispatch agreement
-    ; (placeholder)
+.drive_coherence:
+    ; Drive 3: Coherence — holographic and graph prediction agreement ratio
+    ; When holo and graph agree, system is internally consistent
+    ; When they disagree, there's tension that needs resolution
+    mov ecx, [rbx + STATE_OFFSET + ST_COHERENCE_AGREE]
+    mov edx, [rbx + STATE_OFFSET + ST_COHERENCE_DISAGREE]
+    add edx, ecx              ; total predictions with both sources
+    test edx, edx
+    jz .coherence_zero
+    cvtsi2ss xmm0, ecx
+    cvtsi2ss xmm1, edx
+    divss xmm0, xmm1          ; coherence = agree / (agree + disagree)
+    movss [rdi + 12], xmm0
+    jmp .drives_computed
+.coherence_zero:
     xorps xmm0, xmm0
     movss [rdi + 12], xmm0
+.drives_computed:
 
     pop rbx
     ret
@@ -886,6 +963,29 @@ compute_intro_state:
     jmp .intro_done
 
 .not_exploring:
+    ; Check CONSOLIDATING: nursery regions exist (dreamed but not yet promoted/condemned)
+    ; Scan for NURSERY-flagged regions
+    push rcx
+    lea rax, [rbx + REGION_TABLE_OFFSET]
+    mov ecx, [rbx + STATE_OFFSET + ST_REGION_COUNT]
+    xor edx, edx
+.consolidate_scan:
+    cmp edx, ecx
+    jge .not_consolidating
+    imul esi, edx, RTE_SIZE
+    movzx edi, word [rax + rsi + RTE_FLAGS]
+    test edi, RFLAG_NURSERY
+    jnz .is_consolidating
+    inc edx
+    jmp .consolidate_scan
+.is_consolidating:
+    pop rcx
+    lea rax, [rbx + STATE_OFFSET + ST_INTRO_STATE]
+    mov dword [rax], INTRO_CONSOLIDATING
+    jmp .intro_done
+.not_consolidating:
+    pop rcx
+
     ; Check STUCK: accuracy < 0.4, many steps, no recent emissions
     mov eax, 0x3ECCCCCD        ; 0.4f
     movd xmm1, eax

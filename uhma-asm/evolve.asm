@@ -36,17 +36,30 @@ evolve_cycle:
     push r13
     push r14
     push r15
-    sub rsp, EVOLVE_POOL_SIZE * 8  ; pool of candidate indices
+    sub rsp, EVOLVE_POOL_SIZE * 16  ; pool: (index:u32, fitness:f32) × N
 
     mov rbx, SURFACE_BASE
 
-    ; --- Select candidates: top regions by hit count ---
+    ; --- Metabolic cost: evolution is expensive ---
+    movsd xmm0, [rbx + STATE_OFFSET + ST_ENERGY]
+    mov rax, ENERGY_STARVATION
+    movq xmm1, rax
+    ucomisd xmm0, xmm1
+    jbe .evolve_exit           ; too hungry to evolve
+    mov rax, ENERGY_EVOLVE_COST
+    movq xmm1, rax
+    subsd xmm0, xmm1
+    xorpd xmm2, xmm2
+    maxsd xmm0, xmm2
+    movsd [rbx + STATE_OFFSET + ST_ENERGY], xmm0
+    addsd xmm1, [rbx + STATE_OFFSET + ST_ENERGY_SPENT]
+    movsd [rbx + STATE_OFFSET + ST_ENERGY_SPENT], xmm1
+
+    ; --- Select candidates by FITNESS (accuracy × diversity) ---
     lea r12, [rbx + REGION_TABLE_OFFSET]
     lea rax, [rbx + STATE_OFFSET + ST_REGION_COUNT]
     mov r13d, [rax]
 
-    ; Find top-performing dispatch regions
-    ; Simple approach: iterate and keep top EVOLVE_POOL_SIZE by hits
     xor r14d, r14d            ; pool count
     xor ecx, ecx             ; scan index
 
@@ -70,15 +83,35 @@ evolve_cycle:
     test eax, RFLAG_ACTIVE
     jz .skip_select
 
-    ; Must have some hits
+    ; Must have data (hits + misses > 2)
     mov eax, [rdi + RTE_HITS]
-    test eax, eax
-    jz .skip_select
+    mov edx, [rdi + RTE_MISSES]
+    add edx, eax
+    cmp edx, 2
+    jl .skip_select
 
-    ; Add to pool
+    ; Compute fitness = accuracy * (1 + log2(hits))
+    ; accuracy = hits / (hits + misses)
+    cvtsi2ss xmm0, eax       ; hits
+    cvtsi2ss xmm1, edx       ; total
+    divss xmm0, xmm1         ; accuracy
+
+    ; Diversity bonus: regions with unique contexts score higher
+    ; Simple: use resonance field (co-fire correlation) as diversity indicator
+    mov rsi, [rdi + RTE_ADDR]
+    movsd xmm2, [rsi + RHDR_RESONANCE]
+    cvtsd2ss xmm2, xmm2
+    mov edx, 0x3F800000       ; 1.0f
+    movd xmm3, edx
+    addss xmm2, xmm3         ; 1.0 + resonance
+    mulss xmm0, xmm2         ; fitness = accuracy * (1 + resonance)
+
+    ; Add to pool with fitness score
     pop rcx
     push rcx
-    mov [rsp + 8 + r14 * 8], ecx  ; store index (offset for pushed rcx)
+    imul eax, r14d, 16
+    mov [rsp + 8 + rax], ecx           ; index
+    movss [rsp + 8 + rax + 4], xmm0   ; fitness
     inc r14d
 
 .skip_select:
@@ -91,15 +124,44 @@ evolve_cycle:
     test r14d, r14d
     jz .evolve_exit
 
-    ; --- Reproduce top candidate ---
-    mov ecx, [rsp]            ; first candidate index (best by scan order)
+    ; --- Sort pool by fitness (simple insertion for small N) ---
+    ; Find best fitness entry, use as first candidate
+    xor ecx, ecx
+    xor edx, edx              ; best_idx
+    movss xmm0, [rsp + 4]    ; best_fitness = pool[0].fitness
+    mov esi, 1
+.sort_loop:
+    cmp esi, r14d
+    jge .sort_done
+    imul eax, esi, 16
+    movss xmm1, [rsp + rax + 4]
+    comiss xmm1, xmm0
+    jbe .sort_next
+    movss xmm0, xmm1
+    mov edx, esi
+.sort_next:
+    inc esi
+    jmp .sort_loop
+.sort_done:
+    ; edx = index of best candidate in pool
+
+    ; --- Reproduce best candidate ---
+    imul eax, edx, 16
+    mov ecx, [rsp + rax]      ; best candidate's region index
     mov edi, ecx
     call evolve_reproduce
 
-    ; --- Mutate second candidate if available ---
+    ; --- Mutate second-best if available ---
     cmp r14d, 2
     jl .no_mutate
-    mov ecx, [rsp + 8]        ; second candidate
+    ; Find second-best (first entry that's not the best)
+    xor esi, esi
+    cmp esi, edx
+    jne .got_second
+    mov esi, 1
+.got_second:
+    imul eax, esi, 16
+    mov ecx, [rsp + rax]
     mov edi, ecx
     call evolve_mutate
 .no_mutate:
@@ -107,8 +169,15 @@ evolve_cycle:
     ; --- Crossover if 2+ candidates ---
     cmp r14d, 2
     jl .no_crossover
-    mov edi, [rsp]            ; parent A
-    mov esi, [rsp + 8]        ; parent B
+    imul eax, edx, 16
+    mov edi, [rsp + rax]      ; parent A (best)
+    xor esi, esi
+    cmp esi, edx
+    jne .cross_b
+    mov esi, 1
+.cross_b:
+    imul eax, esi, 16
+    mov esi, [rsp + rax]      ; parent B (second)
     call evolve_crossover
 .no_crossover:
 
@@ -121,7 +190,7 @@ evolve_cycle:
     call fire_hook
 
 .evolve_exit:
-    add rsp, EVOLVE_POOL_SIZE * 8
+    add rsp, EVOLVE_POOL_SIZE * 16
     pop r15
     pop r14
     pop r13

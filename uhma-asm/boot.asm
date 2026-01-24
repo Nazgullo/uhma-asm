@@ -38,7 +38,15 @@ _start:
     ; 4. Initialize VSA arena with random vectors for initial tokens
     call vsa_init_random
 
-    ; 5. Enter the interactive REPL (never returns)
+    ; 5. Initialize metabolic energy pool
+    mov rbx, SURFACE_BASE
+    mov rax, ENERGY_INITIAL
+    mov [rbx + STATE_OFFSET + ST_ENERGY], rax
+    ; Initialize tempo to 1.0 (normal rhythm)
+    mov rax, 0x3FF0000000000000    ; 1.0 f64
+    mov [rbx + STATE_OFFSET + ST_TEMPO_MULT], rax
+
+    ; 6. Enter the interactive REPL (never returns)
     call repl_run
 
     ; Should not reach here

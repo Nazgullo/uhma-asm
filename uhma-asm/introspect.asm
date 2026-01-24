@@ -523,7 +523,24 @@ update_organic_pressure:
     ucomisd xmm2, xmm3
     jbe .check_observe
 
+    ; --- Energy check: can we afford to dream? ---
+    movsd xmm4, [rbx + STATE_OFFSET + ST_ENERGY]
+    mov rax, ENERGY_STARVATION
+    movq xmm5, rax
+    ucomisd xmm4, xmm5
+    jbe .check_observe         ; too hungry to dream — skip
+
     ; ORGANIC DREAM: miss pressure demands consolidation
+    ; Deduct energy cost
+    mov rax, ENERGY_DREAM_COST
+    movq xmm5, rax
+    subsd xmm4, xmm5
+    xorpd xmm6, xmm6
+    maxsd xmm4, xmm6
+    movsd [rbx + STATE_OFFSET + ST_ENERGY], xmm4
+    addsd xmm5, [rbx + STATE_OFFSET + ST_ENERGY_SPENT]
+    movsd [rbx + STATE_OFFSET + ST_ENERGY_SPENT], xmm5
+
     push rdi
     lea rdi, [rel intro_organic_msg]
     call print_cstr
@@ -755,11 +772,23 @@ update_presence_dispatch:
     subss xmm5, xmm6
     movss [rdi + ST_PRES_DISPATCH_BIAS], xmm5
 
-    ; Mode selection based on presence state:
+    ; Mode selection based on presence state and energy:
+    ; Starving → FAST always (survival mode)
+    ; High fatigue → FAST (conserve energy)
     ; High arousal + low focus → EXPLORE
     ; High focus + low arousal → DELIBERATE
-    ; High fatigue → FAST (conserve energy)
     ; Otherwise → drive-selected or BEST
+
+    ; Check energy starvation first (overrides everything)
+    movsd xmm5, [rbx + STATE_OFFSET + ST_ENERGY]
+    mov rax, ENERGY_STARVATION
+    movq xmm6, rax
+    ucomisd xmm5, xmm6
+    ja .energy_ok
+    ; STARVING: force minimal-cost dispatch
+    mov dword [rdi + ST_DISPATCH_MODE], DMODE_FAST
+    jmp .pres_done
+.energy_ok:
 
     mov eax, 0x3F19999A         ; 0.6f threshold
     movd xmm5, eax

@@ -309,6 +309,37 @@
 %define ST_PRES_RISK_APPETITE (ST_PRES_DISPATCH_BIAS + 4) ; f32 from arousal/confidence
 
 ;; ============================================================
+;; Metabolic System (self-consumption, energy, cost)
+;; ============================================================
+
+; Energy pool — operations cost energy, hits earn energy, condemned regions are consumed
+%define ST_ENERGY           (ST_PRES_RISK_APPETITE + 4)   ; f64 current energy [0, ENERGY_MAX]
+%define ST_ENERGY_INCOME    (ST_ENERGY + 8)               ; f64 total energy earned (hits)
+%define ST_ENERGY_SPENT     (ST_ENERGY_INCOME + 8)        ; f64 total energy spent (operations)
+%define ST_METABOLIZED_COUNT (ST_ENERGY_SPENT + 8)        ; u32 regions consumed for energy
+%define ST_CONSUMED_ENERGY  (ST_METABOLIZED_COUNT + 4)    ; f64 total energy from consumption
+
+; Novelty tracking — bloom filter + unique token counter
+%define ST_UNIQUE_TOKENS    (ST_CONSUMED_ENERGY + 8)      ; u32 unique tokens encountered
+%define ST_TOKEN_BLOOM      (ST_UNIQUE_TOKENS + 4)        ; 256 bytes bloom filter (2048 bits)
+%define ST_NOVELTY_RECENT   (ST_TOKEN_BLOOM + 256)        ; u32 new tokens in last observation window
+%define ST_NOVELTY_WINDOW   (ST_NOVELTY_RECENT + 4)       ; u32 total tokens in last window
+
+; Coherence tracking — holographic vs graph agreement
+%define ST_COHERENCE_AGREE  (ST_NOVELTY_WINDOW + 4)       ; u32 holo+graph predict same token
+%define ST_COHERENCE_DISAGREE (ST_COHERENCE_AGREE + 4)    ; u32 holo+graph predict different tokens
+%define ST_HOLO_LAST_TOKEN  (ST_COHERENCE_DISAGREE + 4)   ; u32 last holographic prediction token
+%define ST_GRAPH_LAST_TOKEN (ST_HOLO_LAST_TOKEN + 4)      ; u32 last graph prediction token
+
+; Temporal rhythm — felt sense of time, not mechanical counter
+%define ST_TEMPO_MULT       (ST_GRAPH_LAST_TOKEN + 4)     ; f64 rhythm multiplier [0.5, 2.0]
+%define ST_RHYTHM_PHASE     (ST_TEMPO_MULT + 8)           ; f64 oscillation phase [0, 2pi]
+%define ST_RHYTHM_PERIOD    (ST_RHYTHM_PHASE + 8)         ; u32 steps since last rhythm peak
+
+; Inhibitory competition tracking
+%define ST_INHIBIT_LEARNED  (ST_RHYTHM_PERIOD + 4)        ; u32 total inhibitory connections formed
+
+;; ============================================================
 ;; Graph Dynamics Tuning Constants
 ;; ============================================================
 
@@ -446,6 +477,18 @@
 %define EVOLVE_POOL_SIZE    16
 %define COMPACT_THRESHOLD   64
 
+; Metabolic energy constants (f64 hex representations)
+%define ENERGY_INITIAL          0x4059000000000000  ; 100.0 — starting energy
+%define ENERGY_MAX              0x4079000000000000  ; 400.0 — energy cap
+%define ENERGY_HIT_INCOME       0x3FF0000000000000  ; 1.0 — earned per hit
+%define ENERGY_EMIT_COST        0x4000000000000000  ; 2.0 — cost to emit new region
+%define ENERGY_PREDICT_COST     0x3FB999999999999A  ; 0.1 — cost per prediction attempt
+%define ENERGY_DREAM_COST       0x4014000000000000  ; 5.0 — cost per dream cycle
+%define ENERGY_EVOLVE_COST      0x4024000000000000  ; 10.0 — cost per evolution
+%define ENERGY_OBSERVE_COST     0x4008000000000000  ; 3.0 — cost per observe cycle
+%define ENERGY_CONSUME_RATE     0x4034000000000000  ; 20.0 — energy per consumed region (its knowledge becomes fuel)
+%define ENERGY_STARVATION       0x4024000000000000  ; 10.0 — below this, system conserves
+
 ; Organic trigger thresholds (f64 hex representations)
 %define DREAM_PRESSURE_THRESH   0x3FF199999999999A  ; 1.1 — dream fires when pressure > this
 %define OBSERVE_PRESSURE_THRESH 0x3FF0000000000000  ; 1.0 — observe fires when pressure > this
@@ -455,6 +498,12 @@
 %define MISS_PRESSURE_ALPHA     0x3F947AE147AE147B  ; 0.02 — EMA smoothing for miss pressure
 %define FLATNESS_THRESH         0x3F747AE147AE147B  ; 0.005 — amplitude below = flat
 %define OSCILLATION_MIN         30                  ; steps before checking oscillation
+
+; Temporal rhythm constants
+%define TEMPO_MIN               0x3FE0000000000000  ; 0.5 — slowest tempo
+%define TEMPO_MAX               0x4000000000000000  ; 2.0 — fastest tempo
+%define TEMPO_AROUSAL_SCALE     0x3FE0000000000000  ; 0.5 — arousal contribution to tempo
+%define TEMPO_FATIGUE_SCALE     0x3FD0000000000000  ; 0.25 — fatigue slows tempo
 
 ;; ============================================================
 ;; Region Semantic Signatures (from introspection decoder)

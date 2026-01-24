@@ -102,6 +102,23 @@ learn_pattern:
     lea rdi, [rel learn_new_msg]
     call print_cstr
 
+    ; --- Metabolic cost: emitting a new pattern costs energy ---
+    ; If energy is below starvation level, refuse to emit (conserve)
+    movsd xmm0, [rbx + STATE_OFFSET + ST_ENERGY]
+    mov rax, ENERGY_STARVATION
+    movq xmm1, rax
+    ucomisd xmm0, xmm1
+    jbe .done                  ; starving — refuse to spend energy on emission
+    ; Deduct emission cost
+    mov rax, ENERGY_EMIT_COST
+    movq xmm1, rax
+    subsd xmm0, xmm1
+    xorpd xmm2, xmm2
+    maxsd xmm0, xmm2
+    movsd [rbx + STATE_OFFSET + ST_ENERGY], xmm0
+    addsd xmm1, [rbx + STATE_OFFSET + ST_ENERGY_SPENT]
+    movsd [rbx + STATE_OFFSET + ST_ENERGY_SPENT], xmm1
+
     mov edi, r12d             ; ctx_hash
     mov esi, r13d             ; token_id
     ; Get current step for birth

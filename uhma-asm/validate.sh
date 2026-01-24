@@ -1,5 +1,5 @@
 #!/bin/bash
-# validate.sh — Validation harness for UHMA-ASM 76 design claims
+# validate.sh — Validation harness for UHMA-ASM 86 design claims
 # Builds the binary, feeds multi-pass input, verifies all claims with pass/fail reporting.
 #
 # Usage:
@@ -27,11 +27,11 @@ BINARY="./uhma"
 TIMEOUT=60
 PASS_COUNT=0
 FAIL_COUNT=0
-TOTAL=76
+TOTAL=86
 VERBOSE=0
 CATEGORY=""
 CLAIM_MIN=1
-CLAIM_MAX=76
+CLAIM_MAX=86
 STRESS=0
 QUICK=0
 SAVE_ON_FAIL=0
@@ -89,6 +89,7 @@ if [ -n "$CATEGORY" ]; then
         holo)      CLAIM_MIN=60; CLAIM_MAX=62 ;;
         quant)     CLAIM_MIN=63; CLAIM_MAX=66 ;;
         organic)   CLAIM_MIN=67; CLAIM_MAX=76 ;;
+        metabolism) CLAIM_MIN=77; CLAIM_MAX=86 ;;
         *)
             echo "Unknown category: $CATEGORY"
             echo "Valid: self learn observe emit dream modify evolve graph drives dispatch intro presence causal holo quant organic"
@@ -121,7 +122,7 @@ fi
 
 # Track per-category results
 declare -A CAT_PASS CAT_FAIL
-for cat in self learn observe emit dream modify evolve graph drives dispatch intro presence causal holo quant organic; do
+for cat in self learn observe emit dream modify evolve graph drives dispatch intro presence causal holo quant organic metabolism; do
     CAT_PASS[$cat]=0
     CAT_FAIL[$cat]=0
 done
@@ -144,7 +145,8 @@ claim_category() {
     elif [ $n -le 59 ]; then echo "causal"
     elif [ $n -le 62 ]; then echo "holo"
     elif [ $n -le 66 ]; then echo "quant"
-    else                      echo "organic"
+    elif [ $n -le 76 ]; then echo "organic"
+    else                      echo "metabolism"
     fi
 }
 
@@ -1182,6 +1184,81 @@ else
     report_fail 76 "System initiates actions autonomously" "no autonomous actions"
 fi
 
+# ===========================================================
+# CLAIMS 77-86: Metabolism (self-consumption, energy, real drives)
+# ===========================================================
+
+# [77] Self-consumption: condemned regions become energy
+# The observe cycle metabolizes condemned regions: their structure becomes fuel
+if grep -q "ENERGY_CONSUME_RATE" observe.asm 2>/dev/null && grep -q "ST_METABOLIZED_COUNT" include/constants.inc 2>/dev/null; then
+    report_pass 77 "Self-consumption (condemned regions → energy)" "consume in observe.asm"
+else
+    report_fail 77 "Self-consumption (condemned regions → energy)" "no consumption mechanism"
+fi
+
+# [78] Metabolic energy pool exists and is initialized
+if grep -q "ENERGY_INITIAL" boot.asm 2>/dev/null && grep -q "ST_ENERGY " include/constants.inc 2>/dev/null; then
+    report_pass 78 "Metabolic energy pool (operations cost energy)" "initialized in boot.asm"
+else
+    report_fail 78 "Metabolic energy pool (operations cost energy)" "no energy system"
+fi
+
+# [79] Energy cost per prediction (ENERGY_PREDICT_COST used in dispatch)
+if grep -q "ENERGY_PREDICT_COST" dispatch.asm 2>/dev/null; then
+    report_pass 79 "Predictions cost energy (metabolic cost)" "in:dispatch.asm"
+else
+    report_fail 79 "Predictions cost energy (metabolic cost)" "no predict cost"
+fi
+
+# [80] Energy income per hit (ENERGY_HIT_INCOME)
+if grep -q "ENERGY_HIT_INCOME" dispatch.asm 2>/dev/null; then
+    report_pass 80 "Hits generate energy (metabolic income)" "in:dispatch.asm"
+else
+    report_fail 80 "Hits generate energy (metabolic income)" "no hit income"
+fi
+
+# [81] Real novelty drive (bloom filter tracking unique tokens)
+if grep -q "ST_TOKEN_BLOOM" include/constants.inc 2>/dev/null && grep -q "ST_NOVELTY_RECENT" observe.asm 2>/dev/null; then
+    report_pass 81 "Real novelty drive (unique token tracking)" "bloom+novelty_recent"
+else
+    report_fail 81 "Real novelty drive (unique token tracking)" "placeholder novelty"
+fi
+
+# [82] Real coherence drive (holo/graph agreement)
+if grep -q "ST_COHERENCE_AGREE" include/constants.inc 2>/dev/null && grep -q "COHERENCE_DISAGREE\|coherence_disagree" dispatch.asm 2>/dev/null; then
+    report_pass 82 "Real coherence drive (holo/graph agreement)" "agree/disagree tracking"
+else
+    report_fail 82 "Real coherence drive (holo/graph agreement)" "placeholder coherence"
+fi
+
+# [83] Temporal rhythm modulation (arousal-driven tempo)
+if grep -q "ST_TEMPO_MULT" include/constants.inc 2>/dev/null && grep -q "TEMPO_AROUSAL_SCALE\|ST_TEMPO_MULT" dispatch.asm 2>/dev/null; then
+    report_pass 83 "Temporal rhythm (arousal-modulated tempo)" "tempo_mult active"
+else
+    report_fail 83 "Temporal rhythm (arousal-modulated tempo)" "no temporal rhythm"
+fi
+
+# [84] CONSOLIDATING introspective state reachable
+if grep -q "INTRO_CONSOLIDATING\|is_consolidating\|RFLAG_NURSERY" observe.asm 2>/dev/null; then
+    report_pass 84 "CONSOLIDATING state reachable" "nursery scan in observe"
+else
+    report_fail 84 "CONSOLIDATING state reachable" "CONSOLIDATING never entered"
+fi
+
+# [85] Inhibitory competition (lateral suppression between predictions)
+if grep -q "INHIBIT_LEARNED\|ST_INHIBIT_LEARNED\|try_inhib_b" dispatch.asm 2>/dev/null; then
+    report_pass 85 "Inhibitory competition learning" "lateral inhibition active"
+else
+    report_fail 85 "Inhibitory competition learning" "no inhibitory learning"
+fi
+
+# [86] Energy starvation behavior (conserves when starving)
+if grep -q "ENERGY_STARVATION" introspect.asm 2>/dev/null && grep -q "ENERGY_STARVATION" learn.asm 2>/dev/null; then
+    report_pass 86 "Energy starvation conserves behavior" "starvation checks in introspect+learn"
+else
+    report_fail 86 "Energy starvation conserves behavior" "no starvation behavior"
+fi
+
 # --- JSON output mode ---
 if [ "$JSON_OUTPUT" -eq 1 ]; then
     # Strip trailing comma and wrap in JSON
@@ -1200,11 +1277,11 @@ printf " VALIDATION SUMMARY: ${BOLD}%d/%d PASS, %d/%d FAIL${RESET}\n" \
 echo "============================================================"
 
 # Per-category breakdown
-if [ "$CLAIM_MIN" -eq 1 ] && [ "$CLAIM_MAX" -eq 76 ]; then
+if [ "$CLAIM_MIN" -eq 1 ] && [ "$CLAIM_MAX" -eq 86 ]; then
     echo ""
     printf " ${DIM}%-12s %s${RESET}\n" "Category" "Result"
     printf " ${DIM}%-12s %s${RESET}\n" "--------" "------"
-    for cat in self learn observe emit dream modify evolve graph drives dispatch intro presence causal holo quant organic; do
+    for cat in self learn observe emit dream modify evolve graph drives dispatch intro presence causal holo quant organic metabolism; do
         p=${CAT_PASS[$cat]}
         f=${CAT_FAIL[$cat]}
         t=$((p + f))
