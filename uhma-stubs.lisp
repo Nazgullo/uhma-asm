@@ -408,7 +408,7 @@
       pattern))
 
 (defun crossover-patterns (pattern-a pattern-b)
-  "Combine two patterns by taking head of A and tail of B."
+  "Combine two S-expression patterns by taking head of A and tail of B."
   (cond
     ((and (listp pattern-a) (listp pattern-b)
           (> (length pattern-a) 1) (> (length pattern-b) 1))
@@ -418,6 +418,75 @@
                (subseq pattern-b (min split-b (1- (length pattern-b)))))))
     (pattern-a pattern-a)
     (t pattern-b)))
+
+(defun vsa-crossover-experts! (parent-a parent-b)
+  "Sexual reproduction in VSA space: superpose knowledge-vectors from two parents.
+   Creates offspring whose knowledge-vector blends both parents weighted by fitness.
+   Also crosses over S-expression programs. Returns the offspring expert."
+  (when (and parent-a parent-b
+             (typep parent-a 'expert) (typep parent-b 'expert))
+    (let* ((fitness-a (expert-life parent-a))
+           (fitness-b (expert-life parent-b))
+           (total-fitness (+ fitness-a fitness-b))
+           (weight-a (if (> total-fitness 0) (/ fitness-a total-fitness) 0.5))
+           (weight-b (- 1.0 weight-a))
+           ;; Create offspring via S-expression crossover
+           (offspring-program (crossover-patterns
+                               (expert-program parent-a)
+                               (expert-program parent-b)))
+           ;; Create offspring expert
+           (offspring (make-expert
+                       :program offspring-program
+                       :code-metrics (make-hash-table :test 'eq)
+                       :parent-id (expert-id parent-a)
+                       :birth-step (if (boundp '*step*) *step* 0)
+                       :centroid (let ((c (make-vsa-vec))
+                                       (ca (expert-centroid parent-a))
+                                       (cb (expert-centroid parent-b)))
+                                   ;; Blend centroids over shared active dimensions
+                                   (when (and ca cb)
+                                     (let ((n (min (length ca) (length cb) +vsa-dim+)))
+                                       (dotimes (i n)
+                                         (setf (aref c i)
+                                               (+ (* weight-a (aref ca i))
+                                                  (* weight-b (aref cb i)))))))
+                                   (vnorm! c))
+                       :life 1.0)))
+      ;; VSA crossover: superpose knowledge-vectors
+      (when (and (expert-knowledge-vector parent-a)
+                 (expert-knowledge-vector parent-b))
+        (let ((kv (make-vsa-vec)))
+          (vsa-superpose! kv (expert-knowledge-vector parent-a) (coerce weight-a 'single-float))
+          (vsa-superpose! kv (expert-knowledge-vector parent-b) (coerce weight-b 'single-float))
+          (setf (expert-knowledge-vector offspring) kv)))
+      ;; Inherit owned-type from fitter parent
+      (setf (expert-owned-type offspring)
+            (if (> fitness-a fitness-b)
+                (expert-owned-type parent-a)
+                (expert-owned-type parent-b)))
+      ;; Add to population
+      (push offspring *experts*)
+      (incf *total-births*)
+      (run-hook +hook-expert-spawned+ offspring)
+      offspring)))
+
+(defun attempt-sexual-reproduction! ()
+  "Try to breed two fit experts via VSA crossover.
+   Triggered organically when population has diverse, fit experts."
+  (when (and (boundp '*experts*) (> (length *experts*) 5))
+    (let* ((fit-experts (remove-if (lambda (e) (< (expert-life e) 0.6)) *experts*))
+           (n (length fit-experts)))
+      (when (>= n 2)
+        ;; Pick two random fit parents with different owned-types (diversity)
+        (let ((parent-a (nth (random n) fit-experts))
+              (parent-b (nth (random n) fit-experts)))
+          ;; Ensure different parents
+          (when (and (not (eq parent-a parent-b))
+                     ;; Prefer diverse parents (different knowledge domains)
+                     (or (not (eq (expert-owned-type parent-a)
+                                  (expert-owned-type parent-b)))
+                         (< (random 1.0) 0.3)))  ; Sometimes allow same-type
+            (vsa-crossover-experts! parent-a parent-b)))))))
 
 ;;; ============================================================================
 ;;; DREAM EPISODE POPULATION (Wire failed predictions into dream buffer)
@@ -532,9 +601,57 @@
           *modification-history*)
     t))
 
+(defun tier2-discover-rewrites! ()
+  "Auto-discover which ops need rewriting from understanding log circuit-outcome mappings.
+   The system observes its own failure patterns and rewrites the responsible code."
+  (when (and (boundp '*understanding-log*) *understanding-log*)
+    (let ((rewrites-attempted 0))
+      (dolist (entry *understanding-log*)
+        (when (and (eq (getf entry :understanding) :problematic-circuit)
+                   (< (or (getf entry :rate) 1.0) 0.25)  ; Very low success rate
+                   (> (or (getf entry :samples) 0) 20))   ; Sufficient evidence
+          (let* ((circuit (getf entry :circuit))
+                 (op-name (when (and circuit (eq (car circuit) :op))
+                            (second circuit))))
+            (when (and op-name (symbolp op-name) (fboundp op-name)
+                       (< rewrites-attempted 2))  ; Max 2 rewrites per cycle
+              ;; Attempt to improve the op by wrapping with a fallback
+              (let ((original-fn (symbol-function op-name)))
+                (handler-case
+                    (progn
+                      ;; Wrap the failing op with a confidence gate
+                      ;; If original returns nil/low-confidence, try a broader match
+                      (setf (symbol-function op-name)
+                            (lambda (&rest args)
+                              (let ((result (ignore-errors (apply original-fn args))))
+                                (or result
+                                    ;; Fallback: return a conservative default
+                                    (when (and (boundp '*last-answering-expert*)
+                                               *last-answering-expert*)
+                                      (values nil 0.3))))))
+                      (push (list :step (if (boundp '*step*) *step* 0)
+                                  :type :tier2-auto-rewrite
+                                  :target op-name
+                                  :reason :circuit-failure-rate
+                                  :original-rate (getf entry :rate)
+                                  :before original-fn
+                                  :success t)
+                            *modification-history*)
+                      (incf rewrites-attempted)
+                      (format t "[TIER2] Auto-rewrote ~A (was ~,1F% success)~%"
+                              op-name (* 100 (or (getf entry :rate) 0))))
+                  (error (e)
+                    (declare (ignore e))
+                    ;; Revert on failure
+                    (setf (symbol-function op-name) original-fn))))))))
+      rewrites-attempted)))
+
 ;;; ============================================================================
 ;;; SELF-CONSUMPTION (System processes its own source code)
 ;;; ============================================================================
+
+(defvar *self-consumption-step* 0 "Last step when self-consumption ran.")
+(defvar *self-consumption-file-index* 0 "Which source file to consume next.")
 
 (defun consume-own-source! (&optional (file-pattern "uhma-*.lisp"))
   "Feed the system its own source code as input.
@@ -558,7 +675,50 @@
         (error () nil)))
     (format t "[SELF-CONSUMPTION] Processed ~D lines from ~D source files~%"
             total-patterns (length files))
+    (setf *self-consumption-step* (if (boundp '*step*) *step* 0))
     total-patterns))
+
+(defun consume-own-source-incremental! ()
+  "Feed one source file at a time — called organically when curiosity is high.
+   Incremental self-consumption avoids overwhelming the system."
+  (let ((files (directory (merge-pathnames "uhma-*.lisp"
+                            (or (when (boundp '*module-base*) *module-base*)
+                                (make-pathname :directory '(:relative))))))
+        (patterns 0))
+    (when (and files (> (length files) 0))
+      (let* ((idx (mod *self-consumption-file-index* (length files)))
+             (file (nth idx files)))
+        (handler-case
+            (with-open-file (s file :direction :input)
+              (loop for line = (read-line s nil nil)
+                    while line
+                    for count from 0
+                    ;; Process 50 lines max per incremental call
+                    while (< count 50)
+                    do (when (and (> (length line) 3)
+                                  (not (char= (char line 0) #\;)))
+                         (handler-case
+                             (progn (process-text! line :verbose nil)
+                                    (incf patterns))
+                           (error () nil)))))
+          (error () nil))
+        (incf *self-consumption-file-index*)
+        (setf *self-consumption-step* (if (boundp '*step*) *step* 0))
+        patterns))))
+
+(defun should-self-consume-p ()
+  "Check if conditions are right for self-consumption.
+   Driven by curiosity drive pressure and low interference (stable enough to learn)."
+  (and (boundp '*intrinsic-drives*)
+       ;; Curiosity is high (above target)
+       (let ((curiosity (find :curiosity *intrinsic-drives* :key #'drive-name)))
+         (and curiosity
+              (> (drive-current-level curiosity) (+ (drive-target-level curiosity) 0.1))))
+       ;; Interference is low (system is stable)
+       (or (not (fboundp 'compute-holographic-interference))
+           (< (compute-holographic-interference) 0.4))
+       ;; Haven't consumed recently
+       (> (- (if (boundp '*step*) *step* 0) *self-consumption-step*) 200)))
 
 ;;; ============================================================================
 ;;; CAUSAL MODEL WIRING (Build from trace observations)

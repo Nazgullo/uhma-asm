@@ -572,6 +572,22 @@
   (when (fboundp 'update-causal-model-from-traces!)
     (update-causal-model-from-traces!))
 
+  ;; Step 10: Tier 2 auto-discovery — rewrite failing ops
+  (when (fboundp 'tier2-discover-rewrites!)
+    (tier2-discover-rewrites!))
+
+  ;; Step 11: Sexual reproduction when population is diverse and fit
+  (when (and (fboundp 'attempt-sexual-reproduction!)
+             (boundp '*experts*)
+             (> (length *experts*) 5)
+             (< (length *experts*) 50))  ; Room for offspring
+    (attempt-sexual-reproduction!))
+
+  ;; Step 12: Self-consumption when curiosity is high and system is stable
+  (when (and (fboundp 'should-self-consume-p)
+             (should-self-consume-p))
+    (consume-own-source-incremental!))
+
   ;; Trim modification attempts (keep recent 20)
   (when (> (length *modification-attempts*) 20)
     (setf *modification-attempts* (subseq *modification-attempts* 0 20)))

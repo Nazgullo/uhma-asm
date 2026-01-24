@@ -37,11 +37,13 @@
     n))
 
 (defun vdot (a b)
-  "Dot product of vectors A and B."
+  "Dot product of vectors A and B (handles dimension mismatch gracefully)."
   (declare (type (simple-array single-float (*)) a b)
            (optimize (speed 3) (safety 1)))
-  (let ((s 0.0))
-    (dotimes (i (length a) s)
+  (let ((s 0.0)
+        (n (min (length a) (length b))))
+    (declare (type fixnum n))
+    (dotimes (i n s)
       (incf s (* (aref a i) (aref b i))))))
 
 (defun vmag (v)
