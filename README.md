@@ -12,13 +12,17 @@ A self-modifying, self-aware cognitive substrate written in Common Lisp. UHMA gr
 ## Quick Start
 
 ```bash
-# Load the system
 sbcl --dynamic-space-size 8192 --load load.lisp
-
-# In the REPL:
-(uhma:start!)                          ; Initialize + run demo
-(uhma:start! :demo nil)                ; Initialize without demo
 ```
+
+Then in the REPL:
+```lisp
+(in-package :uhma)                     ; Switch to UHMA package (do this first)
+(start!)                               ; Initialize + run demo
+(start! :demo nil)                     ; Initialize without demo (quiet start)
+```
+
+All examples below assume you are in the `:uhma` package.
 
 ## Core Concepts
 
@@ -44,14 +48,9 @@ The system reads its own source code, identifies underperforming modules, synthe
 ### Processing Text
 
 ```lisp
-;; Process a single sentence (tokenize + learn + predict)
-(uhma:process-text! "the cat sat on the mat")
-
-;; Train on text with multiple iterations
-(train "neurons transmit signals" 100)
-
-;; Think about a context (shows prediction + reasoning)
-(think-about '(the cat))
+(process-text! "the cat sat on the mat")    ; Tokenize + learn + predict
+(train "neurons transmit signals" 100)      ; Train with N iterations
+(think-about '(the cat))                    ; Show prediction + reasoning
 ```
 
 ### Feed System
@@ -59,20 +58,11 @@ The system reads its own source code, identifies underperforming modules, synthe
 Place any files in the `FEED/` subdirectory, then ingest them:
 
 ```lisp
-;; Ingest all new files in FEED/
-(ingest-feed!)
-
-;; Re-process everything (ignore manifest)
-(ingest-feed! :force t)
-
-;; Process a single file directly
-(ingest-file! #P"/path/to/file.txt" :force t)
-
-;; Feed the system its own source code
-(feed-own-source!)
-
-;; Check ingestion status
-(feed-status)
+(ingest-feed!)                                  ; Ingest all new files
+(ingest-feed! :force t)                         ; Re-process everything
+(ingest-file! #P"/path/to/file.txt" :force t)   ; Process single file
+(feed-own-source!)                              ; Feed system its own source
+(feed-status)                                   ; Show ingestion history
 ```
 
 **Supported formats:**
@@ -89,60 +79,67 @@ Place any files in the `FEED/` subdirectory, then ingest them:
 ### Monitoring
 
 ```lisp
-;; System overview (experts, LTM, drives, goals)
-(status)
-
-;; Detailed learning metrics
-(learning-progress)
-
-;; Self-description (introspective concepts)
-(introspect)
-
-;; Feed ingestion history
-(feed-status)
+(status)                ; System overview (experts, LTM, drives, goals)
+(learning-progress)     ; Detailed learning metrics
+(introspect)            ; Self-description (introspective concepts)
+(feed-status)           ; Feed ingestion history
 ```
 
 ### Save & Restore
 
 ```lisp
-;; Save complete state to disk
-(save-full-state! "my-checkpoint")
-
-;; List available saves
-(list-saved-states)
-
-;; Restore from a save file
+(save-full-state! "my-checkpoint")      ; Save complete state to disk
+(list-saved-states)                     ; List available saves
 (restore-full-state! #P"uhma-states/uhma-full-state-20260124-my-checkpoint.lisp")
 
 ;; In-memory snapshots (for rollback during self-modification)
 (snapshot-for-rollback! "before risky change")
-(rollback-to-snapshot!)
+(rollback-to-snapshot!)                 ; Revert to last snapshot
 ```
 
 ### Live Mode
 
 ```lisp
-;; Enter continuous self-feeding mode (Ctrl+C to stop)
-(live!)
+(live!)                                 ; Continuous self-feeding (Ctrl+C to stop)
 ```
 
 ### Generation
 
 ```lisp
-;; Generate tokens from a seed context
-(generate '(the cat) :length 10)
+(generate '(the cat) :length 10)        ; Generate tokens from seed context
 ```
 
 ### Audit
 
 ```bash
-# Run the full 66-claim verification suite
+# Run the full 66-claim verification suite (standalone)
 sbcl --dynamic-space-size 8192 --noinform --disable-debugger --load test-66-claims.lisp
 ```
 
-Or from the REPL:
+Or from the REPL (after `start!`):
 ```lisp
 (load "full-audit.lisp")
+```
+
+### Non-interactive one-liners
+
+```bash
+# Feed source and exit
+sbcl --dynamic-space-size 8192 --noinform --non-interactive \
+  --load load.lisp \
+  --eval '(in-package :uhma)' \
+  --eval '(start! :demo nil)' \
+  --eval '(feed-own-source!)' \
+  --eval '(feed-status)'
+
+# Ingest FEED/ directory and save state
+sbcl --dynamic-space-size 8192 --noinform --non-interactive \
+  --load load.lisp \
+  --eval '(in-package :uhma)' \
+  --eval '(start! :demo nil)' \
+  --eval '(ingest-feed! :force t)' \
+  --eval '(save-full-state! "post-feed")' \
+  --eval '(learning-progress)'
 ```
 
 ---
@@ -297,34 +294,37 @@ Run `(load "full-audit.lisp")` to verify all 66 pass.
 
 ### Feed a book and observe learning
 ```lisp
+(in-package :uhma)
 (start! :demo nil)
-;; Drop epub/pdf/txt in FEED/ directory
-(ingest-feed!)
+(ingest-feed!)                          ; Drop epub/pdf/txt in FEED/ first
 (learning-progress)
 (status)
 ```
 
 ### Feed the system its own source
 ```lisp
+(in-package :uhma)
 (start! :demo nil)
-(feed-own-source!)  ; System learns its own code
-(introspect)        ; See how it describes itself
+(feed-own-source!)                      ; System learns its own code
+(introspect)                            ; See how it describes itself
 ```
 
 ### Long-running learning session
 ```lisp
+(in-package :uhma)
 (start! :demo nil)
-(ingest-feed!)              ; Ingest all available material
+(ingest-feed!)                          ; Ingest all available material
 (save-full-state! "pre-live")
-(live!)                     ; Ctrl+C when done
+(live!)                                 ; Ctrl+C when done
 (save-full-state! "post-live")
 (learning-progress)
 ```
 
 ### Resume a previous session
 ```lisp
+(in-package :uhma)
 (start! :demo nil)
 (list-saved-states)
 (restore-full-state! #P"uhma-states/uhma-full-state-TIMESTAMP.lisp")
-(status)  ; Picks up where it left off
+(status)                                ; Picks up where it left off
 ```
