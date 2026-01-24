@@ -30,21 +30,51 @@
   "Stub: Dream condition check not implemented"
   nil)
 
-(defun v65-dream-hook ()
-  "Stub: v6.5 dream hook not implemented"
-  nil)
+;;; ============================================================================
+;;; MEMORY MANAGEMENT
+;;; ============================================================================
 
-;;; ============================================================================
-;;; MEMORY MANAGEMENT (planned feature, not implemented)
-;;; ============================================================================
+;; Default bounds (overwritten by uhma-memory-bounds.lisp at load time)
+(defvar *max-hypothesis-history* 100)
+(defvar *max-modification-history* 100)
+(defvar *max-goal-history* 50)
+(defvar *max-experiment-history* 100)
 
 (defun trim-all-arrays! ()
   "Stub: Array trimming not implemented"
   nil)
 
 (defun trim-all-histories! ()
-  "Stub: History trimming not implemented"
-  nil)
+  "Prune all list-based histories when they exceed their max size.
+   Uses organic-prune-list for salience-based retention."
+  ;; Hypothesis history
+  (when (and (boundp '*hypothesis-history*) *hypothesis-history*
+             (> (length *hypothesis-history*) *max-hypothesis-history*))
+    (if (fboundp 'organic-prune-list)
+        (organic-prune-list '*hypothesis-history* :modification *max-hypothesis-history*)
+        (setf *hypothesis-history* (subseq *hypothesis-history* 0 *max-hypothesis-history*))))
+  ;; Modification history
+  (when (and (boundp '*modification-history*) *modification-history*
+             (> (length *modification-history*) *max-modification-history*))
+    (if (fboundp 'organic-prune-list)
+        (organic-prune-list '*modification-history* :modification *max-modification-history*)
+        (setf *modification-history* (subseq *modification-history* 0 *max-modification-history*))))
+  ;; Goal history
+  (when (and (boundp '*goal-history*) *goal-history*
+             (> (length *goal-history*) *max-goal-history*))
+    (setf *goal-history* (subseq *goal-history* 0 *max-goal-history*)))
+  ;; Experiment history
+  (when (and (boundp '*experiment-history*) *experiment-history*
+             (> (length *experiment-history*) *max-experiment-history*))
+    (setf *experiment-history* (subseq *experiment-history* 0 *max-experiment-history*)))
+  ;; Concept activation history
+  (when (and (boundp '*concept-activation-history*) *concept-activation-history*
+             (> (length *concept-activation-history*) 500))
+    (setf *concept-activation-history* (subseq *concept-activation-history* 0 500)))
+  ;; Self-modification history
+  (when (and (boundp '*self-modification-history*) *self-modification-history*
+             (> (length *self-modification-history*) 100))
+    (setf *self-modification-history* (subseq *self-modification-history* 0 100))))
 
 ;;; ============================================================================
 ;;; SELF-MODIFICATION TRACKING (planned feature, not implemented)
@@ -58,24 +88,24 @@
   "Stub: Meta-hypothesis generation not implemented"
   nil)
 
-(defun notify-modification-outcome! (&rest args)
-  "Stub: Modification notification not implemented"
-  (declare (ignore args))
-  nil)
-
 (defun track-modification-type-outcome! (&rest args)
   "Stub: Modification tracking not implemented"
   (declare (ignore args))
   nil)
 
-(defun correlate-context-with-source! (&rest args)
-  "Stub: Context correlation not implemented"
-  (declare (ignore args))
-  nil)
-
-(defun find-problematic-source-functions ()
-  "Stub: Source function analysis not implemented"
-  nil)
+(defun correlate-context-with-source! (ctx got-it)
+  "Correlate prediction context with source-code understanding.
+   When predictions about code patterns succeed/fail, record which
+   contexts the system handles well for self-knowledge."
+  (when (and ctx (listp ctx) (> (length ctx) 0)
+             (boundp '*semantic-self-knowledge*))
+    ;; Track context-type success/failure for self-knowledge
+    (let ((ctx-type (first ctx)))
+      (when ctx-type
+        ;; Update self-knowledge when enough observations accumulate
+        (when (and (boundp '*step*) (zerop (mod *step* 200)))
+          (when (fboundp 'update-semantic-self-knowledge!)
+            (update-semantic-self-knowledge!)))))))
 
 (defun identify-similar-reliable-functions (&rest args)
   "Stub: Reliable function identification not implemented"
@@ -87,8 +117,16 @@
 ;;; ============================================================================
 
 (defun test-hypotheses! ()
-  "Stub: Hypothesis testing not implemented"
-  nil)
+  "Test all active hypotheses against recent observations.
+   Calls test-hypothesis! on each active hypothesis."
+  (when (and (boundp '*hypotheses*) (hash-table-p *hypotheses*)
+             (fboundp 'test-hypothesis!))
+    (maphash (lambda (id hyp)
+               (declare (ignore id))
+               (when (and (self-hypothesis-p hyp)
+                          (eq (self-hypothesis-status hyp) :active))
+                 (ignore-errors (test-hypothesis! hyp))))
+             *hypotheses*)))
 
 (defun apply-hypothesis-competitive-decay! ()
   "Stub: Hypothesis decay not implemented"
@@ -110,14 +148,52 @@
 
 (unless (fboundp 'activate-concept!)
   (defun activate-concept! (concept &optional (intensity 1.0))
-    (declare (ignore concept intensity))
-    nil))
+    "Force-activate a named concept with given intensity.
+     Adds to *cached-active-concepts* and records activation.
+     For compound names like CODE-CONFUSED, also activates the base concept CONFUSED."
+    (declare (ignore intensity))
+    (when (and concept (symbolp concept))
+      ;; Add the compound concept to active list
+      (when (boundp '*cached-active-concepts*)
+        (pushnew concept *cached-active-concepts*))
+      ;; Also activate the base concept (suffix after last hyphen)
+      ;; e.g. CODE-CONFUSED → CONFUSED, CODE-CONFIDENT → CONFIDENT
+      (let* ((name-str (symbol-name concept))
+             (hyphen-pos (position #\- name-str :from-end t)))
+        (when hyphen-pos
+          (let ((base-sym (intern (subseq name-str (1+ hyphen-pos))
+                                  (symbol-package concept))))
+            (when (and (boundp '*introspective-vocabulary*)
+                       (hash-table-p *introspective-vocabulary*)
+                       (gethash base-sym *introspective-vocabulary*))
+              ;; Base concept exists in vocabulary — activate it too
+              (pushnew base-sym *cached-active-concepts*)
+              ;; Increment its activation count
+              (let ((ic (gethash base-sym *introspective-vocabulary*)))
+                (when (introspective-concept-p ic)
+                  (incf (introspective-concept-activation-count ic))))))))
+      ;; Increment activation count for the compound concept if it exists
+      (when (and (boundp '*introspective-vocabulary*)
+                 (hash-table-p *introspective-vocabulary*))
+        (let ((ic (gethash concept *introspective-vocabulary*)))
+          (when (and ic (introspective-concept-p ic))
+            (incf (introspective-concept-activation-count ic)))))
+      ;; Record in activation history
+      (when (fboundp 'record-concept-activation!)
+        (record-concept-activation! (list concept))))))
 
 (unless (fboundp 'introspective-concept-state-active)
   (defun introspective-concept-state-active (concept)
-    "Stub: Concept state check not implemented"
-    (declare (ignore concept))
-    nil))
+    "Check if a concept struct (or its name) is currently active."
+    (when (and concept (boundp '*cached-active-concepts*) *cached-active-concepts*)
+      (let ((name (cond
+                    ((symbolp concept) concept)
+                    ((and (introspective-concept-p concept)
+                          (introspective-concept-name concept))
+                     (introspective-concept-name concept))
+                    (t nil))))
+        (when name
+          (member name *cached-active-concepts*))))))
 
 ;;; ============================================================================
 ;;; SCHEMA FUNCTIONS
@@ -227,18 +303,9 @@
   (declare (ignore query))
   nil)
 
-(defun semantic-store (key value)
-  "Stub: Semantic store not implemented"
-  (declare (ignore key value))
-  nil)
-
 ;;; ============================================================================
 ;;; HOLOGRAPHIC MEMORY FUNCTIONS
 ;;; ============================================================================
-
-(defun holo-init! ()
-  "Stub: Holographic memory not implemented"
-  nil)
 
 (defun holo-store! (key value)
   "Stub: Holographic memory not implemented"
@@ -249,24 +316,6 @@
   "Stub: Holographic memory not implemented"
   (declare (ignore pattern))
   nil)
-
-;;; ============================================================================
-;;; GENETIC SYNTHESIS FUNCTIONS
-;;; ============================================================================
-
-(defun genetic-mutate-op (op)
-  "Stub: Genetic mutation not implemented, return op unchanged"
-  op)
-
-(defun genetic-crossover-ops (op1 op2)
-  "Stub: Genetic crossover not implemented, return first op"
-  (declare (ignore op2))
-  op1)
-
-(defun measure-op-fitness (op)
-  "Stub: Fitness measurement not implemented, return neutral"
-  (declare (ignore op))
-  0.5)
 
 ;;; ============================================================================
 ;;; PRESENCE ACCESSOR FUNCTIONS

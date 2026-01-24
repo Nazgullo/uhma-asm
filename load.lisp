@@ -75,6 +75,7 @@
 ;; 6. Holographic Memory (New v3.0)
 (load (module-file "uhma-holographic-substrate-v2.lisp"))
 (load (module-file "uhma-holographic-integration.lisp"))
+(load (module-file "uhma-holographic-impl.lisp"))
 
 ;; 7. Active Self Modification
 (load (module-file "uhma-active-self-modification.lisp"))
