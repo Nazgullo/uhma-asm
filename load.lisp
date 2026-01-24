@@ -85,6 +85,9 @@
 ;; 8b. Self-Awareness Loop (Introspection/Modification)
 (load (module-file "uhma-self-awareness-loop.lisp"))
 
+;; 8c. Predictive Self-Modification (System predicts itself before changing)
+(load (module-file "uhma-predictive-self-modification.lisp"))
+
 ;; 9. Continuous Operation & Persistence
 (load (module-file "uhma-continuous.lisp"))
 (load (module-file "uhma-state-persistence.lisp"))
