@@ -72,7 +72,14 @@
     (record-trace! trace)
     (when (and got-it reasoning-path) (extract-schema-from-trace trace))
     (record-surprise! trace)
-    (correlate-context-with-source! ctx got-it)))
+    (correlate-context-with-source! ctx got-it)
+    ;; Wire failed predictions into dream buffer (organic — dreams from need)
+    (unless got-it
+      (when (fboundp 'record-dream-candidate!)
+        (record-dream-candidate! ctx predicted tok (cognitive-trace-surprise trace)))
+      ;; Wire counterfactual reasoning on failures
+      (when (fboundp 'run-counterfactual-on-trace!)
+        (run-counterfactual-on-trace! trace)))))
 
 (defun deep-mind-maintenance-hook ()
   "Interference-driven self-examination. No timers — the NN's own noise triggers action."

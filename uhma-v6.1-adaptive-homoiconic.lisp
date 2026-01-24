@@ -69,7 +69,9 @@
                                        (+ t-max (* (- t-min t-max) t-val)))))))
         (setf (self-model-current-sparse-threshold sm)
               (+ (* 0.9 (self-model-current-sparse-threshold sm)) (* 0.1 new-threshold)))
-        (when (zerop (mod *step* 100))
+        ;; Record threshold history when threshold changes significantly (organic)
+        (when (or (null (self-model-threshold-history sm))
+                  (> (abs (- new-threshold (or (third (first (self-model-threshold-history sm))) 0))) 0.05))
           (push (list *step* uncertainty (self-model-current-sparse-threshold sm)) (self-model-threshold-history sm))
           (when (> (length (self-model-threshold-history sm)) 100)
             (setf (self-model-threshold-history sm) (subseq (self-model-threshold-history sm) 0 100))))
@@ -325,8 +327,9 @@
     (run-compression!)
     (lifecycle-step!)
     
-    ;; HOMOICONIC: Periodically run program optimization
-    (when (and (> *step* 500) (zerop (mod *step* 200)))
+    ;; HOMOICONIC: Run program optimization when experts struggle (organic — fitness-driven)
+    (when (and (boundp '*experts*) (> (length *experts*) 3)
+               (< (/ (reduce #'+ *experts* :key #'expert-life) (length *experts*)) 0.4))
       (run-program-optimization!))
     
     (values (if (> verified 0) (float (/ correct verified)) 0.0)

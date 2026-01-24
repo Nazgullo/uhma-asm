@@ -39,7 +39,10 @@
 
 ;;; --- SECTION 10: INITIALIZATION ---
 (eval-when (:load-toplevel :execute)
-  (register-hook +hook-maintenance+ (lambda () (when (zerop (mod *step* 500)) (trim-all-histories!) (trim-all-arrays!))) :priority 99)
+  (register-hook +hook-maintenance+ (lambda ()
+    ;; Trim when memory pressure is high (organic — pressure-driven, not timer)
+    (when (> (get-heap-saturation) 0.7)
+      (trim-all-histories!) (trim-all-arrays!))) :priority 99)
   (format t "[MEMORY-BOUNDS] Synaptic pruning active.~%"))
 
 ;;; ============================================================================
@@ -113,8 +116,8 @@
 ;;; ============================================================================
 
 (defun memory-bounds-maintenance-hook ()
-  "Periodic memory trimming - runs every 500 steps."
-  (when (and (boundp '*step*) (zerop (mod *step* 500)))
+  "Memory trimming driven by heap pressure (organic — not timer-based)."
+  (when (> (get-heap-saturation) 0.7)
     (trim-all-histories!)
     (trim-all-arrays!)
     (trim-all-hash-tables!))

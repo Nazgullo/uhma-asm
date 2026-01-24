@@ -553,8 +553,9 @@
              (when (> (length context) *context-max-scale*)
                (setf context (subseq context 0 *context-max-scale*)))
              
-             ;; Periodically update optimal scales
-             (when (zerop (mod *step* 50))
+             ;; Update optimal scales when context grows (organic — content-driven)
+             (when (and (> (length context) 5)
+                        (zerop (mod (length context) 5)))  ; Every 5 new context tokens
                (update-optimal-scale! context)))
     
     ;; Run maintenance

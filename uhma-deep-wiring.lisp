@@ -2992,9 +2992,10 @@
               (when exp
                 (push (list :experiment-created (experiment-id exp)) executed)))))))
 
-    ;; 3. Run program optimization on struggling experts
+    ;; 3. Run program optimization when experts have low fitness (organic)
     (when (and (fboundp 'run-program-optimization!)
-               (zerop (mod *step* 100)))  ; Every 100 steps
+               (boundp '*experts*)
+               (some (lambda (e) (< (expert-life e) 0.3)) *experts*))
       (let ((optimized (run-program-optimization!)))
         (when (> optimized 0)
           (push (list :optimized-experts optimized) executed))))
@@ -3365,9 +3366,10 @@
   ;; After processing text, check for self-patterns
   (register-hook +hook-maintenance+
                  (lambda ()
-                   ;; Every 50 steps, run self-utilization
-                   (when (and (zerop (mod *step* 50))
-                              (> (hash-table-count *long-term-memory*) 50))
+                   ;; Run self-utilization when LTM has significant content (organic)
+                   (when (and (> (hash-table-count *long-term-memory*) 50)
+                              (fboundp 'compute-holographic-interference)
+                              (> (compute-holographic-interference) 0.4))
                      (self-utilization-cycle!)))
                  :priority 92)
 
@@ -3607,8 +3609,15 @@
   (register-hook +hook-pre-process-token+
                  (lambda (tok ctx step)
                    (declare (ignore tok ctx step))
-                   ;; Periodically refresh avoidance rules
-                   (when (zerop (mod *step* 100))
+                   ;; Refresh avoidance rules when new hypotheses confirmed (organic)
+                   (when (and (boundp '*hypotheses*)
+                              (some (lambda (h)
+                                      (and (self-hypothesis-p (cdr h))
+                                           (eq (self-hypothesis-status (cdr h)) :confirmed)))
+                                    (when (hash-table-p *hypotheses*)
+                                      (let ((pairs nil))
+                                        (maphash (lambda (k v) (push (cons k v) pairs)) *hypotheses*)
+                                        pairs))))
                      (install-pattern-avoidance!))
                    nil)
                  :priority 8)
@@ -3824,12 +3833,15 @@
                        (format t "~%[PERSISTENCE] Restored session: ~A~%" results))))
                  :priority 5)  ; Run early, before other post-reset handlers
 
-  ;; Checkpoint periodically during maintenance
+  ;; Checkpoint when significant state change detected (organic)
   (register-hook +hook-maintenance+
                  (lambda ()
-                   ;; Every 500 steps, checkpoint
-                   (when (zerop (mod *step* 500))
-                     (checkpoint-session!)))
+                   ;; Checkpoint when hypotheses or modifications accumulate
+                   (when (and (boundp '*modification-attempts*)
+                              (> (length *modification-attempts*) 5))
+                     (checkpoint-session!)
+                     (setf *modification-attempts*
+                           (subseq *modification-attempts* 0 (min 3 (length *modification-attempts*))))))
                  :priority 95)
 
   (format t "  [96] Save pattern correlations~%")
@@ -4078,10 +4090,11 @@
                      (track-presence-modification-correlation! mod-id success)))
                  :priority 80)
 
-  ;; Periodically generate meta-hypotheses
+  ;; Generate meta-hypotheses when modification history is rich (organic)
   (register-hook +hook-maintenance+
                  (lambda ()
-                   (when (zerop (mod *step* 200))
+                   (when (and (boundp '*modification-history*)
+                              (> (length *modification-history*) 10))
                      (generate-meta-modification-hypothesis!)))
                  :priority 85)
 
@@ -4423,11 +4436,10 @@
   "Install hooks for deep code parsing."
   (format t "~%Installing DEEP CODE PARSING (116-125)...~%")
 
-  ;; After loading source, parse it
+  ;; Parse code when functions are known but not yet analyzed (organic — need, not timer)
   (register-hook +hook-maintenance+
                  (lambda ()
-                   (when (and (zerop (mod *step* 300))
-                              (> (hash-table-count *my-functions*) 0)
+                   (when (and (> (hash-table-count *my-functions*) 0)
                               (= (hash-table-count *parsed-functions*) 0))
                      (deep-code-analysis-cycle!)))
                  :priority 75)
@@ -4974,10 +4986,13 @@ Impact:
                      (snapshot-before-modification! action-type)))
                  :priority 10)
 
-  ;; Periodic stability check
+  ;; Stability check when interference or problems indicate instability (organic)
   (register-hook +hook-maintenance+
                  (lambda ()
-                   (when (zerop (mod *step* 100))
+                   (when (or (and (boundp '*cached-active-concepts*)
+                                  (intersection *cached-active-concepts* '(STUCK CONFUSED FAILING)))
+                             (and (fboundp 'compute-holographic-interference)
+                                  (> (compute-holographic-interference) 0.7)))
                      (check-self-healing-triggers!)))
                  :priority 70)
 
@@ -5322,11 +5337,12 @@ Impact:
   "Install hooks for abstraction-level analysis."
   (format t "~%Installing HIGHER ABSTRACTION LEVELS (146-155)...~%")
 
-  ;; Periodic abstraction analysis
+  ;; Abstraction analysis when code awareness has grown (organic — knowledge-driven)
   (register-hook +hook-maintenance+
                  (lambda ()
-                   (when (and (zerop (mod *step* 400))
-                              (> (hash-table-count *my-functions*) 0))
+                   (when (and (> (hash-table-count *my-functions*) 0)
+                              (boundp '*parsed-functions*)
+                              (> (hash-table-count *parsed-functions*) 0))
                      (abstraction-analysis-cycle!)))
                  :priority 65)
 
@@ -5637,10 +5653,13 @@ Impact:
                    (track-operation-order! (list :modification) success))
                  :priority 90)
 
-  ;; Periodic temporal analysis
+  ;; Temporal analysis when sufficient sequential patterns accumulated (organic)
   (register-hook +hook-maintenance+
                  (lambda ()
-                   (when (zerop (mod *step* 250))
+                   (when (and (boundp '*trace-buffer*)
+                              (> (fill-pointer *trace-buffer*) 100)
+                              (fboundp 'compute-holographic-interference)
+                              (> (compute-holographic-interference) 0.5))
                      (temporal-learning-cycle!)))
                  :priority 60)
 

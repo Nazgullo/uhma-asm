@@ -568,6 +568,10 @@
   (when (fboundp 'update-semantic-self-knowledge!)
     (update-semantic-self-knowledge!))
 
+  ;; Step 9: Build causal model from trace co-occurrences
+  (when (fboundp 'update-causal-model-from-traces!)
+    (update-causal-model-from-traces!))
+
   ;; Trim modification attempts (keep recent 20)
   (when (> (length *modification-attempts*) 20)
     (setf *modification-attempts* (subseq *modification-attempts* 0 20)))

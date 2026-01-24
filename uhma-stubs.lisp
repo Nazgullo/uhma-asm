@@ -420,6 +420,179 @@
     (t pattern-b)))
 
 ;;; ============================================================================
+;;; DREAM EPISODE POPULATION (Wire failed predictions into dream buffer)
+;;; ============================================================================
+
+(defun record-dream-candidate! (ctx predicted actual difficulty)
+  "Add a failed prediction to the dream buffer for later consolidation.
+   Called organically when predictions fail — episodes enter the buffer from need."
+  (when (and (boundp '*dream-state*) *dream-state*
+             (> difficulty 0.3))  ; Only dream about difficult things
+    (let ((ep (make-dream-episode
+               :context (if (listp ctx) (copy-list (subseq ctx 0 (min 10 (length ctx)))) nil)
+               :original-prediction predicted
+               :actual-outcome actual
+               :difficulty (coerce difficulty 'single-float)
+               :created-at (if (boundp '*step*) *step* 0))))
+      (push ep (dream-state-episode-buffer *dream-state*))
+      ;; Cap buffer size
+      (when (> (length (dream-state-episode-buffer *dream-state*)) *dream-buffer-size*)
+        (setf (dream-state-episode-buffer *dream-state*)
+              (subseq (dream-state-episode-buffer *dream-state*) 0 *dream-buffer-size*)))
+      ep)))
+
+;;; ============================================================================
+;;; COUNTERFACTUAL REASONING (Wire into trace pipeline)
+;;; ============================================================================
+
+(defun run-counterfactual-on-trace! (trace)
+  "Perform counterfactual reasoning on a failed trace and store the result.
+   Asks: what if a different expert had fired? What if different ops were used?"
+  (when (and trace (cognitive-trace-p trace)
+             (not (eq (cognitive-trace-prediction trace)
+                      (cognitive-trace-actual trace))))
+    (let* ((actual (cognitive-trace-actual trace))
+           (expert-id (cognitive-trace-expert-id trace))
+           (path (cognitive-trace-reasoning-path trace))
+           (ctx (cognitive-trace-context trace))
+           ;; Find alternative experts that might have worked
+           (alt-experts (when (and (boundp '*experts*) ctx)
+                          (remove-if (lambda (e) (eq (expert-id e) expert-id))
+                                     (subseq *experts* 0 (min 5 (length *experts*))))))
+           (counterfactual (list :step *step*
+                                 :context (when (listp ctx) (subseq ctx 0 (min 3 (length ctx))))
+                                 :actual-expert expert-id
+                                 :actual-outcome actual
+                                 :alt-experts (mapcar #'expert-id (or alt-experts nil))
+                                 :reasoning-path path
+                                 :what-if (if (and path (listp path) (> (length path) 1))
+                                              (list :reversed-ops (reverse path))
+                                              :no-alternatives))))
+      (push counterfactual *counterfactual-history*)
+      ;; Keep bounded
+      (when (> (length *counterfactual-history*) 100)
+        (setf *counterfactual-history* (subseq *counterfactual-history* 0 100)))
+      counterfactual)))
+
+;;; ============================================================================
+;;; TIER 2 SELF-MODIFICATION (System-level code rewriting)
+;;; ============================================================================
+
+(defun tier2-redefine-operation! (op-name new-body)
+  "Tier 2: Redefine a system operation at runtime.
+   The system modifies its own code — the core homoiconic capability."
+  (when (and op-name (symbolp op-name) new-body)
+    ;; Record before state
+    (let ((before-def (when (fboundp op-name) (symbol-function op-name))))
+      ;; Attempt redefinition
+      (handler-case
+          (progn
+            (eval `(defun ,op-name (&rest args)
+                     ,@(if (listp new-body) new-body (list new-body))))
+            ;; Record in modification history
+            (push (list :step (if (boundp '*step*) *step* 0)
+                        :type :tier2-redefine
+                        :target op-name
+                        :before before-def
+                        :success t)
+                  *modification-history*)
+            t)
+        (error (e)
+          (push (list :step (if (boundp '*step*) *step* 0)
+                      :type :tier2-redefine
+                      :target op-name
+                      :error e
+                      :success nil)
+                *modification-history*)
+          nil)))))
+
+(defun tier2-adjust-global-threshold! (var-name new-value &optional (reason :organic))
+  "Tier 2: Modify a global parameter. The system tunes itself."
+  (when (and var-name (symbolp var-name) (boundp var-name))
+    (let ((before (symbol-value var-name)))
+      (setf (symbol-value var-name) new-value)
+      (push (list :step (if (boundp '*step*) *step* 0)
+                  :type :tier2-threshold
+                  :target var-name
+                  :before before
+                  :after new-value
+                  :reason reason)
+            *modification-history*)
+      t)))
+
+(defun tier2-add-hook! (hook-name handler &key (priority 50) (reason :organic))
+  "Tier 2: Add a new hook at runtime. The system rewires its own plumbing."
+  (when (and hook-name (boundp hook-name))
+    (register-hook (symbol-value hook-name) handler :priority priority)
+    (push (list :step (if (boundp '*step*) *step* 0)
+                :type :tier2-hook
+                :target hook-name
+                :priority priority
+                :reason reason)
+          *modification-history*)
+    t))
+
+;;; ============================================================================
+;;; SELF-CONSUMPTION (System processes its own source code)
+;;; ============================================================================
+
+(defun consume-own-source! (&optional (file-pattern "uhma-*.lisp"))
+  "Feed the system its own source code as input.
+   The boundary between data-it-learns and code-it-is dissolves."
+  (let ((files (directory (merge-pathnames file-pattern
+                            (or (when (boundp '*module-base*) *module-base*)
+                                (make-pathname :directory '(:relative))))))
+        (total-patterns 0))
+    (dolist (file files)
+      (handler-case
+          (with-open-file (s file :direction :input)
+            (loop for line = (read-line s nil nil)
+                  while line
+                  do (when (and (> (length line) 3)
+                                (not (char= (char line 0) #\;)))  ; Skip comments
+                       (handler-case
+                           (progn
+                             (process-text! line :verbose nil)
+                             (incf total-patterns))
+                         (error () nil)))))
+        (error () nil)))
+    (format t "[SELF-CONSUMPTION] Processed ~D lines from ~D source files~%"
+            total-patterns (length files))
+    total-patterns))
+
+;;; ============================================================================
+;;; CAUSAL MODEL WIRING (Build from trace observations)
+;;; ============================================================================
+
+(defun update-causal-model-from-traces! ()
+  "Extract causal relationships from trace buffer observations.
+   Builds explicit 'X causes Y' representations from co-occurrences."
+  (when (and (boundp '*trace-buffer*) (> (fill-pointer *trace-buffer*) 20)
+             (boundp '*causal-model*))
+    (let ((limit (min 100 (fill-pointer *trace-buffer*))))
+      (loop for i from 1 below limit
+            for trace = (aref *trace-buffer* (- (fill-pointer *trace-buffer*) 1 i))
+            for prev-trace = (aref *trace-buffer* (- (fill-pointer *trace-buffer*) i))
+            when (and (cognitive-trace-p trace) (cognitive-trace-p prev-trace))
+            do (let* ((prev-ctx (when (listp (cognitive-trace-context prev-trace))
+                                  (first (cognitive-trace-context prev-trace))))
+                      (curr-outcome (cognitive-trace-actual trace))
+                      (key (cons prev-ctx curr-outcome)))
+                 (when (and prev-ctx curr-outcome)
+                   (let ((link (gethash key *causal-model*)))
+                     (if link
+                         ;; Strengthen existing link
+                         (when (fboundp 'causal-link-observations)
+                           (incf (causal-link-observations link)))
+                         ;; Create new causal link
+                         (when (fboundp 'make-causal-link)
+                           (setf (gethash key *causal-model*)
+                                 (make-causal-link :cause prev-ctx
+                                                   :effect curr-outcome
+                                                   :strength 0.5
+                                                   :delay 1)))))))))))
+
+;;; ============================================================================
 ;;; DREAM EPISODE REPLAY (Organic VSA Consolidation)
 ;;; ============================================================================
 

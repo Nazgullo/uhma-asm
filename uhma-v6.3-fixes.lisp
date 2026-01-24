@@ -217,9 +217,9 @@
           (incf (cdr perf))))))
 
 (defun run-program-optimization! ()
-  "Run optimization based on program performance data."
-  (when (and (boundp '*self-model*) *self-model*
-             (zerop (mod *step* 100)))
+  "Run optimization based on program performance data.
+   Called organically when experts have low fitness — no internal timer."
+  (when (and (boundp '*self-model*) *self-model*)
     ;; Find poorly performing programs
     (maphash (lambda (prog-id perf)
                (let ((total (+ (car perf) (cdr perf))))
