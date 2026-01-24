@@ -1,0 +1,1139 @@
+
+Loading UHMA v2 System...
+
+
+%UHMA stubs loaded - undefined function stubs defined.
+%
+uhma-stubs.lisp verification passed.
+[VSA] Verification: OK (dim=1024)
+
+================================================================
+UHMA v6.1 TRUE HOMOICONIC CORE MODULE LOADED
+================================================================
+Expert programs are REAL S-expressions that get EVAL'd:
+  - Executable (via eval with bindings)
+  - Readable (walkable as data - get-op-names, get-modifiable-params)
+  - Modifiable (set-modifiable-param!, insert-op-before!, remove-op!)
+
+NO HIDDEN LAMBDAS - the code IS the data.
+
+Quick Start:
+  (reset!)
+  (process-text! "the cat sat on the mat")
+  (generate "the cat" :length 6)
+  (print-expert-program (first *experts*))
+
+Introspection:
+  (get-op-names (expert-program e))
+  (get-modifiable-params (expert-program e))
+  (find-op-in-program (expert-program e) 'assess-confidence)
+
+Modification:
+  (set-modifiable-param! prog 'try-similar 'threshold 0.6)
+  (insert-op-before! prog 'assess-confidence *op-check-hidden-state*)
+  (remove-op! prog 'check-type)
+================================================================
+[ADAPTIVE] Self-model initialized and registered.
+[ADAPTIVE] Self-model reset.
+
+Priority 13: Adaptive Self-Tuning (Homoiconic) loaded.
+The self-model can now READ and MODIFY expert programs.
+Run (demo-adaptive) to test.
+[SEQUENCE] Multi-gram atoms and clausal boundaries active.
+
+Priority 14: Sequence-Level Operations loaded.
+Run (reset-sequence-models!) then (demo-sequence) to test.
+[PRESENCE] Substrate active.
+
+================================================================
+UHMA TEMPORAL PRESENCE SUBSTRATE DEFINED
+================================================================
+
+Presence is not a log. Presence is where experience lives.
+
+Structures:
+  presence          - the ongoing experience of being
+  presence-moment   - the vivid now
+  presence-leaning  - anticipatory structure
+
+Flow operations (how presence changes):
+  (presence-flow-now! moment)
+  (presence-feel-texture! concept intensity)
+  (presence-shift-trajectory! trajectory strength)
+  (presence-feel-self-surprise! amount)
+  (presence-feel-discontinuity! reason severity)
+  (presence-heal-continuity! rate)
+  (presence-update-wanting! drive-states)
+  (presence-update-leaning! behavior outcome confidence)
+
+Reading operations (how modules read presence):
+  (presence-how-do-i-feel)
+  (presence-what-am-i-doing)
+  (presence-where-am-i-going)
+  (presence-am-i-continuous)
+  (presence-recent-felt-history n)
+
+Diagnostics:
+  (describe-presence)
+  (presence-summary)
+
+Initialize with: (initialize-presence!)
+================================================================
+[DEEP-MIND-CORE] Foundation loaded.
+[DEEP-MIND-INTROSPECTION] Meta-cognition active.
+[DEEP-MIND-SCHEMAS] Patterns self-organizing.
+[DEEP-MIND] Fully integrated and active.
+[DEEPER-MIND-CORE] Self-expectation foundation loaded.
+[DEEPER-MIND] Inventive engine active.
+[FIXES] Core utilities and forward references synchronized.
+
+================================================================
+UHMA v6.3 COMPREHENSIVE FIXES LOADED
+================================================================
+
+Fixed 95 functions and 5 variables.
+All forward references should now be resolved.
+================================================================
+[FIXES] Implemented holographic memory core and added morpheme stubs.
+[ENHANCEMENTS] Genetic evolution and plasticity active.
+[AGENCY-CORE] Agency foundation loaded.
+[AGENCY-GOALS] Drives and Stack active.
+[AGENCY-DREAMS] Consolidation engine active.
+[AGENCY] Fully integrated and active.
+[INTROSPECTIVE-CORE] Vocabulary foundation loaded.
+[INTROSPECTIVE] Grounding hooks active.
+[COMP-CORE] Working memory and Unification active.
+[COMPOSITIONAL] Reasoner and Planner active.
+
+================================================================
+UHMA v6.8 COGNITIVE CONTROLLER LOADED
+================================================================
+
+This module WIRES THE MACHINERY TOGETHER.
+
+Before: input -> find expert -> output
+After:  input -> assess -> select strategy -> execute -> learn
+
+Strategies available:
+  :fast-default   - Quick expert lookup (familiar cases)
+  :multi-expert   - Vote across experts (uncertain cases)
+  :structural     - Use compositional structure
+  :causal         - Reason through causal model
+  :planning       - Multi-step lookahead
+  :analogical     - Use similar past situations
+  :exploratory    - Try something new (novel cases)
+  :deliberative   - Full deliberation (complex/important)
+
+Usage:
+  (initialize-cognitive-control!)
+  (think '(the cat sat))          ; Single prediction
+  (think-and-learn! ctx actual)   ; Predict and learn
+  (explain-last-thought)          ; See reasoning
+  (print-cognitive-status)        ; Full status
+================================================================
+[PATTERN-UTIL] Recognition and Transfer active.
+
+================================================================
+UHMA v6.9 PATTERN UTILIZATION MODULE LOADED
+================================================================
+The system can now USE what it learns:
+  - Pattern recognition (I've seen this before)
+  - Familiarity assessment (I know this well)
+  - Structure transfer (this is like something I know)
+  - Self-modification from patterns (what works shapes me)
+
+All domain-agnostic. Works on any sequential input.
+================================================================
+[EPISODIC-CORE] Temporal storage initialized.
+[EPISODIC] Unified memory hooks active.
+
+================================================================
+UHMA v6.10 EPISODIC MEMORY INTEGRATION PATCHES LOADED
+================================================================
+
+Integrations:
+  - Self-expectation now consults episodic memory
+  - Dreams now consolidate episodes -> semantic knowledge
+  - Describe-self now includes temporal history
+  - Self-expectations recorded to episodes
+  - Introspection events recorded to episodes
+  - Concept activations tracked in episodes
+  - Drift detection can trigger episode boundaries
+================================================================
+[HOLO-SUBSTRATE] Unified holographic memory active.
+
+================================================================
+UHMA HOLOGRAPHIC SUBSTRATE v2
+================================================================
+Replaces 7 memory layers with unified holographic store:
+  1. Immediate  (decay: 0.15) - recent outcomes
+  2. Working    (decay: 0.08) - active reasoning
+  3. Situational(decay: 0.03) - situation history
+  4. Episodic   (decay: 0.005)- autobiographical
+  5. Semantic   (decay: 0.0)  - permanent knowledge
+  6. Pattern    (decay: 0.01) - learned patterns
+  7. Trace      (decay: 0.1)  - cognitive traces
+
+Core principle: Memory stored BETWEEN experts, not IN them
+================================================================
+[HOLO-INTEGRATION] Memory synchronization active.
+
+================================================================
+UHMA HOLOGRAPHIC INTEGRATION LAYER
+================================================================
+Status: ENABLED
+Hook priority: 15
+
+Hooks registered:
+  +hook-post-learn+       -> holo-post-learn-handler
+  +hook-post-process-token+ -> holo-post-token-handler
+  +hook-maintenance+      -> holo-maintenance-handler
+  +hook-episode-boundary+ -> holo-episode-handler
+  +hook-expert-dying+     -> holo-expert-dying-handler
+  +hook-post-reset+       -> holo-reset!
+
+Wrapper functions:
+  holo-lookup-consolidated - shadows lookup-consolidated
+  holo-get-recent-outcomes - shadows *recent-outcomes*
+  holo-find-situations     - shadows find-similar-situations
+
+To migrate existing memory:
+  (holo-migrate-all!)
+================================================================
+[SELF-MOD] Active architectural plasticity enabled.
+
+================================================================
+UHMA PRESENCE INTEGRATION LOADED
+================================================================
+
+Hooks installed for:
+  - Core processing (wrap/complete step)
+  - Episodic memory (boundary, arc)
+  - Introspective concepts (texture)
+  - Self-expectation (leaning, self-surprise)
+  - Drives (wanting)
+  - Deliberation (capability feel)
+  - Expert activation (agency)
+  - Dreaming (vividness, consolidation)
+  - Semantic self (identity feel)
+  - Cognitive controller (v6.8 compatible)
+
+Modules can read from presence:
+  (get-current-texture-for-introspection)
+  (get-trajectory-for-episode)
+  (get-self-confidence-for-expectation)
+  (get-continuity-for-narrative)
+  (get-wanting-for-goal-selection)
+  (get-capability-feel-for-deliberation)
+  (get-identity-for-self-description)
+
+New self-description:
+  (describe-self-from-presence)
+
+Initialize with: (initialize-presence-integration!)
+================================================================
+Presence hooks installed.
+[PRESENCE-INTEGRATION] Hooks active.
+[AWARENESS-LOOP] Reflective cognition synchronized.
+
+[SELF-AWARENESS LOOP] Installed into maintenance cycle
+   - Maintenance hook at priority 70
+   - Concept detection hook at priority 60
+   - Modification observer at priority 80
+
+================================================================
+UHMA SELF-AWARENESS LOOP LOADED
+================================================================
+
+The loop:
+  1. Problem detected (STUCK, FAILING, etc.)
+  2. Introspection traces failure path
+  3. Presence anchors current state
+  4. Hypothesis forms about root cause
+  5. Self-modification attempts fix
+  6. Correlator tracks if fix helped
+  7. Understanding emerges (circuit→outcome)
+
+Diagnostics: (print-self-awareness-status)
+================================================================
+
+[PREDICTIVE-SELF-MOD] Installed.
+   Gate threshold: 0.30
+   Exploration budget: 5 per 500 steps
+   Verification delay: 75 steps
+   Self-prediction accuracy: 0.50
+
+================================================================
+UHMA PREDICTIVE SELF-MODIFICATION LOADED
+================================================================
+
+The system now predicts its own modifications before making them.
+Convergence metric: (self-prediction-score) → 0.50
+Deliberateness: (modification-deliberateness) → starts at 0.0
+Diagnostics: (print-self-prediction-status)
+================================================================
+[CONTINUOUS] Autonomous Cognition loop ready.
+[PERSISTENCE] Serialization machinery active.
+
+================================================================
+UHMA STATE PERSISTENCE LOADED
+================================================================
+State directory: /home/peter/Desktop/STARWARS/uhma-states/
+Auto-save on phase transitions: ENABLED
+
+Key functions:
+  (save-state! &optional tag) - Full state save
+  (print-persistence-status) - Show status
+================================================================
+[MEMORY-BOUNDS] Synaptic pruning active.
+
+================================================================
+UHMA MEMORY BOUNDS LOADED
+================================================================
+Capped histories:
+  - hypothesis-history: 100
+  - modification-history: 100
+  - schema-evolution-log: 200
+  - goal-history: 50
+  - experiment-history: 100
+Trimming runs every 500 steps.
+[DEEP-WIRING] Qualitative interconnections active.
+
+Installing deeper wiring (11-15)...
+  [11/15] Hypothesis confirmation → program rewrite
+  [12/15] Schema success → operator synthesis
+  [13/15] Best structures → expert spawning
+  [14/15] Expert death patterns → mechanism creation
+  [15/15] Drive pressure → hypothesis type bias
+
+Deeper wiring complete. 5 additional interconnections active.
+
+Installing novel wiring (16-20)...
+  [16/20] Surprise → working memory
+  [17/20] Causal model → prediction confidence (inline)
+  [18/20] Working memory overflow → coherence goal
+  [19/20] Correct prediction → causal link strengthening
+  [20/20] Schema success → causal chain creation
+
+Novel wiring complete. 5 productivity connections active.
+
+Installing utilization wiring (21-25)...
+  [21/25] Attention interesting → expert life boost
+  [22/25] Strategy stats → selection bias (inline)
+  [23/25] Semantic weaknesses → improvement goals
+  [24/25] Surprise accumulation → dream trigger
+  [25/25] Confidence history → threshold calibration
+
+Utilization wiring complete. 5 connections active.
+
+Installing integration wiring (26-35)...
+  [26/35] Pattern familiarity → expert routing bias
+  [27/35] Presence self-confidence → prediction scaling (inline)
+  [28/35] Episode significance → learning rate boost
+  [29/35] Goal history → suppress repeated goals (inline)
+  [30/35] Experiment history → avoid redundant experiments (inline)
+  [31/35] Introspective concepts → behavior modification
+  [32/35] Situation history → strategy selection bias (inline)
+  [33/35] Counterfactual history → action generation
+  [34/35] Modification history → prefer reliable mod types (inline)
+  [35/35] Presence continuity → expert trust scaling
+
+Integration wiring complete. 10 connections active.
+
+Installing source code awareness (36-40)...
+
+[SOURCE-AWARE] Loaded 13 source files
+[SOURCE-AWARE] Indexed 936 function definitions
+[SOURCE-AWARE] Indexed 291 variable definitions
+[SOURCE-AWARE] Loaded 13 files, 936 functions, 291 variables
+
+Installing source-behavior wiring (41-48)...
+  [41] Source-informed hypothesis generation (inline)
+  [42] Source-verified modifications (inline)
+  [43] Introspection → source grounding
+  [44] Self-model ← source analysis (periodic)
+  [45] Error diagnosis → source lookup (on-error)
+  [46] Dream consolidation → source understanding
+  [47] Hypothesis testing ← source evidence (inline)
+  [48] Self-description ← source knowledge
+
+[SOURCE-AWARE] System can now introspect AND USE its own code
+
+Installing existential-code correlation (49-55)...
+  [49-51] State-code correlation tracking
+  [52] Prediction-code correlation tracking
+  [53] Query: (what-code-runs-when :concept 'confused)
+  [54] Query: (function-prediction-reliability 'learn!)
+  [55] Query: (generate-existential-code-insight)
+
+[EXISTENTIAL-CODE] System can now observe itself observing itself
+
+Installing CODE-AWARE SELF-MODIFICATION (56-70)...
+  [56-57] Unreliable code → hypothesis, reliable → protection
+  [58-59] Source knowledge → feasibility, insights → goals
+  [60-61] Modification → code tracking, outcome → learning
+  [62-64] Code-aware proposals, verification, hypothesis testing
+  [65-67] Presence gating, introspection, dream consolidation
+  [68-70] Episode context, causal relationships, master loop
+
+[CODE-AWARE-MOD] Self-modification now grounded in code observation
+
+Installing EXECUTION BRIDGE (71-75)...
+  [71] Unreliable expert → trigger improvement
+  [72] Code insight → create experiment
+  [73] Code path → actionable hypothesis
+  [74] Execute pending modifications
+  [75] Master execution cycle
+
+[EXEC-BRIDGE] Code awareness now drives actual modifications
+
+Installing DEEP SELF-UTILIZATION (76-85)...
+  [76] Extract patterns matching own code
+  [77] Correlate patterns with reliability
+  [78] Generate pattern-based hypotheses
+  [79] Use Lisp prediction on own code
+  [80] Dream about source structure
+  [81] Pattern-guided modification
+  [82] Code-aware prediction boost
+  [83] Identify rewrite candidates
+  [84] Generate rewrite proposals
+  [85] Master self-utilization cycle
+
+[SELF-UTIL] Learned patterns now drive actual code changes
+
+Installing HYPOTHESIS APPLICATION (86-95)...
+  [86] Hypothesis → expert selection bias
+  [87] Hypothesis → code generation avoidance
+  [88] Hypothesis → refactoring trigger
+  [89] Hypothesis → weighted expert selection
+  [90] Bad pattern detection in new code
+  [91] Hypothesis confidence tracking
+  [92] Hypothesis validation loop
+  [93] Automatic pattern avoidance
+  [94] Hypothesis → modification priority
+  [95] Master hypothesis application cycle
+
+[HYPOTHESIS-APP] Hypotheses now drive actual decisions
+
+Installing PERSISTENCE (96-105)...
+  [96] Save pattern correlations
+  [97] Load pattern correlations
+  [98] Save hypotheses
+  [99] Load hypotheses
+  [100] Save protected paths
+  [101] Load protected paths
+  [102] Save modification outcomes
+  [103] Load modification outcomes
+  [104] Session checkpointing
+  [105] Master persistence cycle
+
+[PERSISTENCE] Knowledge now survives across sessions
+
+Installing META-LEARNING (106-115)...
+  [106] Track modification type outcomes
+  [107] Track hypothesis type success
+  [108] Track presence → modification correlation
+  [109] Learn best modification conditions
+  [110] Predict modification success
+  [111] Adjust modification confidence
+  [112] Generate meta-hypotheses
+  [113] Modification strategy selection
+  [114] Meta-learning feedback loop
+  [115] Master meta-learning cycle
+
+[META-LEARN] Learning which modifications work best
+
+Installing DEEP CODE PARSING (116-125)...
+  [116] Parse Lisp with reader
+  [117] Extract function signatures
+  [118] Build dependency graph
+  [119] Track data flow
+  [120] Identify critical paths
+  [121] Semantic code understanding
+  [122] Code structure patterns
+  [123] Dependency-aware modification
+  [124] Flow-aware hypotheses
+  [125] Master code analysis cycle
+
+[CODE-PARSE] Deep code understanding enabled
+
+Installing HUMAN-IN-THE-LOOP (126-135)...
+  [126] Generate modification explanations
+  [127] Format proposal for human
+  [128] Queue proposals for review
+  [129] Process human feedback
+  [130] Learn from approvals/rejections
+  [131] Adjust confidence from feedback
+  [132] Human override tracking
+  [133] Explanation confidence calibration
+  [134] Feedback integration
+  [135] Master human-loop cycle
+
+[HUMAN-LOOP] Human oversight enabled
+
+Installing SELF-DEBUGGING (136-145)...
+  [136] Error → code path tracing
+  [137] Error context capture
+  [138] Automatic rollback
+  [139] Quarantine unstable code
+  [140] Debug hypothesis generation
+  [141] Error pattern learning
+  [142] Recovery strategy selection
+  [143] Stability monitoring
+  [144] Self-healing triggers
+  [145] Master debugging cycle
+
+[DEBUG] Self-debugging enabled
+
+Installing HIGHER ABSTRACTION LEVELS (146-155)...
+  [146] Function-level pattern extraction
+  [147] Module-level pattern extraction
+  [148] Architecture pattern recognition
+  [149] Abstraction hierarchy building
+  [150] Cross-level correlation
+  [151] Architectural hypothesis generation
+  [152] Module reliability tracking
+  [153] Structural modification proposals
+  [154] Abstraction-aware dreaming
+  [155] Master abstraction cycle
+
+[ABSTRACTION] Higher-level understanding enabled
+
+Installing TEMPORAL LEARNING (156-165)...
+  [156] Sequence pattern extraction
+  [157] Operation order tracking
+  [158] Optimal sequence learning
+  [159] Curriculum design
+  [160] Temporal hypothesis generation
+  [161] Sequence-based prediction
+  [162] Order-dependent modification
+  [163] Learning rate adaptation
+  [164] Temporal consolidation
+  [165] Master temporal cycle
+
+[TEMPORAL] Temporal learning enabled
+[COMPLETE-WIRING] Final system orchestrations active.
+start.lisp verification passed.
+
+[SAVE-RESTORE] uhma-save-restore.lisp loaded (v2).
+[SAVE-RESTORE] API:
+  (snapshot-for-rollback! &optional reason) - take snapshot
+  (rollback-to-snapshot! &optional which)   - restore snapshot
+  (save-full-state! &optional tag)          - save to disk
+  (restore-full-state! path)                - restore from disk
+  (verify-state-integrity &optional ref)    - check consistency
+  (list-saved-states)                       - show saved files
+[FEED] Ingestion system ready.
+   Directory: /home/peter/Desktop/STARWARS/FEED/
+   Formats: text, code, PDF, images (OCR), EPUB
+   API: (ingest-feed!)  (feed-status)  (feed-own-source!)
+Loader verification verified: OK
+
+========================================
+UHMA v2 System Loaded Successfully
+========================================
+
+Quick Start:
+  (uhma:start!)                    ; Initialize and run demo
+  (uhma:process-text! "...")       ; Process text input
+
+Initializing UHMA...
+--- EXECUTING RESET! ---
+Holographic substrate reset.
+
+[PERSISTENCE] Restored session: ((OUTCOMES-LOADED 0) (HYPOTHESES-LOADED 107)
+                                 (CORRELATIONS-LOADED 266)
+                                 (CHECKPOINT-FOUND 3978207618))
+[ADAPTIVE] Self-model reset.
+UHMA v6.1 (Homoiconic Core) initialized with 5 experts.
+
+Cognitive Controller initialized.
+Use (think ctx) for single predictions.
+Use (think-and-learn! ctx actual) for learning.
+Set *cognitive-control-enabled* to nil to bypass.
+Pattern Utilization initialized with hook registration.
+Patterns become actionable after 3 instances.
+Presence hooks installed.
+
+Presence integration complete. Experience flows through the substrate.
+[INTROSPECTIVE] Grounding hooks active.
+
+System ready.
+
+Running demo with sample corpus...
+
+Training on 13 sentences...
+
+[SELF-MOD] Cycle executed.
+[PERSISTENCE] State saved: uhma-state-20260124-023440-settling.lisp
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 23
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 28
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 32
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 37
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 44
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 50
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 56
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 61
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 65
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 69
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 74
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 80
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 86
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 92
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 97
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 101
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 106
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 113
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 119
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 125
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 130
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 134
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 138
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 143
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 149
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 155
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 161
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 166
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 170
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 175
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 182
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 188
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 194
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 199
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 203
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 207
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 212
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 218
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 224
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 230
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 235
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 239
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 244
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 257
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 263
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 268
+  Step 50: 44 experts, 1 LTM
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 272
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 276
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 281
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 287
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 293
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 304
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 308
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 313
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 326
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 332
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 337
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 341
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 345
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 350
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 356
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 362
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 373
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 377
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 382
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 395
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 401
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 406
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 410
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 414
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 419
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 425
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 431
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 446
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 451
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 464
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 470
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 475
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 479
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 483
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 488
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 494
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 500
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 506
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 511
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 515
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 520
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 533
+  Step 100: 48 experts, 3 LTM
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 539
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 544
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 548
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 552
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 557
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 563
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 569
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 580
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 584
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 589
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 602
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 608
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 613
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 617
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 621
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 626
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 632
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 638
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 649
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 653
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 658
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 671
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 686
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 690
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 695
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 701
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 707
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 718
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 722
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 727
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 740
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 746
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 751
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 755
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 759
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 764
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 770
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 776
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 791
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 796
+  Step 150: 50 experts, 44 LTM
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 809
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 815
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 828
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 833
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 839
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 845
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 856
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 860
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 865
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 878
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 884
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 889
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 893
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 897
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 902
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 908
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 914
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 925
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 929
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 934
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 947
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 953
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 958
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 962
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 966
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 971
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 977
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 983
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 994
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 998
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 1003
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 1010
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 1016
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 1031
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 1035
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 1040
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 1046
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 1052
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 1063
+  Step 200: 50 experts, 51 LTM
+
+Generation samples:
+  (THE) -> THE BRAIN CONSTRUCTS MODELS OF REALITY
+  (NEURONS) -> NEURONS
+  (DEFUN) -> DEFUN CREATES A NEW FUNCTION TO
+  (CONSCIOUSNESS) -> CONSCIOUSNESS
+
+
+========== UHMA SYSTEM STATUS ==========
+
+CORE:
+  Experts: 50
+  Travelers: 0
+  Neighborhoods: 6
+  LTM entries: 51
+  Total births: 60
+  Total deaths: 10
+  Merges: 0
+
+COGNITIVE:
+  Traces: 323
+  Hypotheses: 6
+  Schemas: 1
+
+DRIVES:
+  CURIOSITY: 30.0% (target 50.%)
+  COMPETENCE: 50.0% (target 80.%)
+  EFFICIENCY: 20.0% (target 90.%)
+  TELEOLOGY: 46.0% (target 100.%)
+
+GOALS:
+  Active: 2
+  Completed: 0
+
+=========================================
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 1072
+[SELF-MOD] Cycle executed.
+[AWARENESS] Problem: (STUCK) at step 1081
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+[SELF-MOD] Cycle executed.
+
+========== UHMA SYSTEM STATUS ==========
+
+CORE:
+  Experts: 11
+  Travelers: 4
+  Neighborhoods: 12
+  LTM entries: 59
+  Total births: 70
+  Total deaths: 55
+  Merges: 4
+
+COGNITIVE:
+  Traces: 441
+  Hypotheses: 7
+  Schemas: 1
+
+DRIVES:
+  CURIOSITY: 30.0% (target 50.%)
+  COMPETENCE: 50.0% (target 80.%)
+  EFFICIENCY: 20.0% (target 90.%)
+  TELEOLOGY: 42.0% (target 100.%)
+
+GOALS:
+  Active: 2
+  Completed: 0
+
+=========================================
+
+======== LEARNING PROGRESS ========
+
+PREDICTION ACCURACY (external inputs only):
+  Last 100 predictions: 77.0% accurate
+  COMPETENT at current inputs
+
+KNOWLEDGE EFFICIENCY:
+  LTM entries: 59
+  Patterns tracked: 185
+  Coverage ratio: 3.1 patterns/entry
+  EFFICIENT storage
+
+EXPERT SPECIALIZATION:
+  Experts: 11
+  Avg knowledge/expert: 18.5
+  Avg contexts/expert: 15.6
+  Birth/death ratio: 1.3
+
+SELF-MODIFICATION:
+
+HYPOTHESIS ACTIVITY:
+  Total hypotheses: 7
+  Tested: 4, Confirmed: 0
+  Confirmation rate: 0.0%
+
+SCHEMA FORMATION:
+  Schemas discovered: 1
+  Compiled (actionable): 0
+
+======== ASSESSMENT ========
+
+  Smart indicators: 4/4
+  System is showing intelligence
+
+===================================

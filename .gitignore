@@ -7,8 +7,8 @@
 # Saved states (generated at runtime)
 uhma-states/
 
-# Log files
-*.log
+# Log files (root level only, not in FEED/)
+/*.log
 
 # Editor backups
 *~
