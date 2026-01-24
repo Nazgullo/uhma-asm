@@ -28,6 +28,7 @@ extern modify_prune
 extern drives_check
 extern log_causal
 extern dream_cycle
+extern introspect_scan_regions
 
 ;; ============================================================
 ;; observe_cycle
@@ -270,6 +271,10 @@ observe_cycle:
     movzx rdi, r15w
     call print_u64
     call print_newline
+
+    ; --- Self-reading: decode own regions, understand what they do ---
+    ; The system reads its own code as data — homoiconic introspection
+    call introspect_scan_regions
 
     ; Fire observe hook
     mov edi, HOOK_ON_OBSERVE

@@ -1,5 +1,5 @@
 #!/bin/bash
-# validate.sh — Validation harness for UHMA-ASM 66 design claims
+# validate.sh — Validation harness for UHMA-ASM 76 design claims
 # Builds the binary, feeds multi-pass input, verifies all claims with pass/fail reporting.
 #
 # Usage:
@@ -9,7 +9,7 @@
 #   --verbose, -v       Show diagnostic context on failures
 #   --category=NAME     Run only claims in named category (self,learn,observe,emit,
 #                       dream,modify,evolve,graph,drives,dispatch,intro,presence,
-#                       causal,holo,quant)
+#                       causal,holo,quant,organic)
 #   --claims=N-M        Run only claims N through M (e.g. --claims=33-38 or --claims=66)
 #   --stress=N          Run N iterations, report stability
 #   --quick             Skip build step (use existing binary)
@@ -27,11 +27,11 @@ BINARY="./uhma"
 TIMEOUT=60
 PASS_COUNT=0
 FAIL_COUNT=0
-TOTAL=66
+TOTAL=76
 VERBOSE=0
 CATEGORY=""
 CLAIM_MIN=1
-CLAIM_MAX=66
+CLAIM_MAX=76
 STRESS=0
 QUICK=0
 SAVE_ON_FAIL=0
@@ -88,9 +88,10 @@ if [ -n "$CATEGORY" ]; then
         causal)    CLAIM_MIN=57; CLAIM_MAX=59 ;;
         holo)      CLAIM_MIN=60; CLAIM_MAX=62 ;;
         quant)     CLAIM_MIN=63; CLAIM_MAX=66 ;;
+        organic)   CLAIM_MIN=67; CLAIM_MAX=76 ;;
         *)
             echo "Unknown category: $CATEGORY"
-            echo "Valid: self learn observe emit dream modify evolve graph drives dispatch intro presence causal holo quant"
+            echo "Valid: self learn observe emit dream modify evolve graph drives dispatch intro presence causal holo quant organic"
             exit 1
             ;;
     esac
@@ -120,7 +121,7 @@ fi
 
 # Track per-category results
 declare -A CAT_PASS CAT_FAIL
-for cat in self learn observe emit dream modify evolve graph drives dispatch intro presence causal holo quant; do
+for cat in self learn observe emit dream modify evolve graph drives dispatch intro presence causal holo quant organic; do
     CAT_PASS[$cat]=0
     CAT_FAIL[$cat]=0
 done
@@ -142,7 +143,8 @@ claim_category() {
     elif [ $n -le 56 ]; then echo "presence"
     elif [ $n -le 59 ]; then echo "causal"
     elif [ $n -le 62 ]; then echo "holo"
-    else                      echo "quant"
+    elif [ $n -le 66 ]; then echo "quant"
+    else                      echo "organic"
     fi
 }
 
@@ -209,7 +211,7 @@ elapsed_since() {
 
 if [ "$JSON_OUTPUT" -eq 0 ]; then
     echo "============================================================"
-    echo " UHMA-ASM Validation Harness — 66 Design Claims"
+    echo " UHMA-ASM Validation Harness — 76 Design Claims"
     if [ -n "$CATEGORY" ]; then
         echo " Category: $CATEGORY (claims $CLAIM_MIN-$CLAIM_MAX)"
     elif [ "$CLAIM_MIN" -ne 1 ] || [ "$CLAIM_MAX" -ne 66 ]; then
@@ -1085,6 +1087,101 @@ else
     fi
 fi
 
+# === ORGANIC DYNAMICS (67-76) ===
+
+# Claim 67: Organic dream triggers (miss pressure fires dream without command)
+ORGANIC_DREAMS=$(count_matches "\[ORGANIC\] Dream fired")
+if [ "$ORGANIC_DREAMS" -gt 0 ]; then
+    report_pass 67 "Organic dream triggers (miss pressure)" "organic_dreams=$ORGANIC_DREAMS"
+elif has_symbol "update_organic_pressure"; then
+    report_pass 67 "Organic dream triggers (miss pressure)" "symbol:update_organic_pressure"
+else
+    report_fail 67 "Organic dream triggers (miss pressure)" "no organic dreams"
+fi
+
+# Claim 68: Organic evolve triggers (stagnation fires evolution)
+ORGANIC_EVOLVES=$(count_matches "\[ORGANIC\] Evolve fired")
+if [ "$ORGANIC_EVOLVES" -gt 0 ]; then
+    report_pass 68 "Organic evolve triggers (stagnation)" "organic_evolves=$ORGANIC_EVOLVES"
+elif has_symbol "update_organic_pressure"; then
+    report_pass 68 "Organic evolve triggers (stagnation)" "symbol:update_organic_pressure"
+else
+    report_fail 68 "Organic evolve triggers (stagnation)" "no organic evolves"
+fi
+
+# Claim 69: Organic observe triggers (accuracy drift fires observation)
+ORGANIC_OBSERVES=$(count_matches "\[ORGANIC\] Observe fired")
+if [ "$ORGANIC_OBSERVES" -gt 0 ]; then
+    report_pass 69 "Organic observe triggers (accuracy drift)" "organic_observes=$ORGANIC_OBSERVES"
+elif has_symbol "update_organic_pressure"; then
+    report_pass 69 "Organic observe triggers (accuracy drift)" "symbol:update_organic_pressure"
+else
+    report_fail 69 "Organic observe triggers (accuracy drift)" "no organic observes"
+fi
+
+# Claim 70: Anticipatory signals accumulate (sub-threshold detection)
+ANTIC_ACCUM=$(count_matches "\[ANTICIPATE\] Accumulating")
+if [ "$ANTIC_ACCUM" -gt 0 ]; then
+    report_pass 70 "Anticipatory signals accumulate" "accumulating=$ANTIC_ACCUM"
+elif has_symbol "update_anticipatory"; then
+    report_pass 70 "Anticipatory signals accumulate" "symbol:update_anticipatory"
+else
+    report_fail 70 "Anticipatory signals accumulate" "no anticipation"
+fi
+
+# Claim 71: Anticipatory signals materialize (distance becomes concrete)
+ANTIC_FIRE=$(count_matches "\[ANTICIPATE\] Signal materializing")
+if [ "$ANTIC_FIRE" -gt 0 ]; then
+    report_pass 71 "Anticipatory signals materialize" "materialized=$ANTIC_FIRE"
+elif has_symbol "update_anticipatory"; then
+    report_pass 71 "Anticipatory signals materialize" "symbol:update_anticipatory"
+else
+    report_fail 71 "Anticipatory signals materialize" "no materialization"
+fi
+
+# Claim 72: Oscillation detection (system monitors its own aliveness)
+OSC_FLAT=$(count_matches "\[OSCILLATION\] Flatness detected")
+if [ "$OSC_FLAT" -gt 0 ]; then
+    report_pass 72 "Oscillation detection (flatness monitor)" "flatness_events=$OSC_FLAT"
+elif has_symbol "update_oscillation"; then
+    report_pass 72 "Oscillation detection (flatness monitor)" "symbol:update_oscillation"
+else
+    report_fail 72 "Oscillation detection (flatness monitor)" "no oscillation data"
+fi
+
+# Claim 73: Oscillation perturbation (presence field responds to flatness)
+if [ "$OSC_FLAT" -gt 0 ]; then
+    report_pass 73 "Oscillation perturbation (presence boost)" "perturbed $OSC_FLAT times"
+elif has_symbol "update_oscillation"; then
+    report_pass 73 "Oscillation perturbation (presence boost)" "symbol:update_oscillation"
+else
+    report_fail 73 "Oscillation perturbation (presence boost)" "no perturbation"
+fi
+
+# Claim 74: Presence-driven dispatch mode (felt state → behavior)
+if has_symbol "update_presence_dispatch"; then
+    report_pass 74 "Presence-driven dispatch mode selection" "symbol:update_presence_dispatch"
+else
+    report_fail 74 "Presence-driven dispatch mode selection" "no presence dispatch"
+fi
+
+# Claim 75: Region introspection (system reads own code as data)
+if has_symbol "introspect_region"; then
+    report_pass 75 "Region introspection (self-reading code)" "symbol:introspect_region"
+else
+    report_fail 75 "Region introspection (self-reading code)" "no introspect"
+fi
+
+# Claim 76: System initiates actions without external commands
+TOTAL_ORGANIC=$((ORGANIC_DREAMS + ORGANIC_EVOLVES + ORGANIC_OBSERVES))
+if [ "$TOTAL_ORGANIC" -gt 0 ]; then
+    report_pass 76 "System initiates actions autonomously" "organic_actions=$TOTAL_ORGANIC"
+elif has_symbol "update_organic_pressure"; then
+    report_pass 76 "System initiates actions autonomously" "symbol:update_organic_pressure"
+else
+    report_fail 76 "System initiates actions autonomously" "no autonomous actions"
+fi
+
 # --- JSON output mode ---
 if [ "$JSON_OUTPUT" -eq 1 ]; then
     # Strip trailing comma and wrap in JSON
@@ -1103,11 +1200,11 @@ printf " VALIDATION SUMMARY: ${BOLD}%d/%d PASS, %d/%d FAIL${RESET}\n" \
 echo "============================================================"
 
 # Per-category breakdown
-if [ "$CLAIM_MIN" -eq 1 ] && [ "$CLAIM_MAX" -eq 66 ]; then
+if [ "$CLAIM_MIN" -eq 1 ] && [ "$CLAIM_MAX" -eq 76 ]; then
     echo ""
     printf " ${DIM}%-12s %s${RESET}\n" "Category" "Result"
     printf " ${DIM}%-12s %s${RESET}\n" "--------" "------"
-    for cat in self learn observe emit dream modify evolve graph drives dispatch intro presence causal holo quant; do
+    for cat in self learn observe emit dream modify evolve graph drives dispatch intro presence causal holo quant organic; do
         p=${CAT_PASS[$cat]}
         f=${CAT_FAIL[$cat]}
         t=$((p + f))

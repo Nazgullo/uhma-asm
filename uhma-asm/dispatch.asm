@@ -43,6 +43,12 @@ extern learn_connections
 extern observe_cycle
 extern holo_predict
 extern holo_decay_all
+extern update_organic_pressure
+extern update_anticipatory
+extern decay_anticipatory
+extern update_oscillation
+extern update_presence_dispatch
+extern introspect_scan_regions
 
 ;; ============================================================
 ;; dispatch_init
@@ -237,6 +243,16 @@ process_input:
 
     ; Decay dynamics once per line (not per token)
     call decay_all_regions
+
+    ; --- Organic per-line updates ---
+    ; Decay anticipatory signals (distant things fade if not reinforced)
+    call decay_anticipatory
+
+    ; Track oscillation (flat = dead, oscillating = alive)
+    call update_oscillation
+
+    ; Let presence field influence dispatch mode (felt experience → behavior)
+    call update_presence_dispatch
 
     ; Fire post-step hook
     mov edi, HOOK_POST_STEP
@@ -554,6 +570,9 @@ process_token:
     call learn_pattern
 
 .after_counter:
+    ; --- Organic dynamics: let internal pressure drive actions ---
+    call update_organic_pressure
+
     ; --- Make next prediction ---
     ; Dispatch: use current context hash to predict next token
     mov rdi, r13              ; current context hash
@@ -640,6 +659,21 @@ dispatch_predict:
     jmp .predict_return
 
 .holo_miss:
+    ; Sub-threshold holographic signal → anticipatory buffer
+    ; "Something forming in the distance" — not strong enough to predict,
+    ; but present enough to notice. Accumulates until it materializes.
+    test eax, eax
+    jz .no_antic_signal         ; no token at all
+    ; xmm0 still has confidence from holo_predict
+    mov rax, ANTIC_SIGNAL_FLOOR
+    movq xmm1, rax
+    ucomisd xmm0, xmm1
+    jbe .no_antic_signal        ; below noise floor
+    ; Feed into anticipatory buffer
+    mov edi, eax                ; token_id
+    ; xmm0 = confidence (already set)
+    call update_anticipatory
+.no_antic_signal:
 
     ; --- Entry point selection ---
     ; entry_slot = (ctx_hash >> 4) & 0xF

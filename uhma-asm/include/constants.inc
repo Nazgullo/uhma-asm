@@ -264,6 +264,51 @@
 %define ST_HOLO_PREDICT_N   (ST_HOLO_PREDICT_SUM + 8)       ; u32 count of predictions
 
 ;; ============================================================
+;; Organic Dynamics State (anticipation, pressure, oscillation)
+;; ============================================================
+
+; Anticipatory buffer: 16 sub-threshold signals accumulating
+; Each entry: (token_id:u32, accumulated_conf:f64, last_step:u32, pad:u32) = 24 bytes
+%define ST_ANTIC_BUF        (ST_HOLO_PREDICT_N + 4)
+%define ST_ANTIC_ENTRY_SIZE 24
+%define ST_ANTIC_CAP        16
+%define ST_ANTIC_BUF_END    (ST_ANTIC_BUF + ST_ANTIC_CAP * ST_ANTIC_ENTRY_SIZE)
+
+; Anticipatory signal tracking
+%define ST_ANTIC_FIRED      ST_ANTIC_BUF_END              ; u32 count of materialized signals
+%define ST_ANTIC_ACTIVE     (ST_ANTIC_FIRED + 4)          ; u32 currently accumulating count
+
+; Organic trigger state — internal pressure drives action
+%define ST_MISS_PRESSURE    (ST_ANTIC_ACTIVE + 4)         ; f64 exponential moving avg of miss rate
+%define ST_DREAM_PRESSURE   (ST_MISS_PRESSURE + 8)        ; f64 accumulates when miss_pressure high
+%define ST_OBSERVE_PRESSURE (ST_DREAM_PRESSURE + 8)       ; f64 accumulates from accuracy variance
+%define ST_EVOLVE_PRESSURE  (ST_OBSERVE_PRESSURE + 8)     ; f64 accumulates from stagnation
+
+; Oscillation monitoring (flat = dead)
+%define ST_PREV_ACCURACY    (ST_EVOLVE_PRESSURE + 8)      ; f64 accuracy N-1 steps ago
+%define ST_PREV_PREV_ACC    (ST_PREV_ACCURACY + 8)        ; f64 accuracy N-2 steps ago
+%define ST_OSCILLATION_AMP  (ST_PREV_PREV_ACC + 8)        ; f64 current oscillation amplitude
+%define ST_FLATNESS_COUNT   (ST_OSCILLATION_AMP + 8)      ; u32 consecutive flat steps
+
+; Region introspection cache: decoded semantics for top-16 regions
+; Each: (region_ptr:u64, ctx_hash:u32, pred_token:u32, accuracy:f32,
+;         semantic_sig:u32, neighbor_count:u16, depth:u16) = 32 bytes
+%define ST_INTRO_CACHE      (ST_FLATNESS_COUNT + 4)
+%define ST_INTRO_ENTRY_SIZE 32
+%define ST_INTRO_CACHE_CAP  16
+%define ST_INTRO_CACHE_END  (ST_INTRO_CACHE + ST_INTRO_CACHE_CAP * ST_INTRO_ENTRY_SIZE)
+
+; Organic action counters (how many times each was triggered by pressure, not command)
+%define ST_ORGANIC_DREAMS   ST_INTRO_CACHE_END            ; u32
+%define ST_ORGANIC_OBSERVES (ST_ORGANIC_DREAMS + 4)       ; u32
+%define ST_ORGANIC_EVOLVES  (ST_ORGANIC_OBSERVES + 4)     ; u32
+%define ST_ORGANIC_EXPLORES (ST_ORGANIC_EVOLVES + 4)      ; u32
+
+; Presence-driven dispatch modulation
+%define ST_PRES_DISPATCH_BIAS (ST_ORGANIC_EXPLORES + 4)   ; f32 presence influence on mode
+%define ST_PRES_RISK_APPETITE (ST_PRES_DISPATCH_BIAS + 4) ; f32 from arousal/confidence
+
+;; ============================================================
 ;; Graph Dynamics Tuning Constants
 ;; ============================================================
 
@@ -400,6 +445,43 @@
 %define GATE_TEST_COUNT     8
 %define EVOLVE_POOL_SIZE    16
 %define COMPACT_THRESHOLD   64
+
+; Organic trigger thresholds (f64 hex representations)
+%define DREAM_PRESSURE_THRESH   0x3FF199999999999A  ; 1.1 — dream fires when pressure > this
+%define OBSERVE_PRESSURE_THRESH 0x3FF0000000000000  ; 1.0 — observe fires when pressure > this
+%define EVOLVE_PRESSURE_THRESH  0x4000000000000000  ; 2.0 — evolve fires when pressure > this
+%define ANTIC_MATERIALIZE_THRESH 0x3FE999999999999A ; 0.8 — anticipation becomes concrete
+%define ANTIC_SIGNAL_FLOOR      0x3FA999999999999A  ; 0.05 — below this, signal is noise
+%define MISS_PRESSURE_ALPHA     0x3F947AE147AE147B  ; 0.02 — EMA smoothing for miss pressure
+%define FLATNESS_THRESH         0x3F747AE147AE147B  ; 0.005 — amplitude below = flat
+%define OSCILLATION_MIN         30                  ; steps before checking oscillation
+
+;; ============================================================
+;; Region Semantic Signatures (from introspection decoder)
+;; ============================================================
+
+%define RSEM_UNKNOWN        0   ; couldn't decode
+%define RSEM_CMP_JE_RET     1   ; simple: compare context, branch, return token
+%define RSEM_CMP_JE_CHAIN   2   ; compare context, branch, chain to next
+%define RSEM_MULTI_CMP      3   ; multiple context comparisons
+%define RSEM_SCHEMA          4   ; generalized pattern (masked comparison)
+%define RSEM_CALL_RELAY      5   ; relays to another function
+
+; Introspection cache entry field offsets
+%define ICE_REGION_PTR      0   ; u64
+%define ICE_CTX_HASH        8   ; u32 (decoded from region code)
+%define ICE_PRED_TOKEN      12  ; u32 (decoded from region code)
+%define ICE_ACCURACY         16  ; f32
+%define ICE_SEMANTIC_SIG    20  ; u32 (RSEM_* enum)
+%define ICE_NEIGHBOR_COUNT  24  ; u16
+%define ICE_DEPTH           26  ; u16
+%define ICE_PAD             28  ; u32
+
+; Anticipatory buffer entry field offsets
+%define ABE_TOKEN_ID        0   ; u32
+%define ABE_ACCUM_CONF      8   ; f64 (accumulated sub-threshold confidence)
+%define ABE_LAST_STEP       16  ; u32
+%define ABE_HIT_COUNT       20  ; u32 (how many times this signal appeared)
 
 ;; ============================================================
 ;; Token Hashing
