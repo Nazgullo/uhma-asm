@@ -144,9 +144,10 @@ evolve_cycle:
     jmp .sort_loop
 .sort_done:
     ; edx = index of best candidate in pool
+    mov r15d, edx              ; save best_idx in callee-saved register
 
     ; --- Reproduce best candidate ---
-    imul eax, edx, 16
+    imul eax, r15d, 16
     mov ecx, [rsp + rax]      ; best candidate's region index
     mov edi, ecx
     call evolve_reproduce
@@ -156,7 +157,7 @@ evolve_cycle:
     jl .no_mutate
     ; Find second-best (first entry that's not the best)
     xor esi, esi
-    cmp esi, edx
+    cmp esi, r15d
     jne .got_second
     mov esi, 1
 .got_second:
@@ -169,10 +170,10 @@ evolve_cycle:
     ; --- Crossover if 2+ candidates ---
     cmp r14d, 2
     jl .no_crossover
-    imul eax, edx, 16
+    imul eax, r15d, 16
     mov edi, [rsp + rax]      ; parent A (best)
     xor esi, esi
-    cmp esi, edx
+    cmp esi, r15d
     jne .cross_b
     mov esi, 1
 .cross_b:

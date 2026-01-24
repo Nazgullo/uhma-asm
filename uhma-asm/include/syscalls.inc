@@ -48,6 +48,8 @@
 %define SIGSEGV             11
 %define SIGFPE              8
 %define SIGBUS              7
+%define SIGILL              4
+%define SIGPIPE             13
 
 ; sigaction flags
 %define SA_SIGINFO          0x04

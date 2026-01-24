@@ -61,6 +61,8 @@ extern presence_show
 extern vocab_count
 extern holo_dot_f64
 extern holo_magnitude_f64
+extern fault_safe_rsp
+extern fault_safe_rip
 
 ;; ============================================================
 ;; repl_run
@@ -76,6 +78,11 @@ repl_run:
     call print_cstr
 
 .loop:
+    ; Save recovery point for crash handler (longjmp target)
+    mov [rel fault_safe_rsp], rsp
+    lea rax, [rel .loop]
+    mov [rel fault_safe_rip], rax
+
     ; Check if there's remaining data in the buffer
     mov rax, [rel buf_pos]
     mov rcx, [rel buf_end]
