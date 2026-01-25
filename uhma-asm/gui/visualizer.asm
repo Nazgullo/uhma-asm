@@ -72,6 +72,7 @@ extern gfx_flip
 extern gfx_poll_event
 
 extern sym_get_stats
+extern usleep
 
 ;; ============================================================
 ;; vis_init — Initialize visualizer
@@ -80,6 +81,8 @@ extern sym_get_stats
 global vis_init
 vis_init:
     push rbx
+    push r12
+    sub rsp, 8              ; Align stack
 
     ; Initialize graphics (1280x800 window)
     mov edi, 1280
@@ -87,6 +90,18 @@ vis_init:
     call gfx_init
     test eax, eax
     jz .fail
+
+    ; Wait for Expose event before drawing
+    mov r12d, 200           ; max wait iterations
+.wait_expose:
+    call gfx_poll_event
+    cmp eax, 12             ; Expose event
+    je .exposed
+    mov edi, 50000          ; 50ms
+    call usleep
+    dec r12d
+    jnz .wait_expose
+.exposed:
 
     ; Setup layout
     ; Region map: left side, 800x600
@@ -116,6 +131,8 @@ vis_init:
     xor eax, eax
 
 .done:
+    add rsp, 8
+    pop r12
     pop rbx
     ret
 
