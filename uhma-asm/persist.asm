@@ -13,7 +13,7 @@ section .data
 
     ; File header magic
     persist_magic:  db "UHMA", 0, 0, 0, 0   ; 8 bytes
-    persist_ver:    dq 1                      ; version
+    persist_ver:    dq 2                      ; version (2 = includes holo/vocab)
 
 section .text
 
@@ -128,6 +128,35 @@ persist_save:
     add r14, rax
 
 .skip_dispatch:
+    ; --- Write VSA basis vectors (2MB) ---
+    mov rdi, r13
+    lea rsi, [rbx + VSA_OFFSET]
+    mov rdx, VSA_VEC_BYTES * 256  ; 256 basis vectors
+    mov rax, SYS_WRITE
+    syscall
+    add r14, rax
+
+    ; --- Write holographic traces (2MB) ---
+    mov rdi, r13
+    lea rsi, [rbx + HOLO_OFFSET]
+    mov rdx, HOLO_TOTAL
+    mov rax, SYS_WRITE
+    syscall
+    add r14, rax
+
+    ; --- Write vocabulary ---
+    ; Size = vocab_count * VOCAB_ENTRY_SIZE
+    mov ecx, [rbx + STATE_OFFSET + ST_VOCAB_COUNT]
+    test ecx, ecx
+    jz .skip_vocab
+    imul rcx, rcx, VOCAB_ENTRY_SIZE
+    mov rdi, r13
+    lea rsi, [rbx + VOCAB_OFFSET]
+    mov rdx, rcx
+    mov rax, SYS_WRITE
+    syscall
+    add r14, rax
+.skip_vocab:
     ; Close file
     mov rdi, r13
     mov rax, SYS_CLOSE
@@ -203,9 +232,11 @@ persist_load:
     cmp dword [rsp], 'UHMA'
     jne .bad_magic
 
-    ; Check version
-    cmp qword [rsp + 8], 1
-    jne .bad_magic
+    ; Check version (accept 1 or 2)
+    cmp qword [rsp + 8], 2
+    ja .bad_magic
+    cmp qword [rsp + 8], 0
+    je .bad_magic
 
     ; Check base address matches
     mov rax, SURFACE_BASE
@@ -231,18 +262,50 @@ persist_load:
     add r14, rax
 
     ; --- Read dispatch region ---
-    ; Read until EOF to fill dispatch area
-    lea rsi, [rbx + DISPATCH_OFFSET]
-.read_loop:
+    ; Calculate dispatch size from saved dispatch_ptr
+    lea rax, [rbx + STATE_OFFSET + ST_DISPATCH_PTR]
+    mov rcx, [rax]            ; dispatch_ptr (absolute)
+    sub rcx, rbx
+    sub rcx, DISPATCH_OFFSET  ; size = ptr - dispatch_base
+    test rcx, rcx
+    jle .skip_dispatch_read
+
     mov rdi, r13
-    mov rdx, 4096             ; read in chunks
+    lea rsi, [rbx + DISPATCH_OFFSET]
+    mov rdx, rcx
     mov rax, SYS_READ
     syscall
-    cmp rax, 0
-    jle .read_done
     add r14, rax
-    add rsi, rax
-    jmp .read_loop
+
+.skip_dispatch_read:
+    ; --- Read VSA basis vectors (2MB) ---
+    mov rdi, r13
+    lea rsi, [rbx + VSA_OFFSET]
+    mov rdx, VSA_VEC_BYTES * 256
+    mov rax, SYS_READ
+    syscall
+    add r14, rax
+
+    ; --- Read holographic traces (2MB) ---
+    mov rdi, r13
+    lea rsi, [rbx + HOLO_OFFSET]
+    mov rdx, HOLO_TOTAL
+    mov rax, SYS_READ
+    syscall
+    add r14, rax
+
+    ; --- Read vocabulary ---
+    ; Size = vocab_count * VOCAB_ENTRY_SIZE (vocab_count already loaded with state)
+    mov ecx, [rbx + STATE_OFFSET + ST_VOCAB_COUNT]
+    test ecx, ecx
+    jz .read_done
+    imul rcx, rcx, VOCAB_ENTRY_SIZE
+    mov rdi, r13
+    lea rsi, [rbx + VOCAB_OFFSET]
+    mov rdx, rcx
+    mov rax, SYS_READ
+    syscall
+    add r14, rax
 
 .read_done:
     ; Close file
