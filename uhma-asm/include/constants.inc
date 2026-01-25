@@ -3,27 +3,147 @@
 %define CONSTANTS_INC
 
 ;; ============================================================
-;; Surface Layout
+;; Persistent Surface Configuration
+;; File-backed memory - learning survives restarts
+;; Uses sparse file - only touched pages consume disk
+;;
+;; ZONE ARCHITECTURE (200GB total):
+;;   HOT  (0-2GB)    - Always in RAM: state, active dispatch, scratch
+;;   WARM (2-16GB)   - Usually in RAM: recent patterns, vocab, traces
+;;   COLD (16-200GB) - Paged on demand: archives, associative graph
+;;
+;; OS handles paging via mmap - we just organize for locality
+;; ============================================================
+
+%define SURFACE_MAGIC       0x414D4855_56534132  ; "UHMA" "VSA2" (version 2 layout)
+%define SURFACE_VERSION     3                     ; increment on breaking layout changes
+
+;; ============================================================
+;; Surface Layout (file-backed, persistent)
 ;; ============================================================
 
 %define SURFACE_BASE        0x100000000
-%define SURFACE_SIZE        0x33000000        ; ~816MB (f64 VSA + 32MB holographic memory + vocab)
+%define SURFACE_SIZE        0x3200000000      ; 200GB max (sparse file)
+
+; Zone boundaries (for madvise hints and organization)
+%define ZONE_HOT_START      0x0
+%define ZONE_HOT_SIZE       0x80000000        ; 2GB
+%define ZONE_WARM_START     0x80000000        ; 2GB
+%define ZONE_WARM_SIZE      0x380000000       ; 14GB (2GB-16GB)
+%define ZONE_COLD_START     0x400000000       ; 16GB
+%define ZONE_COLD_SIZE      0x2E00000000      ; 184GB (16GB-200GB)
+
+;; ============================================================
+;; HOT ZONE (0-2GB) - Always in RAM
+;; State, active dispatch, current working memory
+;; ============================================================
 
 %define BOOTSTRAP_OFFSET    0x0
 %define BOOTSTRAP_SIZE      0x10000           ; 64KB
 
-%define DISPATCH_OFFSET     0x10000
+; Surface header (at BOOTSTRAP_OFFSET, persisted)
+%define SHDR_MAGIC          0                 ; u64 SURFACE_MAGIC
+%define SHDR_VERSION        8                 ; u32 SURFACE_VERSION
+%define SHDR_FLAGS          12                ; u32 flags (clean shutdown, etc.)
+%define SHDR_TOTAL_STEPS    16                ; u64 total steps ever (survives restarts)
+%define SHDR_CREATED        24                ; u64 unix timestamp of creation
+%define SHDR_LAST_OPEN      32                ; u64 unix timestamp of last open
+%define SHDR_SESSION_COUNT  40                ; u64 number of sessions
+%define SHDR_ASSOC_COUNT    48                ; u64 associations in graph
+%define SHDR_COLD_ALLOC     56                ; u64 next free offset in cold zone
+%define SHDR_SIZE           64                ; header size
+
+; Header flags
+%define SHDR_FLAG_CLEAN     0x0001            ; was cleanly shut down
+%define SHDR_FLAG_CORRUPT   0x0002            ; detected corruption
+
+%define STATE_OFFSET        0x10000
+%define STATE_SIZE          0x10000           ; 64KB - moved to hot zone!
+
+%define DISPATCH_OFFSET     0x20000
 %define DISPATCH_MAX_SIZE   0x10000000        ; 256MB
 
-%define REGION_TABLE_OFFSET 0x10010000
-%define REGION_TABLE_SIZE   0x10000           ; 64KB (2048 entries × 32 bytes)
-%define REGION_TABLE_MAX    2048
+%define REGION_TABLE_OFFSET 0x10020000
+%define REGION_TABLE_SIZE   0x100000          ; 1MB (32K entries × 32 bytes)
+%define REGION_TABLE_MAX    32768             ; 32K regions now!
 
-%define VSA_OFFSET          0x10020000
-%define VSA_SIZE            0x20000000        ; 512MB (65K tokens × 8KB each, f64)
+; Scratch arena for temporary VSA computations (hot)
+%define SCRATCH_OFFSET      0x10120000
+%define SCRATCH_SIZE        0x1000000         ; 16MB scratch space
+%define SCRATCH_VEC_COUNT   1024              ; number of scratch vectors available
 
-%define STATE_OFFSET        0x30020000
-%define STATE_SIZE          0x10000           ; 64KB
+; Working memory ring buffer (hot) - candidates before commit
+%define WORKBUF_OFFSET      0x11120000
+%define WORKBUF_SIZE        0x2000000         ; 32MB working buffer
+%define WORKBUF_ENTRY_SIZE  256               ; per-entry size
+%define WORKBUF_MAX_ENTRIES 131072            ; 128K entries
+
+;; ============================================================
+;; WARM ZONE (2GB-16GB) - Usually in RAM
+;; Recent patterns, vocabulary, holographic traces
+;; ============================================================
+
+%define VSA_OFFSET          0x80000000        ; 2GB - start of warm zone
+%define VSA_SIZE            0x40000000        ; 1GB (128K tokens × 8KB each, f64)
+%define VSA_MAX_TOKENS      131072            ; 128K vocabulary
+
+; Holographic traces (warm) - receipts, predictions, resonance
+%define HOLO_WARM_OFFSET    0xC0000000        ; 3GB
+%define HOLO_WARM_SIZE      0x40000000        ; 1GB for active traces
+
+; Confidence and metacognition vectors (warm)
+%define META_OFFSET         0x100000000       ; 4GB
+%define META_SIZE           0x10000000        ; 256MB metacognition data
+
+;; ============================================================
+;; COLD ZONE (16GB-200GB) - Paged on demand
+;; All holographic memory - just lower temperature/access frequency
+;; Same math, same vectors, just paged to disk when not accessed
+;; ============================================================
+
+; Extended holographic traces (cold) - overflow from warm zone
+; When warm traces are full, new associations spill here
+; Same format as warm traces, just lives on disk mostly
+%define HOLO_COLD_OFFSET    0x400000000       ; 16GB - start of cold zone
+%define HOLO_COLD_TRACES    8388608           ; 8M traces (massive expansion!)
+%define HOLO_COLD_SIZE      0x1000000000      ; 64GB for cold traces
+
+; Long-term vocabulary embeddings (cold) - full vectors for rare tokens
+; Warm zone has compact entries, cold has full 1024-dim embeddings
+%define VOCAB_COLD_OFFSET   0x1400000000      ; 80GB
+%define VOCAB_COLD_SIZE     0x1000000000      ; 64GB extended vocab embeddings
+
+; Episodic memory (cold) - timestamped experience traces
+; bind(time_vec, context_vec, event_vec) for "what happened when"
+%define EPISODIC_OFFSET     0x2400000000      ; 144GB
+%define EPISODIC_SIZE       0x800000000       ; 32GB episodic memory
+
+; Crystallized patterns (cold) - high-fidelity permanent memories
+; Patterns that reached fidelity=1.0, never decay, always available
+%define CRYSTAL_OFFSET      0x2C00000000      ; 176GB
+%define CRYSTAL_SIZE        0x600000000       ; 24GB crystallized memories
+
+;; ============================================================
+;; Relation Types for Holographic Binding
+;; Relationships encoded as: bind(subject_vec, relation_vec, object_vec)
+;; Stored via superposition into traces, queried via resonance
+;; NO separate graph structure - it's all holographic memory!
+;; ============================================================
+
+; Relation type seeds (used to generate deterministic relation vectors)
+%define REL_FOLLOWS         0x464F4C4C         ; "FOLL" - A follows B in sequence
+%define REL_CALLS           0x43414C4C         ; "CALL" - A calls B (function)
+%define REL_CONTAINS        0x434F4E54         ; "CONT" - A contains B
+%define REL_SIMILAR         0x53494D49         ; "SIMI" - A similar to B
+%define REL_CAUSES          0x43415553         ; "CAUS" - A causes B
+%define REL_PREDICTS        0x50524544         ; "PRED" - A predicts B
+%define REL_INHIBITS        0x494E4849         ; "INHI" - A inhibits B
+%define REL_EXCITES         0x45584349         ; "EXCI" - A excites B
+%define REL_SCHEMA          0x53434845         ; "SCHE" - A instance of schema B
+%define REL_TEMPORAL        0x54454D50         ; "TEMP" - A before B in time
+
+; Number of relation types
+%define REL_TYPE_COUNT      10
 
 ;; ============================================================
 ;; Region Header (128 bytes prefix — 2 cache lines)
@@ -320,27 +440,33 @@
 
 ;; ============================================================
 ;; Holographic Associative Memory Layout (f64 precision)
+;; Now uses zone-based layout:
+;;   HOLO_OFFSET (warm) = active traces in RAM
+;;   HOLO_COLD_OFFSET   = archived traces on disk
 ;; ============================================================
 
-%define HOLO_OFFSET         0x30030000        ; after STATE block
-%define HOLO_TRACES         4096              ; independent interference traces (was 256, increased for fidelity)
+%define HOLO_OFFSET         HOLO_WARM_OFFSET  ; alias for compatibility
+%define HOLO_TRACES         131072            ; 128K traces (expanded from 4096!)
 %define HOLO_DIM            1024              ; elements per trace vector
 %define HOLO_VEC_BYTES      (HOLO_DIM * 8)    ; 8192 bytes per trace (1024 x f64)
-%define HOLO_TOTAL          (HOLO_TRACES * HOLO_VEC_BYTES)  ; 2MB
+%define HOLO_TOTAL          (HOLO_TRACES * HOLO_VEC_BYTES)  ; 1GB in warm zone
 
-%define VOCAB_OFFSET        (HOLO_OFFSET + HOLO_TOTAL)  ; token registry after holographic traces
+; Vocabulary now in warm zone after VSA embeddings
+%define VOCAB_OFFSET        (VSA_OFFSET + VSA_SIZE)  ; after 1GB VSA = 3GB
 %define VOCAB_ENTRY_SIZE    8                 ; (u32 token_id, u32 count)
-%define VOCAB_MAX_SCAN      256               ; top-N tokens to scan during predict
+%define VOCAB_MAX_SCAN      1024              ; top-N tokens to scan (increased)
+%define VOCAB_SIZE          0x800000          ; 8MB vocab table (1M entries)
 
 ;; ============================================================
 ;; Topological Metacognition: Per-Context Confidence Vector
 ;; A 1024-dim f64 vector that accumulates confidence/anxiety
 ;; per context type. Hit → positive superposition, Miss → negative.
 ;; Query via dot product to feel anxious or confident about topics.
+;; Now in META region (warm zone).
 ;; ============================================================
 
-%define CONFIDENCE_VEC_OFFSET (VOCAB_OFFSET + 0x10000)  ; after 64KB vocab
-%define CONFIDENCE_VEC_BYTES  HOLO_VEC_BYTES            ; 8192 bytes (1024 x f64)
+%define CONFIDENCE_VEC_OFFSET META_OFFSET     ; in warm zone metacognition area
+%define CONFIDENCE_VEC_BYTES  HOLO_VEC_BYTES  ; 8192 bytes (1024 x f64)
 %define CONFIDENCE_HIT_WEIGHT  0x3FB999999999999A       ; +0.1 f64
 %define CONFIDENCE_MISS_WEIGHT 0xBFB999999999999A       ; -0.1 f64
 %define CONFIDENCE_DECAY       0x3FEFFAE147AE147B       ; 0.999 f64 (slow decay)
@@ -380,7 +506,7 @@
 ;; get INT 3 breakpoints injected for introspection.
 ;; ============================================================
 
-%define BREAKPOINT_TABLE_OFFSET (CONFIDENCE_VEC_OFFSET + CONFIDENCE_VEC_BYTES)
+%define BREAKPOINT_TABLE_OFFSET (META_OFFSET + 0x100000)  ; 1MB into metacognition area
 %define BREAKPOINT_ENTRY_SIZE   32    ; per-breakpoint entry
 %define BREAKPOINT_MAX          64    ; max concurrent breakpoints
 %define BREAKPOINT_TABLE_SIZE   (BREAKPOINT_ENTRY_SIZE * BREAKPOINT_MAX)

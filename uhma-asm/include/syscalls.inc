@@ -13,6 +13,16 @@
 %define SYS_MPROTECT        10
 %define SYS_MUNMAP          11
 %define SYS_BRK             12
+%define SYS_MSYNC           26
+%define SYS_MADVISE         28
+
+; madvise flags
+%define MADV_NORMAL         0                 ; no special treatment
+%define MADV_RANDOM         1                 ; expect random access
+%define MADV_SEQUENTIAL     2                 ; expect sequential access
+%define MADV_WILLNEED       3                 ; will need these pages
+%define MADV_DONTNEED       4                 ; don't need these pages
+%define MADV_HUGEPAGE       14                ; use huge pages if possible
 %define SYS_RT_SIGACTION    13
 %define SYS_RT_SIGRETURN    15
 %define SYS_NANOSLEEP       35
@@ -22,6 +32,7 @@
 %define SYS_FTRUNCATE       77
 %define SYS_GETCWD          79
 %define SYS_RENAME          82
+%define SYS_GETTIMEOFDAY    96
 %define SYS_UNLINK          87
 %define SYS_CLOCK_GETTIME   228
 %define SYS_GETRANDOM       318

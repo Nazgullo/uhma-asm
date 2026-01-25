@@ -3,6 +3,21 @@
 %include "constants.inc"
 
 section .data
+    ; Persistent surface file path
+    surface_path:   db "uhma.surface", 0
+
+    ; Startup messages
+    surf_msg:       db "[SURFACE] ", 0
+    surf_loading:   db "Loading persistent memory from uhma.surface", 10, 0
+    surf_creating:  db "Creating new persistent memory (100GB sparse)", 10, 0
+    surf_sessions:  db "Session #", 0
+    surf_steps:     db " (", 0
+    surf_steps2:    db " total steps)", 10, 0
+    surf_fresh:     db "Fresh start - initializing holographic traces", 10, 0
+    surf_recovered: db "Recovered ", 0
+    surf_regions:   db " regions, ", 0
+    surf_vocab:     db " vocabulary entries", 10, 0
+
     ; Shared memory paths for Mycorrhiza (collective consciousness)
     shm_vsa_path:   db "/dev/shm/uhma_vsa", 0
     shm_holo_path:  db "/dev/shm/uhma_holo", 0
@@ -25,35 +40,143 @@ extern presence_init
 extern receipt_init
 extern print_cstr
 extern print_hex64
+extern print_u64
 extern print_newline
 
 ;; ============================================================
 ;; surface_init
-;; mmap the 8GB RWX surface, zero the state block, init allocator
+;; Open/create persistent surface file, mmap it, conditionally init
+;; Learning survives restarts - uses 100GB sparse file
 ;; Returns: surface base in rax (or exits on failure)
 ;; ============================================================
 global surface_init
 surface_init:
     push rbx
     push r12
+    push r13
+    push r14
+    sub rsp, 8                ; alignment
 
-    ; mmap 8GB RWX anonymous private
+    ; Print startup message
+    lea rdi, [rel surf_msg]
+    call print_cstr
+
+    ; Open/create surface file
+    lea rdi, [rel surface_path]
+    mov esi, O_RDWR | O_CREAT ; read/write, create if not exists
+    mov edx, 0644o            ; permissions
+    mov rax, SYS_OPEN
+    syscall
+    test rax, rax
+    js .open_fail
+    mov r12, rax              ; save fd
+
+    ; ftruncate to set file size (sparse - only touched pages use disk)
+    mov rdi, r12              ; fd
+    mov rsi, SURFACE_SIZE     ; 100GB
+    mov rax, SYS_FTRUNCATE
+    syscall
+    ; ignore errors - might be read-only filesystem
+
+    ; mmap the file as shared RWX at fixed address
     mov rdi, SURFACE_BASE     ; hint address
-    mov rsi, SURFACE_SIZE     ; 8GB
+    mov rsi, SURFACE_SIZE     ; 100GB
     mov rdx, PROT_RWX
-    mov rcx, MAP_PRIVATE | MAP_ANONYMOUS  ; goes to r10 in sys_mmap
-    mov r8, -1                ; fd = -1 (anonymous)
-    xor r9d, r9d             ; offset = 0
+    mov rcx, MAP_SHARED | MAP_FIXED  ; persist writes to file
+    mov r8, r12               ; fd
+    xor r9d, r9d              ; offset = 0
     call sys_mmap
 
     ; Check for MAP_FAILED (-1)
     cmp rax, -1
     je .mmap_fail
-    ; Verify we got the requested address (or close)
     mov rbx, rax              ; save surface base
 
+    ; Close fd (mapping persists)
+    mov rdi, r12
+    mov rax, SYS_CLOSE
+    syscall
+
+    ; Check magic number - is this a valid surface?
+    mov rax, [rbx + BOOTSTRAP_OFFSET + SHDR_MAGIC]
+    mov rcx, SURFACE_MAGIC
+    cmp rax, rcx
+    jne .fresh_init
+
+    ; --- EXISTING SURFACE: Load and continue ---
+    lea rdi, [rel surf_loading]
+    call print_cstr
+
+    ; Increment session count
+    inc qword [rbx + BOOTSTRAP_OFFSET + SHDR_SESSION_COUNT]
+
+    ; Update last open timestamp
+    xor edi, edi
+    xor esi, esi
+    mov rax, SYS_GETTIMEOFDAY
+    lea rdi, [rsp]
+    syscall
+    mov rax, [rsp]            ; seconds
+    mov [rbx + BOOTSTRAP_OFFSET + SHDR_LAST_OPEN], rax
+
+    ; Print session info
+    lea rdi, [rel surf_msg]
+    call print_cstr
+    lea rdi, [rel surf_sessions]
+    call print_cstr
+    mov rdi, [rbx + BOOTSTRAP_OFFSET + SHDR_SESSION_COUNT]
+    call print_u64
+    lea rdi, [rel surf_steps]
+    call print_cstr
+    mov rdi, [rbx + BOOTSTRAP_OFFSET + SHDR_TOTAL_STEPS]
+    call print_u64
+    lea rdi, [rel surf_steps2]
+    call print_cstr
+
+    ; Print recovery info
+    lea rdi, [rel surf_msg]
+    call print_cstr
+    lea rdi, [rel surf_recovered]
+    call print_cstr
+    mov edi, [rbx + STATE_OFFSET + ST_REGION_COUNT]
+    call print_u64
+    lea rdi, [rel surf_regions]
+    call print_cstr
+    mov edi, [rbx + STATE_OFFSET + ST_VOCAB_COUNT]
+    call print_u64
+    lea rdi, [rel surf_vocab]
+    call print_cstr
+
+    ; Re-initialize dispatch pointer to end of existing regions
+    ; (regions survive but we need to find where to allocate next)
+    call .recalc_dispatch_ptr
+
+    ; Re-init subsystems that need runtime state
+    jmp .init_subsystems
+
+.fresh_init:
+    ; --- NEW SURFACE: Initialize everything ---
+    lea rdi, [rel surf_creating]
+    call print_cstr
+
+    ; Write magic number and version (must use register for 64-bit immediate)
+    mov rax, SURFACE_MAGIC
+    mov [rbx + BOOTSTRAP_OFFSET + SHDR_MAGIC], rax
+    mov dword [rbx + BOOTSTRAP_OFFSET + SHDR_VERSION], SURFACE_VERSION
+    mov dword [rbx + BOOTSTRAP_OFFSET + SHDR_FLAGS], 0
+    mov qword [rbx + BOOTSTRAP_OFFSET + SHDR_TOTAL_STEPS], 0
+    mov qword [rbx + BOOTSTRAP_OFFSET + SHDR_SESSION_COUNT], 1
+
+    ; Set creation and last open timestamp
+    lea rdi, [rsp]
+    xor esi, esi
+    mov rax, SYS_GETTIMEOFDAY
+    syscall
+    mov rax, [rsp]
+    mov [rbx + BOOTSTRAP_OFFSET + SHDR_CREATED], rax
+    mov [rbx + BOOTSTRAP_OFFSET + SHDR_LAST_OPEN], rax
+
     ; Initialize dispatch allocator pointer
-    ; Points to first free byte in dispatch region
     lea rcx, [rbx + DISPATCH_OFFSET]
     lea rdx, [rbx + STATE_OFFSET + ST_DISPATCH_PTR]
     mov [rdx], rcx
@@ -82,47 +205,34 @@ surface_init:
     mov rax, FNV64_INIT
     mov [rdx], rax
 
-    ; Zero holographic trace memory (2MB = HOLO_TOTAL, f64 vectors)
-    lea rdi, [rbx + HOLO_OFFSET]
-    xor eax, eax
-    mov ecx, HOLO_TOTAL / 8  ; zero 8 bytes at a time (2MB / 8 = 262144 iters)
-.zero_holo:
-    mov [rdi], rax
-    add rdi, 8
-    dec ecx
-    jnz .zero_holo
+    ; Print fresh init message
+    lea rdi, [rel surf_msg]
+    call print_cstr
+    lea rdi, [rel surf_fresh]
+    call print_cstr
 
-    ; Zero vocabulary area (first 64KB — enough for 8192 entries)
-    lea rdi, [rbx + VOCAB_OFFSET]
-    xor eax, eax
-    mov ecx, 65536 / 8
-.zero_vocab:
-    mov [rdi], rax
-    add rdi, 8
-    dec ecx
-    jnz .zero_vocab
-
-    ; Zero confidence vector (topological metacognition)
-    ; Starts neutral — no anxiety or confidence about any context type
-    lea rdi, [rbx + CONFIDENCE_VEC_OFFSET]
-    xor eax, eax
-    mov ecx, CONFIDENCE_VEC_BYTES / 8  ; 1024 f64 elements
-.zero_confidence:
-    mov [rdi], rax
-    add rdi, 8
-    dec ecx
-    jnz .zero_confidence
-
-    ; Initialize breakpoint table (self-debugger)
-    push rbx
-    call bp_init
-    pop rbx
+    ; NOTE: With sparse file mmap, unwritten pages are already zero!
+    ; No need to zero GB of memory - OS handles it on first access.
+    ; Just zero the small critical state areas.
 
     ; Zero holographic state fields
     mov dword [rbx + STATE_OFFSET + ST_VOCAB_COUNT], 0
     mov dword [rbx + STATE_OFFSET + ST_VOCAB_TOP_DIRTY], 0
-    mov qword [rbx + STATE_OFFSET + ST_HOLO_PREDICT_SUM], 0  ; f64
+    mov qword [rbx + STATE_OFFSET + ST_HOLO_PREDICT_SUM], 0
     mov dword [rbx + STATE_OFFSET + ST_HOLO_PREDICT_N], 0
+
+    ; Initialize cold zone allocation pointer (start of cold zone)
+    mov rax, ZONE_COLD_START
+    mov [rbx + BOOTSTRAP_OFFSET + SHDR_COLD_ALLOC], rax
+
+    ; Apply madvise hints for zone access patterns
+    call .setup_madvise
+
+.init_subsystems:
+    ; Initialize breakpoint table (runtime state, always reinit)
+    push rbx
+    call bp_init
+    pop rbx
 
     ; Initialize symbolic observation system
     push rbx
@@ -145,12 +255,95 @@ surface_init:
     pop rbx
 
     mov rax, rbx              ; return surface base
+    add rsp, 8
+    pop r14
+    pop r13
     pop r12
     pop rbx
     ret
 
+.recalc_dispatch_ptr:
+    ; Scan region table to find highest address used
+    push r15
+    lea r14, [rbx + REGION_TABLE_OFFSET]
+    mov r13d, [rbx + STATE_OFFSET + ST_REGION_COUNT]
+    lea r15, [rbx + DISPATCH_OFFSET]  ; start at dispatch base
+    xor ecx, ecx
+.scan_regions:
+    cmp ecx, r13d
+    jge .scan_done
+    imul rdi, rcx, RTE_SIZE
+    add rdi, r14
+    mov rax, [rdi + RTE_ADDR]         ; region start
+    mov edx, [rdi + RTE_LEN]          ; region length
+    add rax, rdx                       ; region end
+    cmp rax, r15
+    jle .scan_next
+    mov r15, rax                       ; update max
+.scan_next:
+    inc ecx
+    jmp .scan_regions
+.scan_done:
+    ; Align to 16 bytes
+    add r15, 15
+    and r15, ~15
+    mov [rbx + STATE_OFFSET + ST_DISPATCH_PTR], r15
+    pop r15
+    ret
+
+.setup_madvise:
+    ; Apply madvise hints for zone-based memory access patterns
+    ; HOT zone: MADV_WILLNEED - keep in RAM (active state, dispatch)
+    ; WARM zone: MADV_NORMAL - default behavior (vocab, recent traces)
+    ; COLD zone: MADV_RANDOM - expect random access, don't prefetch
+    ;
+    ; Note: Errors from madvise are non-fatal (hints only)
+    push rbx
+    mov rbx, SURFACE_BASE
+
+    ; HOT zone (0 - 2GB): MADV_WILLNEED
+    ; This tells the OS we'll need these pages soon - keep them in RAM
+    mov rdi, rbx                      ; addr = SURFACE_BASE + 0
+    add rdi, ZONE_HOT_START
+    mov rsi, ZONE_HOT_SIZE            ; len = 2GB
+    mov rdx, MADV_WILLNEED            ; advice = 3
+    mov rax, SYS_MADVISE
+    syscall
+    ; ignore errors - madvise is advisory
+
+    ; WARM zone (2GB - 16GB): MADV_NORMAL (default, but explicit)
+    ; OS uses default prefetching behavior
+    mov rdi, rbx
+    add rdi, ZONE_WARM_START
+    mov rsi, ZONE_WARM_SIZE           ; len = 14GB
+    mov rdx, MADV_NORMAL              ; advice = 0
+    mov rax, SYS_MADVISE
+    syscall
+
+    ; COLD zone (16GB - 200GB): MADV_RANDOM
+    ; Don't prefetch - we expect scattered access to archived data
+    ; This prevents OS from reading ahead into potentially unused pages
+    mov rdi, rbx
+    add rdi, ZONE_COLD_START
+    mov rsi, ZONE_COLD_SIZE           ; len = 184GB
+    mov rdx, MADV_RANDOM              ; advice = 1
+    mov rax, SYS_MADVISE
+    syscall
+
+    pop rbx
+    ret
+
+.open_fail:
+    ; Print error and exit
+    mov edi, 1
+    mov rax, SYS_EXIT
+    syscall
+
 .mmap_fail:
-    ; Exit with error
+    ; Close fd and exit
+    mov rdi, r12
+    mov rax, SYS_CLOSE
+    syscall
     mov edi, 1
     mov rax, SYS_EXIT
     syscall
@@ -254,6 +447,33 @@ region_alloc:
     pop r14
     pop r13
     pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; surface_freeze
+;; Sync persistent memory to disk before exit
+;; Updates total steps, sets clean shutdown flag, calls msync
+;; ============================================================
+global surface_freeze
+surface_freeze:
+    push rbx
+    mov rbx, SURFACE_BASE
+
+    ; Add current session's steps to total
+    mov rax, [rbx + STATE_OFFSET + ST_GLOBAL_STEP]
+    add [rbx + BOOTSTRAP_OFFSET + SHDR_TOTAL_STEPS], rax
+
+    ; Set clean shutdown flag
+    or dword [rbx + BOOTSTRAP_OFFSET + SHDR_FLAGS], SHDR_FLAG_CLEAN
+
+    ; msync to flush to disk
+    mov rdi, rbx              ; addr
+    mov rsi, SURFACE_SIZE     ; length
+    mov rdx, 4                ; MS_SYNC = 4
+    mov rax, SYS_MSYNC
+    syscall
+
     pop rbx
     ret
 

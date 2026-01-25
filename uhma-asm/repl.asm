@@ -96,6 +96,7 @@ extern observe_cycle
 extern dream_cycle
 extern digest_file
 extern surface_init_shared
+extern surface_freeze
 extern get_colony_size
 extern is_shared_mode
 extern sense_collective_valence
@@ -794,6 +795,8 @@ repl_run:
     jmp .loop
 
 .quit:
+    ; Sync persistent memory to disk before exit
+    call surface_freeze
     lea rdi, [rel bye_str]
     call print_cstr
     xor edi, edi
