@@ -5,6 +5,7 @@
 section .data
     fault_msg:      db "[FAULT] Signal ", 0
     fault_at_msg:   db " at RIP=0x", 0
+    fault_addr_msg: db " ADDR=0x", 0
     fault_nl:       db 10, 0
     fault_count:    dq 0              ; total faults caught
     consec_faults:  dq 0              ; consecutive fault counter
@@ -148,6 +149,7 @@ fault_handler:
 
     ; Print fault message
     mov rbx, rdi              ; save signum
+    mov r13, rsi              ; save siginfo_t pointer
     mov r12, rdx              ; save ucontext
 
     lea rdi, [rel fault_msg]
@@ -162,6 +164,12 @@ fault_handler:
 
     ; Get RIP from ucontext (offset 168 in ucontext_t.uc_mcontext.gregs[REG_RIP])
     mov rdi, [r12 + 168]
+    call print_hex64
+
+    ; Print faulting address (si_addr at offset 16 in siginfo_t)
+    lea rdi, [rel fault_addr_msg]
+    call print_cstr
+    mov rdi, [r13 + 16]       ; si_addr = memory address that caused fault
     call print_hex64
     call print_newline
 

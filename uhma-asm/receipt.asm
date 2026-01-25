@@ -304,9 +304,10 @@ emit_receipt:
 .use_combined_trace:
     mov eax, RCPT_TRACE_COMBINED
 .have_trace_idx:
-    ; Calculate trace address
+    ; Calculate trace address (64-bit offset via register)
     imul rax, rax, HOLO_VEC_BYTES
-    lea rdi, [rbx + HOLO_OFFSET]
+    mov rdi, HOLO_OFFSET
+    add rdi, rbx                  ; SURFACE_BASE
     add rdi, rax                  ; trace ptr
     lea rsi, [rel scratch_event_vec]
     call holo_superpose_f64
@@ -322,7 +323,9 @@ emit_receipt:
 
     mov eax, RCPT_TRACE_COMBINED
     imul rax, rax, HOLO_VEC_BYTES
-    lea rdi, [rbx + HOLO_OFFSET]
+    mov rdi, rbx
+    mov rcx, HOLO_OFFSET
+    add rdi, rcx                  ; 64-bit offset via register
     add rdi, rax
     lea rsi, [rel scratch_event_vec]
     call holo_superpose_f64
@@ -424,7 +427,9 @@ receipt_resonate:
     mov eax, RCPT_TRACE_COMBINED
 .have_query_trace:
     imul rax, rax, HOLO_VEC_BYTES
-    lea rdi, [rbx + HOLO_OFFSET]
+    mov rdi, rbx
+    mov rcx, HOLO_OFFSET
+    add rdi, rcx                  ; 64-bit offset via register
     add rdi, rax                  ; trace ptr
 
     ; Compute dot product (similarity)

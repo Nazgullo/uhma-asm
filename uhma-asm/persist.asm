@@ -138,7 +138,9 @@ persist_save:
 
     ; --- Write holographic traces (2MB) ---
     mov rdi, r13
-    lea rsi, [rbx + HOLO_OFFSET]
+    mov rsi, rbx
+    mov rcx, HOLO_OFFSET
+    add rsi, rcx                  ; 64-bit offset via register
     mov rdx, HOLO_TOTAL
     mov rax, SYS_WRITE
     syscall
@@ -288,7 +290,9 @@ persist_load:
 
     ; --- Read holographic traces (2MB) ---
     mov rdi, r13
-    lea rsi, [rbx + HOLO_OFFSET]
+    mov rsi, rbx
+    mov rcx, HOLO_OFFSET
+    add rsi, rcx                  ; 64-bit offset via register
     mov rdx, HOLO_TOTAL
     mov rax, SYS_READ
     syscall

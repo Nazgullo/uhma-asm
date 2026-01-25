@@ -996,7 +996,9 @@ repl_show_status:
     push rbx                  ; save across call
     mov eax, [rsp + 16]       ; counter (+8 for pushed rbx)
     imul rax, rax, HOLO_VEC_BYTES
-    lea rdi, [rbx + HOLO_OFFSET]
+    mov rdi, rbx
+    mov rcx, HOLO_OFFSET
+    add rdi, rcx              ; 64-bit offset via register
     add rdi, rax              ; trace ptr (f64[1024])
     call holo_magnitude_f64   ; → xmm0 (f64)
     pop rbx
