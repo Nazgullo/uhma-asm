@@ -166,6 +166,7 @@ verify_begin_modification:
 ;; ============================================================
 ;; verify_modification
 ;; Verify a proposed code modification meets all invariants.
+;; Uses verify_abstract (decoder-based) for proper instruction analysis.
 ;; rdi = address of code
 ;; rsi = size of code
 ;; Returns: rax = 1 if valid, 0 if invalid (with reason printed)
@@ -175,8 +176,7 @@ verify_modification:
     push rbx
     push r12
     push r13
-    push r14
-    push r15
+    sub rsp, VCS_SIZE + 8       ; space for VirtualCpuState + alignment
 
     ; Check if enabled
     cmp dword [rel verify_enabled], 0
@@ -185,40 +185,39 @@ verify_modification:
     mov r12, rdi                ; code address
     mov r13, rsi                ; code size
 
-    ; === Check 1: Valid opcode sequences ===
+    ; === Check 1: Valid opcode sequences (no invalid 64-bit opcodes) ===
+    ; This uses decode_instruction_length to walk properly
     mov rdi, r12
     mov rsi, r13
     call verify_opcodes
     test eax, eax
     jz .fail_opcode
 
-    ; === Check 2: Stack balance ===
+    ; === Check 2: Abstract interpretation (stack, jumps, forbidden, etc.) ===
+    ; Uses decode_instruction_full to properly parse instructions
     mov rdi, r12
     mov rsi, r13
-    call verify_stack_balance
+    lea rdx, [rsp]              ; VirtualCpuState on stack
+    call verify_abstract
     test eax, eax
-    jz .fail_stack
+    jnz .pass                   ; verify_abstract returns 1 on success
 
-    ; === Check 3: Jump targets in bounds ===
-    mov rdi, r12
-    mov rsi, r13
-    call verify_jump_targets
-    test eax, eax
-    jz .fail_jump
-
-    ; === Check 4: No forbidden instructions ===
-    mov rdi, r12
-    mov rsi, r13
-    call verify_no_forbidden
-    test eax, eax
-    jz .fail_opcode
-
-    ; === Check 5: CALL targets are valid (PRED_VALID_CALL) ===
-    mov rdi, r12
-    mov rsi, r13
-    call verify_call_targets
-    test eax, eax
-    jz .fail_call
+    ; Abstract verification failed - check specific error flags
+    test word [rsp + VCS_FLAGS], VCSF_STACK_UNDERFLOW
+    jnz .fail_stack
+    test word [rsp + VCS_FLAGS], VCSF_SAW_SYSCALL
+    jnz .fail_forbidden
+    test word [rsp + VCS_FLAGS], VCSF_SAW_INT
+    jnz .fail_forbidden
+    test word [rsp + VCS_FLAGS], VCSF_INVALID_JUMP
+    jnz .fail_jump
+    test word [rsp + VCS_FLAGS], VCSF_CALLEE_CLOBBER
+    jnz .fail_reg
+    ; Check if stack imbalance at RET (errors > 0 but no specific flag)
+    cmp dword [rsp + VCS_STACK_DEPTH], 0
+    jne .fail_stack
+    ; Generic failure
+    jmp .fail_opcode
 
     ; All checks passed
 .pass:
@@ -255,17 +254,24 @@ verify_modification:
     xor eax, eax
     jmp .done
 
-.fail_call:
+.fail_forbidden:
     lea rdi, [rel verify_fail]
     call print_cstr
-    lea rdi, [rel verify_call]
+    lea rdi, [rel verify_opcode]
+    call print_cstr
+    xor eax, eax
+    jmp .done
+
+.fail_reg:
+    lea rdi, [rel verify_fail]
+    call print_cstr
+    lea rdi, [rel verify_reg]
     call print_cstr
     xor eax, eax
     jmp .done
 
 .done:
-    pop r15
-    pop r14
+    add rsp, VCS_SIZE + 8
     pop r13
     pop r12
     pop rbx
@@ -335,75 +341,102 @@ verify_rollback:
 ;; ============================================================
 ;; verify_opcodes
 ;; Check that code contains only valid x86-64 opcodes.
+;; Uses decode_instruction_length to properly walk instruction boundaries
+;; and only check actual opcode bytes (not operands/immediates).
 ;; rdi = code, rsi = size
 ;; Returns: rax = 1 if valid, 0 if invalid
 ;; ============================================================
+extern decode_instruction_length
+
 verify_opcodes:
     push rbx
     push r12
     push r13
+    push r14
 
     mov r12, rdi                ; code ptr
-    mov r13, rsi                ; remaining size
+    mov r13, rsi                ; total size
+    xor r14d, r14d              ; current offset
 
 .scan_loop:
-    test r13, r13
-    jz .valid
+    cmp r14d, r13d
+    jge .valid
 
-    movzx eax, byte [r12]
+    ; Get pointer to current instruction
+    lea rdi, [r12 + r14]
 
-    ; Check for definitely invalid single-byte opcodes
-    ; 0x06, 0x07 (push/pop es - invalid in 64-bit)
-    cmp al, 0x06
+    ; Decode instruction length (this properly handles REX prefixes, ModR/M, etc.)
+    push r12
+    push r13
+    push r14
+    call decode_instruction_length
+    pop r14
+    pop r13
+    pop r12
+    ; eax = instruction length
+
+    ; Get the opcode byte (skip REX prefix if present)
+    lea rbx, [r12 + r14]        ; instruction start
+    movzx ecx, byte [rbx]
+
+    ; Check for REX prefix (0x40-0x4F) - opcode is next byte
+    cmp cl, 0x40
+    jl .check_opcode
+    cmp cl, 0x4F
+    jg .check_opcode
+    ; REX present, get actual opcode
+    movzx ecx, byte [rbx + 1]
+
+.check_opcode:
+    ; Check against invalid 64-bit opcodes (these don't exist in long mode):
+    ; Segment register push/pop: 0x06, 0x07, 0x0E, 0x16, 0x17, 0x1E, 0x1F
+    cmp cl, 0x06
     je .invalid
-    cmp al, 0x07
+    cmp cl, 0x07
     je .invalid
-    ; 0x0E (push cs - invalid)
-    cmp al, 0x0E
+    cmp cl, 0x0E
     je .invalid
-    ; 0x16, 0x17 (push/pop ss - invalid)
-    cmp al, 0x16
+    cmp cl, 0x16
     je .invalid
-    cmp al, 0x17
+    cmp cl, 0x17
     je .invalid
-    ; 0x1E, 0x1F (push/pop ds - invalid)
-    cmp al, 0x1E
+    cmp cl, 0x1E
     je .invalid
-    cmp al, 0x1F
-    je .invalid
-    ; 0x27 (DAA - invalid)
-    cmp al, 0x27
-    je .invalid
-    ; 0x2F (DAS - invalid)
-    cmp al, 0x2F
-    je .invalid
-    ; 0x37 (AAA - invalid)
-    cmp al, 0x37
-    je .invalid
-    ; 0x3F (AAS - invalid)
-    cmp al, 0x3F
-    je .invalid
-    ; 0x60, 0x61 (PUSHA/POPA - invalid)
-    cmp al, 0x60
-    je .invalid
-    cmp al, 0x61
-    je .invalid
-    ; 0x62 (BOUND - invalid)
-    cmp al, 0x62
-    je .invalid
-    ; 0xD4, 0xD5 (AAM/AAD - invalid)
-    cmp al, 0xD4
-    je .invalid
-    cmp al, 0xD5
-    je .invalid
-    ; 0xD6 (undefined)
-    cmp al, 0xD6
+    cmp cl, 0x1F
     je .invalid
 
-    ; Skip this byte and continue
-    ; (Real implementation would properly decode instruction length)
-    inc r12
-    dec r13
+    ; BCD instructions: 0x27 (DAA), 0x2F (DAS), 0x37 (AAA), 0x3F (AAS)
+    cmp cl, 0x27
+    je .invalid
+    cmp cl, 0x2F
+    je .invalid
+    cmp cl, 0x37
+    je .invalid
+    cmp cl, 0x3F
+    je .invalid
+
+    ; PUSHA/POPA: 0x60, 0x61
+    cmp cl, 0x60
+    je .invalid
+    cmp cl, 0x61
+    je .invalid
+
+    ; BOUND: 0x62 (repurposed for EVEX in newer CPUs, but not in our patterns)
+    cmp cl, 0x62
+    je .invalid
+
+    ; AAM/AAD: 0xD4, 0xD5
+    cmp cl, 0xD4
+    je .invalid
+    cmp cl, 0xD5
+    je .invalid
+
+    ; Undefined: 0xD6
+    cmp cl, 0xD6
+    je .invalid
+
+    ; This opcode is valid - advance by instruction length
+    add r14d, eax
     jmp .scan_loop
 
 .valid:
@@ -414,6 +447,7 @@ verify_opcodes:
     xor eax, eax
 
 .done:
+    pop r14
     pop r13
     pop r12
     pop rbx
