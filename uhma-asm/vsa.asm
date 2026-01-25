@@ -1,6 +1,7 @@
 ; vsa.asm — Pure AVX2 SIMD operations on flat float64[1024] arrays
 %include "syscalls.inc"
 %include "constants.inc"
+%include "vsa_ops.inc"
 
 section .text
 
@@ -77,6 +78,56 @@ vsa_init_random:
 
 .init_done:
     pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; vsa_init_random_vec(vec_ptr)
+;; rdi = pointer to vector to fill with random normalized values
+;; Fills a single vector with random values in [-1,1] and normalizes.
+;; ============================================================
+global vsa_init_random_vec
+vsa_init_random_vec:
+    push rbx
+    push r12
+
+    mov r12, rdi              ; save vec ptr
+
+    ; Fill with random bytes
+    mov rsi, VSA_VEC_BYTES    ; 8192 bytes
+    xor edx, edx              ; flags = 0
+    mov rax, SYS_GETRANDOM
+    syscall
+
+    ; Convert random u64 bits to valid f64 in [-1.0, 1.0)
+    mov rdi, r12
+    mov ecx, VSA_DIM
+.conv_loop:
+    mov rax, [rdi]            ; random u64
+    mov rdx, rax
+    shr rdx, 63               ; sign bit → rdx[0]
+    shl rdx, 63               ; sign bit back to bit 63
+    mov r8, 0x000FFFFFFFFFFFFF
+    and rax, r8               ; keep only mantissa
+    mov rbx, 0x3FF0000000000000
+    or rax, rbx               ; set exponent to 0x3FF → [1.0, 2.0)
+    mov [rdi], rax
+    movsd xmm0, [rdi]
+    mov rbx, 0x3FF0000000000000
+    movq xmm1, rbx            ; 1.0
+    subsd xmm0, xmm1          ; [0.0, 1.0)
+    movq xmm1, rdx            ; sign bit
+    orpd xmm0, xmm1           ; apply sign → [-1.0, 1.0)
+    movsd [rdi], xmm0
+    add rdi, 8
+    dec ecx
+    jnz .conv_loop
+
+    ; Normalize to unit length
+    mov rdi, r12
+    call vsa_normalize
+
     pop r12
     pop rbx
     ret
@@ -199,6 +250,83 @@ vsa_bind:
     jnz .bind_loop
 
     vzeroupper
+    ret
+
+;; ============================================================
+;; vsa_unbind(bound_ptr, role_ptr, out_ptr)
+;; rdi=bound, rsi=role, rdx=out
+;; For HRR with normalized vectors: unbind = bind (self-inverse)
+;; unbind(bind(A, B), A) ≈ B
+;; ============================================================
+global vsa_unbind
+vsa_unbind:
+    ; Element-wise multiply is self-inverse for unit vectors
+    jmp vsa_bind
+
+;; ============================================================
+;; vsa_gen_role_pos(pos, out_ptr)
+;; edi = position (0-7)
+;; rsi = output vector pointer
+;; Generates positional role vector as a SIGN VECTOR (all ±1.0).
+;; Sign pattern: element[i] = +1 if popcount(i & (pos_mask)) is even, else -1
+;; This creates quasi-orthogonal sign vectors suitable for self-inverse binding.
+;; ============================================================
+global vsa_gen_role_pos
+vsa_gen_role_pos:
+    push rbx
+    push r12
+    push r13
+    push r14
+
+    mov r12d, edi               ; position (0-7)
+    mov r13, rsi                ; output pointer
+
+    ; Create position mask: different bits set for each position
+    ; pos 0: mask = 0x001, pos 1: mask = 0x002, etc.
+    ; This creates Walsh-Hadamard like patterns
+    mov eax, 1
+    mov ecx, r12d
+    shl eax, cl
+    mov r14d, eax               ; r14d = 1 << pos = position mask
+
+    ; Constants for +1.0 and -1.0
+    mov rbx, 0x3FF0000000000000 ; +1.0 f64
+    mov rax, 0xBFF0000000000000 ; -1.0 f64
+
+    ; Fill all 1024 dimensions
+    xor ecx, ecx                ; dimension index
+.fill_loop:
+    cmp ecx, VSA_DIM
+    jge .fill_done
+
+    ; Compute sign: if (popcount(dim & pos_mask) & 1) then -1 else +1
+    mov edx, ecx
+    and edx, r14d               ; dim & pos_mask
+    popcnt edx, edx             ; count set bits
+    test edx, 1                 ; odd or even?
+    jnz .set_minus
+
+    ; Even popcount: set +1.0
+    mov r8d, ecx
+    shl r8, 3                   ; dim * 8
+    mov [r13 + r8], rbx
+    jmp .next_dim
+
+.set_minus:
+    ; Odd popcount: set -1.0
+    mov r8d, ecx
+    shl r8, 3
+    mov [r13 + r8], rax
+
+.next_dim:
+    inc ecx
+    jmp .fill_loop
+
+.fill_done:
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
     ret
 
 ;; ============================================================

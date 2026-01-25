@@ -1,29 +1,78 @@
 ; io.asm — Syscall wrappers for I/O, mmap, signals
+; Gated by maturity level for developmental safety.
 %include "syscalls.inc"
 %include "constants.inc"
 
 section .text
 
+extern gate_fd_write
+extern gate_fd_read
+
 ;; ============================================================
 ;; sys_write(fd, buf, len)
 ;; rdi=fd, rsi=buf, rdx=len
-;; Returns: bytes written in rax
+;; Returns: bytes written in rax, or -1 if blocked by maturity gate
 ;; ============================================================
 global sys_write
 sys_write:
+    ; Save args
+    push rdi
+    push rsi
+    push rdx
+
+    ; Check if this fd is allowed for writing
+    ; edi already has fd
+    call gate_fd_write
+    test eax, eax
+    jz .write_blocked
+
+    ; Allowed - restore args and do syscall
+    pop rdx
+    pop rsi
+    pop rdi
     mov rax, SYS_WRITE
     syscall
+    ret
+
+.write_blocked:
+    ; Blocked by maturity gate
+    pop rdx
+    pop rsi
+    pop rdi
+    mov rax, -1             ; return error
     ret
 
 ;; ============================================================
 ;; sys_read(fd, buf, len)
 ;; rdi=fd, rsi=buf, rdx=len
-;; Returns: bytes read in rax
+;; Returns: bytes read in rax, or -1 if blocked by maturity gate
 ;; ============================================================
 global sys_read
 sys_read:
+    ; Save args
+    push rdi
+    push rsi
+    push rdx
+
+    ; Check if this fd is allowed for reading
+    call gate_fd_read
+    test eax, eax
+    jz .read_blocked
+
+    ; Allowed - restore args and do syscall
+    pop rdx
+    pop rsi
+    pop rdi
     mov rax, SYS_READ
     syscall
+    ret
+
+.read_blocked:
+    ; Blocked by maturity gate
+    pop rdx
+    pop rsi
+    pop rdi
+    mov rax, -1
     ret
 
 ;; ============================================================

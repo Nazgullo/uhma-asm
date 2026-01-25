@@ -51,6 +51,14 @@ extern check_code_safety
 extern check_code_danger
 extern verify_code_geometric
 
+; VSA binding functions
+extern vsa_bind
+extern vsa_unbind
+extern vsa_gen_role_pos
+extern vsa_dot
+extern vsa_normalize
+extern vsa_init_random_vec
+
 ;; ============================================================
 ;; Symbolic Logic Representation
 ;; ============================================================
@@ -1464,5 +1472,194 @@ get_code_safety_score:
 
     add rsp, HOLO_VEC_BYTES + 8
     pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; VSA BINDING VERIFICATION
+;; ============================================================
+;; These tests verify that the VSA binding mathematics work correctly.
+;; Key property: unbind(bind(A, B), A) ≈ B for normalized vectors.
+;; ============================================================
+
+section .data
+    bind_test_pass: db "[VERIFY/VSA] Bind/unbind cycle PASSED", 10, 0
+    bind_test_fail: db "[VERIFY/VSA] Bind/unbind cycle FAILED: similarity = ", 0
+    role_test_pass: db "[VERIFY/VSA] Role vectors orthogonal: PASSED", 10, 0
+    role_test_fail: db "[VERIFY/VSA] Role vectors NOT orthogonal: ", 0
+
+section .text
+
+;; ============================================================
+;; verify_bind_unbind() → eax (1=pass, 0=fail)
+;; Tests that unbind(bind(ROLE, FILLER), ROLE) ≈ FILLER
+;; Uses a sign vector (role) so that role² = 1 for each element.
+;; ============================================================
+global verify_bind_unbind
+verify_bind_unbind:
+    push rbx
+    push r12
+    push r13
+    push r14
+    sub rsp, HOLO_VEC_BYTES * 4 + 8  ; role, filler, bound, recovered + align
+
+    ; Allocate: rsp+0 = role, rsp+HOLO = filler, rsp+2*HOLO = bound, rsp+3*HOLO = recovered
+    mov r12, rsp                        ; role (sign vector)
+    lea r13, [rsp + HOLO_VEC_BYTES]     ; filler (random)
+    lea r14, [rsp + HOLO_VEC_BYTES * 2] ; bound
+    lea rbx, [rsp + HOLO_VEC_BYTES * 3] ; recovered
+
+    ; Generate ROLE_POS_0 as role vector (sign vector with ±1.0)
+    xor edi, edi          ; position 0
+    mov rsi, r12
+    call vsa_gen_role_pos
+
+    ; Initialize filler with random normalized values
+    mov rdi, r13
+    call vsa_init_random_vec
+
+    ; bound = bind(role, filler)
+    mov rdi, r12
+    mov rsi, r13
+    mov rdx, r14
+    call vsa_bind
+
+    ; recovered = unbind(bound, role) = bind(bound, role)
+    ; Since role is a sign vector, role² = 1, so unbind(bind(R,F), R) = F
+    mov rdi, r14
+    mov rsi, r12
+    mov rdx, rbx
+    call vsa_unbind
+
+    ; Check similarity: dot(recovered, filler) should be close to 1.0
+    ; For perfect recovery with sign vectors, this should be exactly 1.0
+    mov rdi, rbx
+    mov rsi, r13
+    call vsa_dot
+    ; xmm0 = similarity (should be 1.0 for perfect recovery)
+
+    ; Check if similarity > 0.99 (should be exactly 1.0 for sign vectors)
+    mov rax, 0x3FEFAE147AE147AE  ; 0.99 f64
+    movq xmm1, rax
+    ucomisd xmm0, xmm1
+    jb .bind_fail
+
+    ; PASSED
+    lea rdi, [rel bind_test_pass]
+    call print_cstr
+    mov eax, 1
+    jmp .bind_done
+
+.bind_fail:
+    ; FAILED - print similarity
+    lea rdi, [rel bind_test_fail]
+    call print_cstr
+    ; xmm0 still has similarity
+    call print_f64
+    call print_newline
+    xor eax, eax
+
+.bind_done:
+    add rsp, HOLO_VEC_BYTES * 4 + 8
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; verify_role_orthogonality() → eax (1=pass, 0=fail)
+;; Tests that positional role vectors are approximately orthogonal.
+;; dot(ROLE_i, ROLE_j) should be ~0 for i != j
+;; ============================================================
+global verify_role_orthogonality
+verify_role_orthogonality:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, HOLO_VEC_BYTES * 2 + 8  ; two role vectors + align
+
+    mov r12, rsp                      ; role_0
+    lea r13, [rsp + HOLO_VEC_BYTES]  ; role_1
+
+    ; Generate ROLE_POS_0
+    xor edi, edi          ; position 0
+    mov rsi, r12
+    call vsa_gen_role_pos
+
+    ; Generate ROLE_POS_1
+    mov edi, 1            ; position 1
+    mov rsi, r13
+    call vsa_gen_role_pos
+
+    ; Check dot product - should be 0 (orthogonal)
+    mov rdi, r12
+    mov rsi, r13
+    call vsa_dot
+    ; xmm0 = dot product
+
+    ; Check if |dot| < 0.1 (should be 0 for orthogonal)
+    ; Take absolute value
+    mov rax, 0x7FFFFFFFFFFFFFFF   ; mask for abs
+    movq xmm1, rax
+    andpd xmm0, xmm1
+
+    mov rax, 0x3FB999999999999A   ; 0.1 f64
+    movq xmm1, rax
+    ucomisd xmm0, xmm1
+    ja .ortho_fail
+
+    ; PASSED
+    lea rdi, [rel role_test_pass]
+    call print_cstr
+    mov eax, 1
+    jmp .ortho_done
+
+.ortho_fail:
+    ; FAILED - print dot product
+    lea rdi, [rel role_test_fail]
+    call print_cstr
+    call print_f64
+    call print_newline
+    xor eax, eax
+
+.ortho_done:
+    add rsp, HOLO_VEC_BYTES * 2 + 8
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; verify_vsa_math() → eax (1=all pass, 0=any fail)
+;; Run all VSA math verification tests.
+;; ============================================================
+global verify_vsa_math
+verify_vsa_math:
+    push rbx
+
+    ; Test 1: bind/unbind cycle
+    call verify_bind_unbind
+    test eax, eax
+    jz .vsa_fail
+    mov ebx, eax
+
+    ; Test 2: role orthogonality
+    call verify_role_orthogonality
+    test eax, eax
+    jz .vsa_fail
+    and ebx, eax
+
+    mov eax, ebx
+    jmp .vsa_done
+
+.vsa_fail:
+    xor eax, eax
+
+.vsa_done:
     pop rbx
     ret

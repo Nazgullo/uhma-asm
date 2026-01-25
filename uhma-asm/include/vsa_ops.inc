@@ -164,4 +164,38 @@
 ; Minimum similarity for fuzzy opcode matching
 %define OPCODE_MATCH_THRESH     0x3FE0000000000000  ; 0.5 f64
 
+;; ============================================================
+;; Role Vectors for Structural Binding (Layer 1)
+;; Used for role-filler representations: bind(ROLE, FILLER)
+;; Each role occupies 32 dimensions to maintain orthogonality
+;; ============================================================
+
+; Positional Roles: encode position in sequence
+; ROLE_POS_N has 1.0 in dims [ROLE_POS_BASE + N*32, ROLE_POS_BASE + N*32 + 31]
+%define ROLE_POS_BASE           800         ; start of positional roles
+%define ROLE_POS_WIDTH          32          ; dims per position
+%define ROLE_POS_COUNT          8           ; positions 0-7
+
+; Individual role dimension ranges
+%define ROLE_POS_0_START        800         ; dims 800-831
+%define ROLE_POS_1_START        832         ; dims 832-863
+%define ROLE_POS_2_START        864         ; dims 864-895
+%define ROLE_POS_3_START        896         ; dims 896-927
+%define ROLE_POS_4_START        928         ; dims 928-959
+%define ROLE_POS_5_START        960         ; dims 960-991
+%define ROLE_POS_6_START        992         ; dims 992-1023
+%define ROLE_POS_7_START        736         ; dims 736-767 (wraparound)
+
+; Structural Roles: encode grammatical/semantic roles
+%define ROLE_STRUCT_BASE        640         ; start of structural roles
+%define ROLE_STRUCT_WIDTH       32          ; dims per role
+
+%define ROLE_SUBJECT_START      640         ; dims 640-671
+%define ROLE_VERB_START         672         ; dims 672-703
+%define ROLE_OBJECT_START       704         ; dims 704-735
+
+; Role vector magnitude (should be 1.0 for unit vectors)
+; Each role has ROLE_POS_WIDTH dimensions set to 1/sqrt(WIDTH)
+%define ROLE_ELEMENT_VAL        0x3FC0000000000000  ; ~0.1767 = 1/sqrt(32)
+
 %endif

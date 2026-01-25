@@ -34,6 +34,12 @@
 %define SYS_RENAME          82
 %define SYS_GETTIMEOFDAY    96
 %define SYS_UNLINK          87
+%define SYS_LSEEK           8
+%define SYS_PWRITE          18
+%define SYS_MKDIR           83
+%define SYS_GETDENTS        78
+%define SYS_OPENAT          257
+%define SYS_FSYNC           74
 %define SYS_CLOCK_GETTIME   228
 %define SYS_GETRANDOM       318
 

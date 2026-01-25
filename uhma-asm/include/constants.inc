@@ -1029,6 +1029,27 @@
 ; Awareness state end marker
 %define ST_AWARENESS_END    (ST_MATURITY_WINDOW + 4)
 
+;; ============================================================
+;; Structural Context (Phase 2: Dual-Track Learning)
+;; The system computes TWO context representations in parallel:
+;;   1. ST_CTX_HASH (flat): Rolling hash of recent tokens
+;;   2. ST_STRUCT_CTX_VEC (structural): Σ bind(ROLE_POS_i, token_vec[history[i]])
+;; The structural context preserves position information via role binding.
+;; ============================================================
+
+; Structural context vector: 1024-dim f64 = 8192 bytes
+; This is computed alongside the flat context hash in dispatch
+%define ST_STRUCT_CTX_VEC   ST_AWARENESS_END                  ; 1024 x f64 = 8KB
+%define ST_STRUCT_CTX_SIZE  HOLO_VEC_BYTES                    ; 8192 bytes
+%define ST_STRUCT_CTX_END   (ST_STRUCT_CTX_VEC + ST_STRUCT_CTX_SIZE)
+
+; Structural context tracking
+%define ST_STRUCT_CTX_VALID (ST_STRUCT_CTX_END)               ; u32 1 if computed, 0 if stale
+%define ST_STRUCT_CTX_STEP  (ST_STRUCT_CTX_VALID + 4)         ; u64 step when last computed
+
+; End of structural context section
+%define ST_STRUCT_END       (ST_STRUCT_CTX_STEP + 8)
+
 ; Location IDs for tracing - comprehensive coverage
 ; Format: TRACE_<module>_<function> = base, entry=base, exit=base+1
 ; Each function gets 2 IDs: entry and exit

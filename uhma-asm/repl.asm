@@ -45,6 +45,14 @@ section .data
     trace_next_msg: db "[JOURNEY] Will trace next token. Type text to trace, 'trace' to show.", 10, 0
     unknown_str:    db "Unknown command. Type 'help'.", 10, 0
     status_hdr:     db "--- Status ---", 10, 0
+    maturity_hdr:   db "--- Maturity (Developmental Stage) ---", 10, 0
+    maturity_stage: db "  Stage: ", 0
+    maturity_acc:   db "  Accuracy:  ", 0
+    maturity_stab:  db "  Stability: ", 0
+    maturity_coh:   db "  Coherence: ", 0
+    maturity_s0:    db "0 (Infant)", 0
+    maturity_s1:    db "1 (Aware)", 0
+    maturity_s2:    db "2 (Active)", 0
     hive_hdr:       db "--- Hive Mind (Pheromone Levels) ---", 10, 0
     hive_dream:     db "  Dream pheromone:   ", 0
     hive_observe:   db "  Observe pheromone: ", 0
@@ -1031,6 +1039,51 @@ repl_show_status:
 
     ; --- Graph Dynamics Stats ---
     call show_graph_stats
+
+    ; --- Maturity/Developmental Stage ---
+    lea rdi, [rel maturity_hdr]
+    call print_cstr
+
+    ; Stage
+    lea rdi, [rel maturity_stage]
+    call print_cstr
+    mov eax, [rbx + STATE_OFFSET + ST_MATURITY_LEVEL]
+    cmp eax, 0
+    jne .not_s0
+    lea rdi, [rel maturity_s0]
+    jmp .print_stage
+.not_s0:
+    cmp eax, 1
+    jne .not_s1
+    lea rdi, [rel maturity_s1]
+    jmp .print_stage
+.not_s1:
+    lea rdi, [rel maturity_s2]
+.print_stage:
+    call print_cstr
+    call print_newline
+
+    ; Mastery metrics
+    lea rdi, [rel maturity_acc]
+    call print_cstr
+    movsd xmm0, [rbx + STATE_OFFSET + ST_MASTERY_ACC]
+    cvtsd2ss xmm0, xmm0
+    call print_f32
+    call print_newline
+
+    lea rdi, [rel maturity_stab]
+    call print_cstr
+    movsd xmm0, [rbx + STATE_OFFSET + ST_MASTERY_STABILITY]
+    cvtsd2ss xmm0, xmm0
+    call print_f32
+    call print_newline
+
+    lea rdi, [rel maturity_coh]
+    call print_cstr
+    movsd xmm0, [rbx + STATE_OFFSET + ST_MASTERY_COHERENCE]
+    cvtsd2ss xmm0, xmm0
+    call print_f32
+    call print_newline
 
     pop rbx
     ret

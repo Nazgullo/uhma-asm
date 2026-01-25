@@ -50,6 +50,9 @@ extern learn_pattern
 extern fire_hook
 extern vsa_get_token_vec
 extern vsa_superpose
+extern vsa_bind
+extern vsa_gen_role_pos
+extern vsa_normalize
 extern region_alloc
 extern find_existing_pattern
 extern learn_connections
@@ -60,6 +63,7 @@ extern holo_predict
 extern holo_query_valence
 extern holo_decay_all
 extern update_organic_pressure
+extern maturity_update
 extern update_anticipatory
 extern decay_anticipatory
 extern update_oscillation
@@ -509,6 +513,15 @@ process_token:
     inc byte [rax + 2]
 .slot_age3_done:
 
+    ; --- Phase 2: Compute structural context (dual-track) ---
+    ; struct_ctx = Σ bind(ROLE_POS_i, token_vec[history[i]])
+    ; This runs in parallel with the flat context hash
+    push r12
+    push r13
+    call compute_struct_ctx
+    pop r13
+    pop r12
+
     ; --- Check last prediction ---
     lea rax, [rbx + STATE_OFFSET + ST_LAST_PREDICT]
     mov r14d, [rax]           ; last predicted token
@@ -922,6 +935,24 @@ process_token:
     ; OCTOPUS NERVOUS SYSTEM: Let distributed ganglia react
     ; This replaces centralized REPL control with local pressure-based triggering
     call tick_regulators
+
+    ; DEVELOPMENTAL TRACKING: Update mastery metrics
+    ; edi = 1 if last prediction was hit, 0 if miss (check ST_LAST_PREDICT vs actual)
+    ; For simplicity, use self-prediction stats as proxy
+    mov eax, [rbx + STATE_OFFSET + ST_SELF_PRED_HITS]
+    mov edx, eax
+    mov ecx, [rbx + STATE_OFFSET + ST_SELF_PRED_MISSES]
+    add ecx, eax                ; total = hits + misses
+    ; edi = 1 if we just had a hit (check if hits increased)
+    ; Simplified: pass 1 if hits > misses trend
+    cmp eax, [rbx + STATE_OFFSET + ST_SELF_PRED_MISSES]
+    setg dil
+    movzx edi, dil
+    mov esi, edx                ; total hits
+    ; edx already has total from earlier calculation
+    push r12
+    call maturity_update
+    pop r12
 
     ; Fire input hook
     mov edi, HOOK_ON_INPUT
@@ -2294,6 +2325,139 @@ find_region_index:
     ret
 .fri_not_found:
     mov eax, -1
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; compute_struct_ctx()
+;; Computes structural context: Σ bind(ROLE_POS_i, token_vec[history[i]])
+;; Uses last 8 tokens from token ring buffer.
+;; Result stored in ST_STRUCT_CTX_VEC.
+;;
+;; This is Phase 2 of structural learning:
+;; - Flat context (ST_CTX_HASH): Rolling hash, loses position info
+;; - Structural context (ST_STRUCT_CTX_VEC): Preserves position via role binding
+;;
+;; Uses SCRATCH_OFFSET for temp vectors to avoid stack overflow.
+;; ============================================================
+global compute_struct_ctx
+compute_struct_ctx:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 8                            ; align stack
+
+    mov rbx, SURFACE_BASE
+
+    ; Use scratch area for temp vectors (safer than stack)
+    ; temp_role = SCRATCH_OFFSET + 0
+    ; temp_bound = SCRATCH_OFFSET + HOLO_VEC_BYTES
+    lea r14, [rbx + SCRATCH_OFFSET]                   ; temp_role ptr
+    lea r15, [rbx + SCRATCH_OFFSET + HOLO_VEC_BYTES]  ; temp_bound ptr
+
+    ; --- Zero the structural context vector ---
+    lea rdi, [rbx + STATE_OFFSET + ST_STRUCT_CTX_VEC]
+    mov ecx, HOLO_VEC_BYTES / 8
+    xor eax, eax
+.zero_loop:
+    mov [rdi], rax
+    add rdi, 8
+    dec ecx
+    jnz .zero_loop
+
+    ; --- Get token count and ring position ---
+    mov eax, [rbx + STATE_OFFSET + ST_TOKEN_COUNT]
+    test eax, eax
+    jz .ctx_done                          ; no tokens yet
+
+    ; Compute how many tokens to use: min(8, token_count)
+    cmp eax, 8
+    jle .use_count
+    mov eax, 8
+.use_count:
+    mov r12d, eax                         ; r12 = num_tokens to process
+
+    ; r13 = current position index (0 = most recent)
+    xor r13d, r13d
+
+.bind_loop:
+    cmp r13d, r12d
+    jge .ctx_normalize
+
+    ; --- Generate role vector for position r13 ---
+    mov edi, r13d                         ; position
+    mov rsi, r14                          ; output to temp_role
+    push r12
+    push r13
+    call vsa_gen_role_pos
+    pop r13
+    pop r12
+
+    ; --- Get token from history ---
+    ; ring_idx = (pos - 1 - r13) & (CAP - 1)
+    mov eax, [rbx + STATE_OFFSET + ST_TOKEN_POS]
+    sub eax, 1
+    sub eax, r13d
+    and eax, (ST_TOKEN_BUF_CAP - 1)
+
+    ; token_id = token_buf[ring_idx]
+    lea rcx, [rbx + STATE_OFFSET + ST_TOKEN_BUF]
+    mov edi, [rcx + rax * 4]              ; token_id
+
+    ; Clamp token_id to VSA_MAX_TOKENS to avoid out-of-bounds
+    cmp edi, VSA_MAX_TOKENS
+    jb .token_ok
+    and edi, (VSA_MAX_TOKENS - 1)         ; wrap around
+.token_ok:
+
+    ; --- Get token vector ---
+    push r12
+    push r13
+    call vsa_get_token_vec
+    pop r13
+    pop r12
+    ; rax = token_vec ptr
+
+    ; --- Bind role with token: temp_bound = bind(temp_role, token_vec) ---
+    mov rdi, r14                          ; temp_role
+    mov rsi, rax                          ; token_vec
+    mov rdx, r15                          ; output to temp_bound
+    push r12
+    push r13
+    call vsa_bind
+    pop r13
+    pop r12
+
+    ; --- Superpose into structural context ---
+    ; struct_ctx += temp_bound
+    lea rdi, [rbx + STATE_OFFSET + ST_STRUCT_CTX_VEC]
+    mov rsi, r15                          ; temp_bound
+    push r12
+    push r13
+    call vsa_superpose
+    pop r13
+    pop r12
+
+    inc r13d
+    jmp .bind_loop
+
+.ctx_normalize:
+    ; Optional: normalize the structural context
+    ; For now, skip normalization to preserve magnitude information
+
+    ; Mark as valid
+    mov dword [rbx + STATE_OFFSET + ST_STRUCT_CTX_VALID], 1
+    mov rax, [rbx + STATE_OFFSET + ST_GLOBAL_STEP]
+    mov [rbx + STATE_OFFSET + ST_STRUCT_CTX_STEP], rax
+
+.ctx_done:
+    add rsp, 8
+    pop r15
+    pop r14
+    pop r13
     pop r12
     pop rbx
     ret

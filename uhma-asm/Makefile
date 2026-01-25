@@ -9,7 +9,7 @@ SRCS = boot.asm io.asm format.asm signal.asm surface.asm repl.asm \
        observe.asm modify.asm gate.asm decode.asm drives.asm \
        evolve.asm dreams.asm persist.asm introspect.asm trace.asm \
        symbolic.asm genes.asm factor.asm verify.asm presence.asm \
-       receipt.asm
+       receipt.asm maturity.asm
 
 OBJS = $(SRCS:.asm=.o)
 

@@ -12,6 +12,8 @@ extern repl_run
 extern dispatch_init
 extern vsa_init_random
 extern verify_init
+extern verify_vsa_math
+extern maturity_init
 
 ;; ============================================================
 ;; _start — Entry point
@@ -42,7 +44,13 @@ _start:
     ; 5. Initialize verification system (assembly brittleness protection)
     call verify_init
 
-    ; 6. Initialize metabolic energy pool
+    ; 5b. Verify VSA binding mathematics at startup
+    call verify_vsa_math
+
+    ; 6. Initialize maturity/developmental gating
+    call maturity_init
+
+    ; 7. Initialize metabolic energy pool
     mov rbx, SURFACE_BASE
     mov rax, ENERGY_INITIAL
     mov [rbx + STATE_OFFSET + ST_ENERGY], rax
