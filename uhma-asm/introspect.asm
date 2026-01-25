@@ -825,3 +825,450 @@ update_presence_dispatch:
 .pres_done:
     pop rbx
     ret
+
+;; ============================================================
+;; Topological Metacognition Reporting
+;; ============================================================
+
+section .data
+    meta_msg:       db "[METACOG] ", 0
+    meta_feeling:   db "feeling=", 0
+    meta_neutral:   db "NEUTRAL", 0
+    meta_confident: db "CONFIDENT", 0
+    meta_anxious:   db "ANXIOUS", 0
+    meta_conf_val:  db " confidence=", 0
+    meta_mode:      db " → mode=", 0
+    meta_fast:      db "FAST", 0
+    meta_deliberate: db "DELIBERATE", 0
+    meta_other:     db "OTHER", 0
+    meta_updates:   db " (updates=", 0
+    meta_close:     db ")", 0
+
+section .text
+
+extern confidence_query
+extern confidence_get_feeling
+extern confidence_get_update_count
+
+;; ============================================================
+;; metacog_report(ctx_hash)
+;; edi=ctx_hash
+;; Prints the system's metacognitive state for this context:
+;; feeling (neutral/confident/anxious), raw confidence score,
+;; and resulting dispatch mode.
+;; Actively queries the confidence vector (doesn't just read stored values).
+;; ============================================================
+global metacog_report
+metacog_report:
+    push rbx
+    push r12
+    sub rsp, 24               ; space for confidence value (f64)
+
+    mov r12d, edi             ; save ctx_hash
+    mov rbx, SURFACE_BASE
+
+    ; Query confidence for this specific context
+    mov edi, r12d
+    call confidence_query     ; → xmm0 = confidence score (f64)
+    movsd [rsp], xmm0         ; save confidence value
+
+    ; Get feeling for this context
+    mov edi, r12d
+    call confidence_get_feeling  ; → eax = feeling enum
+    mov [rsp + 8], eax        ; save feeling
+
+    ; Print header
+    lea rdi, [rel meta_msg]
+    call print_cstr
+
+    ; Print feeling label
+    lea rdi, [rel meta_feeling]
+    call print_cstr
+
+    ; Print feeling
+    mov eax, [rsp + 8]
+    cmp eax, FEELING_CONFIDENT
+    je .print_confident
+    cmp eax, FEELING_ANXIOUS
+    je .print_anxious
+    lea rdi, [rel meta_neutral]
+    jmp .printed_feeling
+.print_confident:
+    lea rdi, [rel meta_confident]
+    jmp .printed_feeling
+.print_anxious:
+    lea rdi, [rel meta_anxious]
+.printed_feeling:
+    call print_cstr
+
+    ; Print raw confidence value (convert f64 to f32 for printing)
+    lea rdi, [rel meta_conf_val]
+    call print_cstr
+    movsd xmm0, [rsp]         ; reload confidence
+    cvtsd2ss xmm0, xmm0       ; f64 → f32
+    call print_f32
+
+    ; Print resulting mode
+    lea rdi, [rel meta_mode]
+    call print_cstr
+    mov eax, [rbx + STATE_OFFSET + ST_DISPATCH_MODE]
+    cmp eax, DMODE_FAST
+    je .mode_fast
+    cmp eax, DMODE_DELIBERATE
+    je .mode_deliberate
+    lea rdi, [rel meta_other]
+    jmp .printed_mode
+.mode_fast:
+    lea rdi, [rel meta_fast]
+    jmp .printed_mode
+.mode_deliberate:
+    lea rdi, [rel meta_deliberate]
+.printed_mode:
+    call print_cstr
+
+    ; Print update count for debugging
+    lea rdi, [rel meta_updates]
+    call print_cstr
+    call confidence_get_update_count
+    mov rdi, rax
+    call print_u64
+    lea rdi, [rel meta_close]
+    call print_cstr
+
+    call print_newline
+
+    add rsp, 24
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; STRUCTURAL ABSORPTION: Learning Grammar from Ingested Code
+;; "You are what you eat" — valid code becomes high-value schema
+;; ============================================================
+
+section .data
+    absorb_msg:         db "[ABSORB] Analyzing ingested code (", 0
+    absorb_bytes:       db " bytes)...", 10, 0
+    absorb_valid:       db "[ABSORB] VALID — storing as schema", 10, 0
+    absorb_invalid:     db "[ABSORB] INVALID — rejected (", 0
+    absorb_errors:      db " errors)", 10, 0
+    absorb_energy:      db "[ABSORB] Energy gained from valid schema: ", 0
+
+    align 8
+    schema_energy:      dq 5.0    ; energy reward for absorbing valid code
+
+section .text
+
+extern verify_abstract
+extern holo_store
+extern vsa_energy_to_valence
+
+;; ============================================================
+;; absorb_code(code_ptr, code_len) -> eax (1=absorbed, 0=rejected)
+;; rdi=code pointer, rsi=code length
+;; Applies the Logic Probe to ingested code. If valid:
+;;   - Stores in holographic memory as high-value schema
+;;   - Rewards system with energy (valid code = nutritious food)
+;; If invalid:
+;;   - Rejected with negative valence (bad food = poison)
+;; ============================================================
+global absorb_code
+absorb_code:
+    push rbx
+    push r12
+    push r13
+    push r14
+    sub rsp, VCS_SIZE + 16    ; verification state + locals
+
+    mov r12, rdi              ; code ptr
+    mov r13, rsi              ; code len
+    mov rbx, SURFACE_BASE
+
+    ; Print analysis message
+    lea rdi, [rel absorb_msg]
+    call print_cstr
+    mov rdi, r13
+    call print_u64
+    lea rdi, [rel absorb_bytes]
+    call print_cstr
+
+    ; Skip if too short or too long
+    cmp r13, 3
+    jl .absorb_reject
+    cmp r13, 4096             ; max schema size
+    jg .absorb_reject
+
+    ; Run abstract interpreter
+    mov rdi, r12              ; code
+    mov rsi, r13              ; length
+    lea rdx, [rsp]            ; output state
+    call verify_abstract
+    mov r14d, eax             ; save error count
+
+    test eax, eax
+    jnz .absorb_reject
+
+    ; --- VALID CODE: Store as schema ---
+    lea rdi, [rel absorb_valid]
+    call print_cstr
+
+    ; Generate hash from code bytes
+    xor eax, eax
+    mov rcx, r13
+    mov rsi, r12
+.hash_code:
+    test rcx, rcx
+    jz .hash_done
+    movzx edx, byte [rsi]
+    imul eax, eax, 31
+    add eax, edx
+    inc rsi
+    dec rcx
+    jmp .hash_code
+.hash_done:
+    mov r14d, eax             ; code hash
+
+    ; Store in holographic memory with high strength
+    mov edi, r14d             ; ctx = code_hash
+    mov esi, r14d             ; token = code_hash (self-reference)
+    mov rax, 0x3FF0000000000000  ; 1.0 f64 (max strength)
+    movq xmm0, rax
+    call holo_store
+
+    ; Reward energy
+    movsd xmm0, [rbx + STATE_OFFSET + ST_ENERGY]
+    addsd xmm0, [rel schema_energy]
+    mov rax, ENERGY_MAX
+    movq xmm1, rax
+    minsd xmm0, xmm1
+    movsd [rbx + STATE_OFFSET + ST_ENERGY], xmm0
+
+    ; Print energy gained
+    lea rdi, [rel absorb_energy]
+    call print_cstr
+    movsd xmm0, [rel schema_energy]
+    cvtsd2ss xmm0, xmm0
+    call print_f32
+    call print_newline
+
+    mov eax, 1                ; return absorbed
+    jmp .absorb_done
+
+.absorb_reject:
+    lea rdi, [rel absorb_invalid]
+    call print_cstr
+    mov edi, r14d
+    call print_u64
+    lea rdi, [rel absorb_errors]
+    call print_cstr
+
+    xor eax, eax              ; return rejected
+
+.absorb_done:
+    add rsp, VCS_SIZE + 16
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; REGULATOR SYSTEM: Distributed Ganglia (Octopus Arms)
+;; Replaces centralized REPL control with local pressure-based
+;; triggering. Each regulator monitors a pressure and fires
+;; when threshold exceeded.
+;; ============================================================
+
+section .data
+    reg_trigger_msg:    db "[GANGLION] ", 0
+    reg_dream:          db "Dream ganglion fired (pressure=", 0
+    reg_observe:        db "Observe ganglion fired (pressure=", 0
+    reg_evolve:         db "Evolve ganglion fired (pressure=", 0
+    reg_compact:        db "Compact ganglion fired", 10, 0
+    reg_rest:           db "Rest ganglion fired (fatigue=", 0
+    reg_close:          db ")", 10, 0
+
+    align 8
+    reg_threshold:      dq 0.5    ; default pressure threshold
+
+section .text
+
+extern dream_cycle
+extern observe_cycle
+extern evolve_cycle
+extern region_compact
+
+;; ============================================================
+;; tick_regulators()
+;; Called each processing step. Scans pressure values and
+;; triggers appropriate cycles when thresholds exceeded.
+;; This is the "nervous system" — distributed local control.
+;; Returns: eax = number of actions triggered
+;; ============================================================
+global tick_regulators
+tick_regulators:
+    push rbx
+    push r12
+    sub rsp, 8                ; alignment
+
+    mov rbx, SURFACE_BASE
+    xor r12d, r12d            ; actions triggered
+
+    ; Load threshold
+    movsd xmm7, [rel reg_threshold]
+
+    ; --- Check dream pressure ---
+    movsd xmm0, [rbx + STATE_OFFSET + ST_DREAM_PRESSURE]
+    ucomisd xmm0, xmm7
+    jbe .check_observe
+
+    ; Dream pressure exceeded — trigger dream cycle
+    lea rdi, [rel reg_trigger_msg]
+    call print_cstr
+    lea rdi, [rel reg_dream]
+    call print_cstr
+    movsd xmm0, [rbx + STATE_OFFSET + ST_DREAM_PRESSURE]
+    cvtsd2ss xmm0, xmm0
+    call print_f32
+    lea rdi, [rel reg_close]
+    call print_cstr
+
+    call dream_cycle
+    inc r12d
+
+    ; Reset pressure after firing
+    xorpd xmm0, xmm0
+    movsd [rbx + STATE_OFFSET + ST_DREAM_PRESSURE], xmm0
+
+.check_observe:
+    ; --- Check observe pressure ---
+    movsd xmm0, [rbx + STATE_OFFSET + ST_OBSERVE_PRESSURE]
+    ucomisd xmm0, xmm7
+    jbe .check_evolve
+
+    ; Observe pressure exceeded — trigger observe cycle
+    lea rdi, [rel reg_trigger_msg]
+    call print_cstr
+    lea rdi, [rel reg_observe]
+    call print_cstr
+    movsd xmm0, [rbx + STATE_OFFSET + ST_OBSERVE_PRESSURE]
+    cvtsd2ss xmm0, xmm0
+    call print_f32
+    lea rdi, [rel reg_close]
+    call print_cstr
+
+    call observe_cycle
+    inc r12d
+
+    ; Reset pressure
+    xorpd xmm0, xmm0
+    movsd [rbx + STATE_OFFSET + ST_OBSERVE_PRESSURE], xmm0
+
+.check_evolve:
+    ; --- Check evolve pressure ---
+    movsd xmm0, [rbx + STATE_OFFSET + ST_EVOLVE_PRESSURE]
+    ucomisd xmm0, xmm7
+    jbe .check_fatigue
+
+    ; Evolve pressure exceeded — trigger evolve cycle
+    lea rdi, [rel reg_trigger_msg]
+    call print_cstr
+    lea rdi, [rel reg_evolve]
+    call print_cstr
+    movsd xmm0, [rbx + STATE_OFFSET + ST_EVOLVE_PRESSURE]
+    cvtsd2ss xmm0, xmm0
+    call print_f32
+    lea rdi, [rel reg_close]
+    call print_cstr
+
+    call evolve_cycle
+    inc r12d
+
+    ; Reset pressure
+    xorpd xmm0, xmm0
+    movsd [rbx + STATE_OFFSET + ST_EVOLVE_PRESSURE], xmm0
+
+.check_fatigue:
+    ; --- Check fatigue (high fatigue = rest) ---
+    movss xmm0, [rbx + STATE_OFFSET + ST_PRESENCE + PRES_FATIGUE * 4]
+    cvtss2sd xmm0, xmm0
+    mov rax, 0x3FE8000000000000  ; 0.75 threshold for rest
+    movq xmm1, rax
+    ucomisd xmm0, xmm1
+    jbe .regulators_done
+
+    ; Fatigue high — trigger rest (reduce activity)
+    lea rdi, [rel reg_trigger_msg]
+    call print_cstr
+    lea rdi, [rel reg_rest]
+    call print_cstr
+    movss xmm0, [rbx + STATE_OFFSET + ST_PRESENCE + PRES_FATIGUE * 4]
+    call print_f32
+    lea rdi, [rel reg_close]
+    call print_cstr
+
+    ; Rest action: reduce fatigue, slow down dispatch
+    movss xmm0, [rbx + STATE_OFFSET + ST_PRESENCE + PRES_FATIGUE * 4]
+    mov eax, 0x3F000000        ; 0.5f multiplier
+    movd xmm1, eax
+    mulss xmm0, xmm1
+    movss [rbx + STATE_OFFSET + ST_PRESENCE + PRES_FATIGUE * 4], xmm0
+
+    inc r12d
+
+.regulators_done:
+    mov eax, r12d             ; return actions triggered
+    add rsp, 8
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; accrue_pressure(source, delta)
+;; edi=pressure source (RPRES_*), xmm0=delta (f64)
+;; Adds delta to the specified pressure accumulator.
+;; This is how events create "urges" in the nervous system.
+;; ============================================================
+global accrue_pressure
+accrue_pressure:
+    mov rax, SURFACE_BASE
+
+    cmp edi, RPRES_DREAM
+    je .accrue_dream
+    cmp edi, RPRES_OBSERVE
+    je .accrue_observe
+    cmp edi, RPRES_EVOLVE
+    je .accrue_evolve
+    ret                       ; unknown source
+
+.accrue_dream:
+    addsd xmm0, [rax + STATE_OFFSET + ST_DREAM_PRESSURE]
+    ; Clamp to [0, 1]
+    xorpd xmm1, xmm1
+    maxsd xmm0, xmm1
+    mov rcx, 0x3FF0000000000000
+    movq xmm1, rcx
+    minsd xmm0, xmm1
+    movsd [rax + STATE_OFFSET + ST_DREAM_PRESSURE], xmm0
+    ret
+
+.accrue_observe:
+    addsd xmm0, [rax + STATE_OFFSET + ST_OBSERVE_PRESSURE]
+    xorpd xmm1, xmm1
+    maxsd xmm0, xmm1
+    mov rcx, 0x3FF0000000000000
+    movq xmm1, rcx
+    minsd xmm0, xmm1
+    movsd [rax + STATE_OFFSET + ST_OBSERVE_PRESSURE], xmm0
+    ret
+
+.accrue_evolve:
+    addsd xmm0, [rax + STATE_OFFSET + ST_EVOLVE_PRESSURE]
+    xorpd xmm1, xmm1
+    maxsd xmm0, xmm1
+    mov rcx, 0x3FF0000000000000
+    movq xmm1, rcx
+    minsd xmm0, xmm1
+    movsd [rax + STATE_OFFSET + ST_EVOLVE_PRESSURE], xmm0
+    ret

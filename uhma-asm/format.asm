@@ -247,6 +247,96 @@ print_f32:
     ret
 
 ;; ============================================================
+;; print_f64(val)
+;; xmm0=f64 value, prints fixed point (4 decimals)
+;; ============================================================
+global print_f64
+print_f64:
+    sub rsp, 24
+    movsd [rsp], xmm0           ; save original value
+
+    ; Check for negative
+    movq rax, xmm0
+    test rax, rax
+    jns .f64_pos
+    push rax
+    lea rdi, [rel minus_char]
+    mov rsi, 1
+    call print_str
+    pop rax
+    ; Clear sign bit (make positive)
+    mov rcx, 0x7FFFFFFFFFFFFFFF
+    and rax, rcx
+    movq xmm0, rax
+    movsd [rsp], xmm0
+
+.f64_pos:
+    ; Integer part
+    cvttsd2si rdi, xmm0
+    mov [rsp + 8], rdi          ; save integer part
+    call print_u64
+
+    ; Decimal point
+    lea rdi, [rel dot_char]
+    mov rsi, 1
+    call print_str
+
+    ; Fractional part (4 digits)
+    movsd xmm0, [rsp]           ; reload value
+    ; Make sure it's positive (in case original was negative)
+    movq rax, xmm0
+    mov rcx, 0x7FFFFFFFFFFFFFFF
+    and rax, rcx
+    movq xmm0, rax
+
+    mov rdi, [rsp + 8]          ; integer part
+    cvtsi2sd xmm1, rdi
+    subsd xmm0, xmm1            ; frac = val - int_part
+
+    ; Multiply by 10000 for 4 decimal places
+    mov rax, 10000
+    cvtsi2sd xmm1, rax
+    mulsd xmm0, xmm1
+    cvttsd2si rdi, xmm0
+
+    ; Ensure positive
+    test rdi, rdi
+    jns .f64_fpos
+    neg rdi
+.f64_fpos:
+    mov [rsp + 16], rdi         ; save fractional
+
+    ; Print with leading zeros
+    cmp rdi, 1000
+    jge .f64_4
+    push rdi
+    lea rdi, [rel zero_char]
+    mov rsi, 1
+    call print_str
+    pop rdi
+.f64_4:
+    cmp rdi, 100
+    jge .f64_3
+    push rdi
+    lea rdi, [rel zero_char]
+    mov rsi, 1
+    call print_str
+    pop rdi
+.f64_3:
+    cmp rdi, 10
+    jge .f64_2
+    push rdi
+    lea rdi, [rel zero_char]
+    mov rsi, 1
+    call print_str
+    pop rdi
+.f64_2:
+    call print_u64
+
+    add rsp, 24
+    ret
+
+;; ============================================================
 ;; print_newline
 ;; ============================================================
 global print_newline

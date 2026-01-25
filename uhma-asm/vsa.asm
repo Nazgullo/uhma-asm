@@ -854,6 +854,443 @@ vocab_count:
 ;; End Holographic Memory Section
 ;; ============================================================
 
+;; ============================================================
+;; Topological Metacognition: Confidence Vector Operations
+;; The system "feels" differently about different contexts.
+;; ============================================================
+
+section .data
+    align 8
+    conf_hit_weight:  dq 0.3      ; positive weight on hit
+    conf_miss_weight: dq -0.3     ; negative weight on miss
+    conf_decay:       dq 0.998    ; slow decay per step
+    conf_anxious:     dq -0.2     ; below this = anxious about context
+    conf_confident:   dq 0.2      ; above this = confident about context
+    conf_update_count: dq 0       ; update counter for observability
+
+section .text
+
+;; ============================================================
+;; confidence_update(ctx_hash, is_hit)
+;; edi=ctx_hash, esi=is_hit (1=hit, 0=miss)
+;; Superposes context vector into confidence vector with +/- weight.
+;; Hit → system becomes more confident about this context type.
+;; Miss → system becomes more anxious about this context type.
+;; ============================================================
+global confidence_update
+confidence_update:
+    push rbx
+    push r12
+    push r13
+    sub rsp, HOLO_VEC_BYTES + 16  ; temp ctx_vec + weight storage
+
+    ; Debug: increment update counter
+    inc qword [rel conf_update_count]
+
+    mov r12d, edi             ; ctx_hash
+    mov r13d, esi             ; is_hit
+
+    ; 1. Generate context vector
+    mov edi, r12d
+    lea rsi, [rsp]            ; ctx_vec at [rsp]
+    call holo_gen_vec
+
+    ; 2. Select weight based on hit/miss
+    test r13d, r13d
+    jz .use_miss_weight
+    movsd xmm0, [rel conf_hit_weight]
+    jmp .scale_vec
+.use_miss_weight:
+    movsd xmm0, [rel conf_miss_weight]
+
+.scale_vec:
+    ; 3. Scale the context vector by weight
+    lea rdi, [rsp]
+    call holo_scale_f64
+
+    ; 4. Superpose into confidence vector
+    mov rdi, SURFACE_BASE + CONFIDENCE_VEC_OFFSET
+    lea rsi, [rsp]            ; scaled ctx_vec
+    call holo_superpose_f64
+
+    add rsp, HOLO_VEC_BYTES + 16
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; confidence_query(ctx_hash) → xmm0 (f64 confidence score)
+;; edi=ctx_hash
+;; Returns dot product of context vector and confidence vector.
+;; Positive = confident about this context type.
+;; Negative = anxious about this context type.
+;; ============================================================
+global confidence_query
+confidence_query:
+    push rbx
+    push r12
+    sub rsp, HOLO_VEC_BYTES   ; temp ctx_vec
+
+    mov r12d, edi             ; ctx_hash
+
+    ; 1. Generate context vector
+    mov edi, r12d
+    lea rsi, [rsp]
+    call holo_gen_vec
+
+    ; 2. Normalize context vector for clean comparison
+    lea rdi, [rsp]
+    call holo_normalize_f64
+
+    ; 3. Dot product with confidence vector
+    lea rdi, [rsp]
+    mov rsi, SURFACE_BASE + CONFIDENCE_VEC_OFFSET
+    call holo_dot_f64
+    ; xmm0 = confidence score
+
+    add rsp, HOLO_VEC_BYTES
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; confidence_decay_all()
+;; Slowly decays the confidence vector toward neutral (0).
+;; Called periodically to prevent runaway confidence/anxiety.
+;; ============================================================
+global confidence_decay_all
+confidence_decay_all:
+    push rbx
+
+    mov rdi, SURFACE_BASE + CONFIDENCE_VEC_OFFSET
+    movsd xmm0, [rel conf_decay]
+    call holo_scale_f64
+
+    pop rbx
+    ret
+
+;; ============================================================
+;; confidence_get_update_count() → rax (u64)
+;; Returns the number of times confidence_update was called.
+;; ============================================================
+global confidence_get_update_count
+confidence_get_update_count:
+    mov rax, [rel conf_update_count]
+    ret
+
+;; ============================================================
+;; confidence_get_feeling(ctx_hash) → eax (0=neutral, 1=confident, 2=anxious)
+;; edi=ctx_hash
+;; Returns the system's "feeling" about this context type.
+;; Used to select dispatch mode: anxious → deliberate, confident → fast.
+;; ============================================================
+global confidence_get_feeling
+confidence_get_feeling:
+    push rbx
+
+    call confidence_query     ; xmm0 = confidence score
+
+    ; Check if confident (> +0.25)
+    movsd xmm1, [rel conf_confident]
+    ucomisd xmm0, xmm1
+    ja .feeling_confident
+
+    ; Check if anxious (< -0.25)
+    movsd xmm1, [rel conf_anxious]
+    ucomisd xmm0, xmm1
+    jb .feeling_anxious
+
+    ; Neutral
+    xor eax, eax
+    jmp .feeling_done
+
+.feeling_confident:
+    mov eax, 1
+    jmp .feeling_done
+
+.feeling_anxious:
+    mov eax, 2
+
+.feeling_done:
+    pop rbx
+    ret
+
+;; ============================================================
+;; Resonant Dispatch: VSA-based fuzzy matching
+;; ============================================================
+
+section .data
+    align 8
+    resonant_threshold: dq 0.7    ; similarity required for fuzzy match
+
+section .text
+
+;; ============================================================
+;; resonant_match(region_ptr, ctx_hash) -> xmm0 (similarity 0.0-1.0)
+;; rdi=region header ptr (must be RTYPE_RESONANT)
+;; esi=current context hash (32-bit)
+;;
+;; Generates context vectors from both hashes and computes
+;; cosine similarity. Returns 0.0 for non-resonant regions.
+;;
+;; Resonant region code layout:
+;;   [RHDR_SIZE+0]:  B8 xx xx xx xx  (mov eax, expected_ctx_hash)
+;;   [RHDR_SIZE+5]:  B8 xx xx xx xx  (mov eax, predicted_token)
+;;   [RHDR_SIZE+10]: C3              (ret)
+;; The expected_ctx_hash is extracted from byte offset 1-4.
+;; ============================================================
+global resonant_match
+resonant_match:
+    push rbx
+    push r12
+    push r13
+    push r14
+    sub rsp, HOLO_VEC_BYTES * 2   ; space for two context vectors
+
+    mov r12, rdi              ; region_ptr
+    mov r13d, esi             ; incoming ctx_hash
+
+    ; Extract expected_ctx_hash from region code
+    ; Resonant regions have: MOV EAX, imm32 at RHDR_SIZE
+    ; Check opcode is 0xB8 (mov eax, imm32)
+    cmp byte [r12 + RHDR_SIZE], 0xB8
+    jne .not_resonant
+
+    ; Extract the expected context hash (imm32 at offset 1)
+    mov r14d, [r12 + RHDR_SIZE + 1]
+
+    ; Generate vector for expected context -> stack[0]
+    mov edi, r14d
+    lea rsi, [rsp]
+    call holo_gen_vec
+
+    ; Generate vector for incoming context -> stack[HOLO_VEC_BYTES]
+    mov edi, r13d
+    lea rsi, [rsp + HOLO_VEC_BYTES]
+    call holo_gen_vec
+
+    ; Normalize both vectors for proper cosine similarity
+    lea rdi, [rsp]
+    call holo_normalize_f64
+
+    lea rdi, [rsp + HOLO_VEC_BYTES]
+    call holo_normalize_f64
+
+    ; Compute dot product (cosine similarity of unit vectors)
+    lea rdi, [rsp]
+    lea rsi, [rsp + HOLO_VEC_BYTES]
+    call holo_dot_f64
+    ; xmm0 = similarity score [-1.0, 1.0]
+
+    ; Clamp to [0.0, 1.0] (negative similarity = no match)
+    xorpd xmm1, xmm1
+    maxsd xmm0, xmm1          ; max(sim, 0.0)
+
+    jmp .resonant_done
+
+.not_resonant:
+    ; Return 0.0 for non-resonant regions
+    xorpd xmm0, xmm0
+
+.resonant_done:
+    add rsp, HOLO_VEC_BYTES * 2
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; resonant_get_threshold() -> xmm0 (f64 threshold)
+;; Returns the resonant matching threshold (0.7)
+;; ============================================================
+global resonant_get_threshold
+resonant_get_threshold:
+    movsd xmm0, [rel resonant_threshold]
+    ret
+
+;; ============================================================
+;; holo_query_valence(ctx_hash) -> xmm0 (valence f64)
+;; edi=ctx_hash
+;; Queries the valence channel of the holographic trace
+;; associated with this context. Returns the "felt sense"
+;; of memories stored under this context — positive if
+;; learned during reward, negative if learned during cost.
+;; ============================================================
+global holo_query_valence
+holo_query_valence:
+    push rbx
+    sub rsp, HOLO_VEC_BYTES   ; temp ctx_vec
+
+    mov ebx, edi              ; save ctx_hash
+
+    ; Generate context vector
+    mov edi, ebx
+    lea rsi, [rsp]
+    call holo_gen_vec
+
+    ; Get trace pointer
+    movzx eax, bl             ; trace_idx = ctx_hash & 0xFF
+    imul rax, rax, HOLO_VEC_BYTES
+    mov rdi, SURFACE_BASE + HOLO_OFFSET
+    add rdi, rax              ; trace ptr
+
+    ; Unbind: trace * ctx_vec (element-wise multiply)
+    ; But for valence, we just need the valence channel dot product
+    ; Simpler: extract valence from trace directly (unbinding doesn't affect it much)
+    movsd xmm0, [rdi + VSA_VALENCE_OFFSET]
+
+    add rsp, HOLO_VEC_BYTES
+    pop rbx
+    ret
+
+;; ============================================================
+;; resonant_extract_token(region_ptr) -> eax (predicted token)
+;; rdi=region header ptr (must be RTYPE_RESONANT)
+;; Extracts the predicted token from a resonant region.
+;; Returns 0 if not a valid resonant region.
+;;
+;; Layout:
+;;   [RHDR_SIZE+0]:  B8 ctx_hash      (mov eax, expected_ctx)
+;;   [RHDR_SIZE+5]:  B8 token_id      (mov eax, predicted_token)
+;;   [RHDR_SIZE+10]: C3               (ret)
+;; ============================================================
+global resonant_extract_token
+resonant_extract_token:
+    ; Check first instruction is MOV EAX, imm32
+    cmp byte [rdi + RHDR_SIZE], 0xB8
+    jne .invalid
+    ; Check second instruction is also MOV EAX, imm32
+    cmp byte [rdi + RHDR_SIZE + 5], 0xB8
+    jne .invalid
+
+    ; Extract token from second MOV instruction
+    mov eax, [rdi + RHDR_SIZE + 6]
+    ret
+
+.invalid:
+    xor eax, eax
+    ret
+
+;; ============================================================
+;; Somatic Grounding: Valence Channel Operations
+;; The last element (index 1023) of each vector encodes valence.
+;; Patterns learned with energy gain get positive valence;
+;; patterns learned with energy loss get negative valence.
+;; This gives memories a "felt sense" — emotional color.
+;; ============================================================
+
+;; ============================================================
+;; vsa_extract_valence(vec) → xmm0 (f64 valence)
+;; rdi=vector ptr (f64[1024])
+;; Returns the valence channel value (last element)
+;; ============================================================
+global vsa_extract_valence
+vsa_extract_valence:
+    movsd xmm0, [rdi + VSA_VALENCE_OFFSET]
+    ret
+
+;; ============================================================
+;; vsa_set_valence(vec, value)
+;; rdi=vector ptr (f64[1024]), xmm0=valence value (f64)
+;; Sets the valence channel (last element) to the given value
+;; Clamps to [-1.0, +1.0] range
+;; ============================================================
+global vsa_set_valence
+vsa_set_valence:
+    ; Clamp valence to [-1.0, +1.0]
+    mov rax, 0x3FF0000000000000       ; 1.0
+    movq xmm1, rax
+    minsd xmm0, xmm1                  ; min(val, 1.0)
+    mov rax, 0xBFF0000000000000       ; -1.0
+    movq xmm1, rax
+    maxsd xmm0, xmm1                  ; max(val, -1.0)
+    ; Store
+    movsd [rdi + VSA_VALENCE_OFFSET], xmm0
+    ret
+
+;; ============================================================
+;; vsa_gen_valence_vec(valence, out_ptr)
+;; xmm0=valence value (f64), rdi=output vector ptr (f64[1024])
+;; Generates a "valence vector" — near-zero in all dimensions
+;; except the valence channel, which holds the given value.
+;; This encodes emotional charge independently of content.
+;; ============================================================
+global vsa_gen_valence_vec
+vsa_gen_valence_vec:
+    push rbx
+    push r12
+
+    mov r12, rdi                      ; save output ptr
+    movsd xmm1, xmm0                  ; save valence in xmm1
+
+    ; Zero the entire vector first
+    mov rdi, r12
+    call vsa_zero
+
+    ; Set the valence channel (last element)
+    ; Clamp to [-1.0, +1.0]
+    mov rax, 0x3FF0000000000000       ; 1.0
+    movq xmm0, rax
+    minsd xmm1, xmm0                  ; min(val, 1.0)
+    mov rax, 0xBFF0000000000000       ; -1.0
+    movq xmm0, rax
+    maxsd xmm1, xmm0                  ; max(val, -1.0)
+    movsd [r12 + VSA_VALENCE_OFFSET], xmm1
+
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; vsa_superpose_valence(vec, valence)
+;; rdi=vector ptr (f64[1024]), xmm0=valence delta (f64)
+;; Adds valence delta to the existing valence channel,
+;; clamping the result to [-1.0, +1.0].
+;; Used during learning to accumulate emotional charge.
+;; ============================================================
+global vsa_superpose_valence
+vsa_superpose_valence:
+    ; Load existing valence
+    movsd xmm1, [rdi + VSA_VALENCE_OFFSET]
+    ; Add delta
+    addsd xmm1, xmm0
+    ; Clamp to [-1.0, +1.0]
+    mov rax, 0x3FF0000000000000       ; 1.0
+    movq xmm2, rax
+    minsd xmm1, xmm2
+    mov rax, 0xBFF0000000000000       ; -1.0
+    movq xmm2, rax
+    maxsd xmm1, xmm2
+    ; Store
+    movsd [rdi + VSA_VALENCE_OFFSET], xmm1
+    ret
+
+;; ============================================================
+;; vsa_energy_to_valence(energy_delta) → xmm0 (valence)
+;; xmm0=energy_delta (f64)
+;; Converts energy change to valence value:
+;;   positive energy → positive valence (reward)
+;;   negative energy → negative valence (cost)
+;; Uses tanh-like squashing to stay in [-1, +1]
+;; ============================================================
+global vsa_energy_to_valence
+vsa_energy_to_valence:
+    ; Simple linear scaling with clamp: valence = energy_delta * 0.01
+    ; (More sophisticated would use tanh, but this is fast)
+    mov rax, 0x3F847AE147AE147B       ; 0.01
+    movq xmm1, rax
+    mulsd xmm0, xmm1
+    ; Clamp to [-1.0, +1.0]
+    mov rax, 0x3FF0000000000000       ; 1.0
+    movq xmm1, rax
+    minsd xmm0, xmm1
+    mov rax, 0xBFF0000000000000       ; -1.0
+    movq xmm1, rax
+    maxsd xmm0, xmm1
+    ret
+
 global vsa_encode_context
 vsa_encode_context:
     push rbx

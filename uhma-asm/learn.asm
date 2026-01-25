@@ -38,22 +38,33 @@ extern holo_store
 extern vocab_register
 extern region_merge_pass
 extern journey_step
+extern vsa_energy_to_valence
+extern vsa_gen_valence_vec
+extern holo_superpose_f64
+extern holo_gen_vec
 
 ;; ============================================================
-;; learn_pattern(ctx_hash, token_id)
-;; rdi=context_hash (u64, lower 32 used), esi=token_id
+;; learn_pattern(ctx_hash, token_id, energy_delta)
+;; rdi=context_hash (u64, lower 32 used), esi=token_id, xmm0=energy_delta (f64)
 ;; Learns a new ctx→token association by emitting code
 ;; First checks if the pattern already exists (avoid duplicates)
+;; SOMATIC GROUNDING: energy_delta is converted to valence and
+;; superposed onto the holographic trace, giving the memory
+;; an emotional charge — patterns learned during reward have
+;; positive valence, patterns learned during cost have negative.
 ;; ============================================================
 global learn_pattern
 learn_pattern:
     push rbx
     push r12
     push r13
+    push r14
+    sub rsp, HOLO_VEC_BYTES + 16  ; space for valence vector + saved energy_delta
 
     mov r12d, edi             ; ctx_hash (lower 32)
     mov r13d, esi             ; token_id
     mov rbx, SURFACE_BASE
+    movsd [rsp + HOLO_VEC_BYTES], xmm0  ; save energy_delta
 
     ; JOURNEY: record learn_pattern
     push r12
@@ -68,6 +79,29 @@ learn_pattern:
     mov esi, r13d             ; token_id
     movsd xmm0, [rel holo_lr]  ; f64 strength
     call holo_store
+
+    ; --- SOMATIC GROUNDING: Superpose valence onto trace ---
+    ; 1. Convert energy_delta to valence [-1, +1]
+    movsd xmm0, [rsp + HOLO_VEC_BYTES]  ; reload energy_delta
+    call vsa_energy_to_valence          ; xmm0 = valence
+
+    ; 2. Generate valence vector (mostly zeros, valence in last element)
+    lea rdi, [rsp]            ; output = temp on stack
+    call vsa_gen_valence_vec
+
+    ; 3. Scale valence vector by learning rate
+    lea rdi, [rsp]
+    movsd xmm0, [rel holo_lr]
+    call holo_scale_f64_local           ; defined below
+
+    ; 4. Superpose onto the same trace as holo_store uses
+    ;    trace_idx = ctx_hash & 0xFF
+    movzx eax, r12b
+    imul rax, rax, HOLO_VEC_BYTES
+    mov rdi, SURFACE_BASE + HOLO_OFFSET
+    add rdi, rax              ; trace ptr
+    lea rsi, [rsp]            ; valence vector
+    call holo_superpose_f64
 
     ; Register token in vocabulary
     mov edi, r13d
@@ -169,9 +203,31 @@ learn_pattern:
 
 .table_full:
 .done:
+    add rsp, HOLO_VEC_BYTES + 16
+    pop r14
     pop r13
     pop r12
     pop rbx
+    ret
+
+;; ============================================================
+;; holo_scale_f64_local(vec, scalar)
+;; rdi=vec (f64[1024], modified in place), xmm0=scalar (f64)
+;; Local helper to scale valence vector
+;; ============================================================
+holo_scale_f64_local:
+    vbroadcastsd ymm1, xmm0
+    mov ecx, HOLO_DIM / 4
+
+.hscale_local_loop:
+    vmovupd ymm0, [rdi]
+    vmulpd ymm0, ymm0, ymm1
+    vmovupd [rdi], ymm0
+    add rdi, 32
+    dec ecx
+    jnz .hscale_local_loop
+
+    vzeroupper
     ret
 
 ;; ============================================================

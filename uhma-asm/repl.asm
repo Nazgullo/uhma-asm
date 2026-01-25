@@ -12,6 +12,10 @@ section .data
                     db "  help          Show this help", 10
                     db "  status        Show system status (regions, accuracy, drives)", 10
                     db "  self          Show self-knowledge (strengths/weaknesses)", 10
+                    db "  metacog       Show metacognitive state (per-context confidence)", 10
+                    db "  debugger      Show self-debugger status (breakpoints, learning events)", 10
+                    db "  genes         Show gene pool status (composted patterns)", 10
+                    db "  subroutines   Show shared subroutines (recursive schemas)", 10
                     db "  regions       List all regions with hit/miss stats", 10
                     db "  presence      Show presence field values", 10
                     db "  drives        Show drive levels and thresholds", 10
@@ -20,14 +24,47 @@ section .data
                     db "  compact       Compact condemned regions", 10
                     db "  save <file>   Save surface to file", 10
                     db "  load <file>   Restore surface from file", 10
+                    db "  eat <file>    Digest file as food (extract tokens, gain energy)", 10
+                    db "  pressure      Show regulator pressures (Octopus nervous system)", 10
+                    db "  share         Enable shared VSA (Mycorrhiza collective consciousness)", 10
+                    db "  colony        Show colony status (hive mind instances)", 10
+                    db "  export <n>    Export region n as .gene file (spore)", 10
+                    db "  import <file> Import .gene file (infect with culture)", 10
                     db "  reset         Reset counters (not knowledge)", 10
                     db "  trace         Toggle debug tracing on/off", 10
                     db "  quit          Exit", 10
                     db "  <text>        Process as token sequence", 10, 0
+    debugger_hdr:   db "--- Self-Debugger ---", 10, 0
+    debugger_bp:    db "  Breakpoints: ", 0
+    debugger_hits:  db "  Total hits: ", 0
+    debugger_learn: db "  Learning events: ", 0
     bye_str:        db "Surface frozen. Goodbye.", 10, 0
     trace_next_msg: db "[JOURNEY] Will trace next token. Type text to trace, 'trace' to show.", 10, 0
     unknown_str:    db "Unknown command. Type 'help'.", 10, 0
     status_hdr:     db "--- Status ---", 10, 0
+    pressure_hdr:   db "--- Octopus Nervous System ---", 10, 0
+    pressure_dream: db "  Dream pressure:   ", 0
+    pressure_obs:   db "  Observe pressure: ", 0
+    pressure_evol:  db "  Evolve pressure:  ", 0
+    pressure_fat:   db "  Fatigue:          ", 0
+    pressure_thresh:db "  Threshold:        0.5", 10, 0
+    colony_hdr:     db "--- Mycorrhiza Colony ---", 10, 0
+    colony_mode:    db "  Mode: ", 0
+    colony_solo:    db "SOLO (isolated)", 10, 0
+    colony_shared:  db "SHARED (hive mind)", 10, 0
+    colony_size:    db "  Colony size: ", 0
+    colony_valence: db "  Collective valence: ", 0
+    colony_instance:db "  Instance ID: 0x", 0
+    geom_hdr:       db "--- Rosetta Stone (Geometric Gate) ---", 10, 0
+    geom_mode_lbl:  db "  Verification mode: ", 0
+    geom_mode_0:    db "ABSTRACT (traditional)", 10, 0
+    geom_mode_1:    db "GEOMETRIC (vector-based)", 10, 0
+    geom_mode_2:    db "BOTH (most secure)", 10, 0
+    geom_status:    db "  Safety templates: ", 0
+    geom_init_yes:  db "initialized", 10, 0
+    geom_init_no:   db "not initialized", 10, 0
+    geom_mode_set_msg: db "  Verification mode set to: ", 0
+    geom_usage:     db "  Usage: geom [0|1|2] to set mode", 10, 0
     regions_lbl:    db "Regions: ", 0
     steps_lbl:      db "  Steps: ", 0
     accuracy_lbl:   db "  Accuracy: ", 0
@@ -54,6 +91,13 @@ extern write_stdout
 extern process_input
 extern observe_cycle
 extern dream_cycle
+extern digest_file
+extern surface_init_shared
+extern get_colony_size
+extern is_shared_mode
+extern sense_collective_valence
+extern gene_export
+extern gene_import
 extern region_compact
 extern get_fault_count
 extern persist_save
@@ -65,9 +109,20 @@ extern holo_dot_f64
 extern holo_magnitude_f64
 extern fault_safe_rsp
 extern fault_safe_rip
+extern print_f64
+extern verify_set_mode
+extern verify_get_mode
+extern init_safety_vectors
+extern get_safety_template
+extern get_danger_template
+extern encode_code_to_vector
+extern check_code_safety
 extern journey_start
 extern journey_stop
 extern journey_dump
+extern metacog_report
+extern gene_pool_show
+extern subroutines_show       ; from factor.asm - show subroutine table
 
 ;; ============================================================
 ;; repl_run
@@ -273,6 +328,84 @@ repl_run:
     jmp .cmd_load
 .not_load:
 
+    ; "eat <file>" (digest file as food)
+    cmp dword [rbx], 'eat '
+    jne .not_eat
+    jmp .cmd_eat
+.not_eat:
+
+    ; "pressure" (show regulator pressures)
+    cmp dword [rbx], 'pres'
+    jne .not_pressure
+    cmp dword [rbx + 4], 'sure'
+    jne .not_pressure
+    movzx eax, byte [rbx + 8]
+    test eax, eax
+    jz .cmd_pressure
+    cmp eax, 10
+    je .cmd_pressure
+    jmp .not_pressure
+.not_pressure:
+
+    ; "geom" (show geometric gate status)
+    cmp dword [rbx], 'geom'
+    jne .not_geom
+    movzx eax, byte [rbx + 4]
+    test eax, eax
+    jz .cmd_geom
+    cmp eax, 10
+    je .cmd_geom
+    cmp eax, ' '
+    jne .not_geom
+    jmp .cmd_geom_arg         ; geom with argument (mode setting)
+.not_geom:
+
+    ; "share" (enable shared consciousness)
+    cmp dword [rbx], 'shar'
+    jne .not_share
+    cmp byte [rbx + 4], 'e'
+    jne .not_share
+    movzx eax, byte [rbx + 5]
+    test eax, eax
+    jz .cmd_share
+    cmp eax, 10
+    je .cmd_share
+    jmp .not_share
+.not_share:
+
+    ; "colony" (show colony status)
+    cmp dword [rbx], 'colo'
+    jne .not_colony
+    cmp word [rbx + 4], 'ny'
+    jne .not_colony
+    movzx eax, byte [rbx + 6]
+    test eax, eax
+    jz .cmd_colony
+    cmp eax, 10
+    je .cmd_colony
+    jmp .not_colony
+.not_colony:
+
+    ; "export <n>" (export region as gene)
+    cmp dword [rbx], 'expo'
+    jne .not_export
+    cmp word [rbx + 4], 'rt'
+    jne .not_export
+    cmp byte [rbx + 6], ' '
+    jne .not_export
+    jmp .cmd_export
+.not_export:
+
+    ; "import <file>" (import gene file)
+    cmp dword [rbx], 'impo'
+    jne .not_import
+    cmp word [rbx + 4], 'rt'
+    jne .not_import
+    cmp byte [rbx + 6], ' '
+    jne .not_import
+    jmp .cmd_import
+.not_import:
+
     ; "reset"
     cmp dword [rbx], 'rese'
     jne .not_reset
@@ -301,6 +434,72 @@ repl_run:
     je .cmd_trace
     jmp .not_trace
 .not_trace:
+
+    ; "metacog" (7-char match: m-e-t-a-c-o-g)
+    cmp dword [rbx], 'meta'
+    jne .not_metacog
+    cmp word [rbx + 4], 'co'
+    jne .not_metacog
+    cmp byte [rbx + 6], 'g'
+    jne .not_metacog
+    movzx eax, byte [rbx + 7]
+    test eax, eax
+    jz .cmd_metacog
+    cmp eax, ' '
+    je .cmd_metacog
+    cmp eax, 10
+    je .cmd_metacog
+    jmp .not_metacog
+.not_metacog:
+
+    ; "debugger" (8-char match: d-e-b-u-g-g-e-r)
+    cmp dword [rbx], 'debu'
+    jne .not_debugger
+    cmp dword [rbx + 4], 'gger'
+    jne .not_debugger
+    movzx eax, byte [rbx + 8]
+    test eax, eax
+    jz .cmd_debugger
+    cmp eax, ' '
+    je .cmd_debugger
+    cmp eax, 10
+    je .cmd_debugger
+    jmp .not_debugger
+.not_debugger:
+
+    ; "genes" (5-char match: g-e-n-e-s)
+    cmp dword [rbx], 'gene'
+    jne .not_genes
+    cmp byte [rbx + 4], 's'
+    jne .not_genes
+    movzx eax, byte [rbx + 5]
+    test eax, eax
+    jz .cmd_genes
+    cmp eax, ' '
+    je .cmd_genes
+    cmp eax, 10
+    je .cmd_genes
+    jmp .not_genes
+.not_genes:
+
+    ; "subroutines" (11-char match: s-u-b-r-o-u-t-i-n-e-s)
+    cmp dword [rbx], 'subr'
+    jne .not_subroutines
+    cmp dword [rbx + 4], 'outi'
+    jne .not_subroutines
+    cmp word [rbx + 8], 'ne'
+    jne .not_subroutines
+    cmp byte [rbx + 10], 's'
+    jne .not_subroutines
+    movzx eax, byte [rbx + 11]
+    test eax, eax
+    jz .cmd_subroutines
+    cmp eax, ' '
+    je .cmd_subroutines
+    cmp eax, 10
+    je .cmd_subroutines
+    jmp .not_subroutines
+.not_subroutines:
 
     ; Not a command → process as text input
     ; Compute string length (rbx is null-terminated)
@@ -365,6 +564,108 @@ repl_run:
     call persist_load
     jmp .loop
 
+.cmd_eat:
+    ; Digest file as "food" — extract tokens and gain energy
+    ; Strip trailing newline from filename
+    lea rdi, [rbx + 4]        ; skip "eat "
+    mov rsi, rdi
+.eat_strip:
+    mov al, [rsi]
+    test al, al
+    jz .eat_stripped
+    cmp al, 10
+    je .eat_null_term
+    cmp al, 13
+    je .eat_null_term
+    inc rsi
+    jmp .eat_strip
+.eat_null_term:
+    mov byte [rsi], 0
+.eat_stripped:
+    call digest_file
+    jmp .loop
+
+.cmd_pressure:
+    ; Show regulator pressures (Octopus nervous system state)
+    call repl_show_pressures
+    jmp .loop
+
+.cmd_geom:
+    ; Show geometric gate status (Rosetta Stone)
+    call repl_show_geom
+    jmp .loop
+
+.cmd_geom_arg:
+    ; Set geometric verification mode: geom 0/1/2
+    lea rdi, [rbx + 5]        ; skip "geom "
+    call parse_decimal        ; eax = mode number
+    mov edi, eax
+    push rdi                  ; save mode for printing
+    call verify_set_mode
+    lea rdi, [rel geom_mode_set_msg]
+    call print_cstr
+    pop rdi                   ; restore mode
+    call print_u64
+    call print_newline
+    jmp .loop
+
+.cmd_share:
+    ; Enable shared consciousness (Mycorrhiza)
+    xor edi, edi              ; mode 0 = create new
+    call surface_init_shared
+    jmp .loop
+
+.cmd_colony:
+    ; Show colony status
+    call repl_show_colony
+    jmp .loop
+
+.cmd_export:
+    ; Export region as .gene file
+    ; Parse region index from "export <n>"
+    lea rdi, [rbx + 7]        ; skip "export "
+    call parse_decimal        ; → eax = region index
+    push rax
+
+    ; Get region table entry
+    mov rcx, SURFACE_BASE
+    lea rsi, [rcx + REGION_TABLE_OFFSET]
+    pop rax
+    imul rax, rax, RTE_SIZE
+    add rax, rsi
+    mov rdi, [rax + RTE_ADDR] ; region header ptr
+
+    ; Build filename: /tmp/gene_<index>.gene
+    sub rsp, 32
+    mov dword [rsp], '/tmp'
+    mov dword [rsp + 4], '/gen'
+    mov dword [rsp + 8], 'e.ge'
+    mov word [rsp + 12], 'ne'
+    mov byte [rsp + 14], 0
+    lea rsi, [rsp]
+    call gene_export
+    add rsp, 32
+    jmp .loop
+
+.cmd_import:
+    ; Import .gene file
+    lea rdi, [rbx + 7]        ; skip "import "
+    ; Strip trailing newline
+    mov rsi, rdi
+.import_strip:
+    mov al, [rsi]
+    test al, al
+    jz .import_stripped
+    cmp al, 10
+    je .import_null
+    inc rsi
+    jmp .import_strip
+.import_null:
+    mov byte [rsi], 0
+.import_stripped:
+    call gene_import
+    jmp .loop
+
 .cmd_reset:
     call repl_reset_counters
     jmp .loop
@@ -387,6 +688,51 @@ repl_run:
     mov dword [rax + STATE_OFFSET + ST_JOURNEY_TOKEN], 0xFFFFFFFF
     lea rdi, [rel trace_next_msg]
     call print_cstr
+    jmp .loop
+
+.cmd_metacog:
+    ; Show metacognitive state for last prediction context
+    ; ST_LAST_CTX holds the context from the last prediction (where hit/miss was recorded)
+    mov rax, SURFACE_BASE
+    mov edi, [rax + STATE_OFFSET + ST_LAST_CTX]  ; get last prediction context
+    call metacog_report
+    jmp .loop
+
+.cmd_debugger:
+    ; Show self-debugger status
+    lea rdi, [rel debugger_hdr]
+    call print_cstr
+
+    lea rdi, [rel debugger_bp]
+    call print_cstr
+    mov rax, SURFACE_BASE
+    mov edi, [rax + STATE_OFFSET + ST_BREAKPOINT_COUNT]
+    call print_u64
+    call print_newline
+
+    lea rdi, [rel debugger_hits]
+    call print_cstr
+    mov rax, SURFACE_BASE
+    mov edi, [rax + STATE_OFFSET + ST_BP_TOTAL_HITS]
+    call print_u64
+    call print_newline
+
+    lea rdi, [rel debugger_learn]
+    call print_cstr
+    mov rax, SURFACE_BASE
+    mov edi, [rax + STATE_OFFSET + ST_BP_LEARNING_EVENTS]
+    call print_u64
+    call print_newline
+    jmp .loop
+
+.cmd_genes:
+    ; Show gene pool status
+    call gene_pool_show
+    jmp .loop
+
+.cmd_subroutines:
+    ; Show subroutine table (recursive schema hierarchy)
+    call subroutines_show
     jmp .loop
 
 .quit:
@@ -626,6 +972,198 @@ repl_show_status:
     call show_graph_stats
 
     pop rbx
+    ret
+
+;; ============================================================
+;; repl_show_pressures — Show Octopus nervous system pressures
+;; ============================================================
+repl_show_pressures:
+    push rbx
+    mov rbx, SURFACE_BASE
+
+    lea rdi, [rel pressure_hdr]
+    call print_cstr
+
+    ; Dream pressure
+    lea rdi, [rel pressure_dream]
+    call print_cstr
+    movsd xmm0, [rbx + STATE_OFFSET + ST_DREAM_PRESSURE]
+    cvtsd2ss xmm0, xmm0
+    call print_f32
+    call print_newline
+
+    ; Observe pressure
+    lea rdi, [rel pressure_obs]
+    call print_cstr
+    movsd xmm0, [rbx + STATE_OFFSET + ST_OBSERVE_PRESSURE]
+    cvtsd2ss xmm0, xmm0
+    call print_f32
+    call print_newline
+
+    ; Evolve pressure
+    lea rdi, [rel pressure_evol]
+    call print_cstr
+    movsd xmm0, [rbx + STATE_OFFSET + ST_EVOLVE_PRESSURE]
+    cvtsd2ss xmm0, xmm0
+    call print_f32
+    call print_newline
+
+    ; Fatigue
+    lea rdi, [rel pressure_fat]
+    call print_cstr
+    movss xmm0, [rbx + STATE_OFFSET + ST_PRESENCE + PRES_FATIGUE * 4]
+    call print_f32
+    call print_newline
+
+    ; Threshold
+    lea rdi, [rel pressure_thresh]
+    call print_cstr
+
+    pop rbx
+    ret
+
+;; ============================================================
+;; repl_show_colony — Show Mycorrhiza colony status
+;; ============================================================
+repl_show_colony:
+    push rbx
+    mov rbx, SURFACE_BASE
+
+    lea rdi, [rel colony_hdr]
+    call print_cstr
+
+    ; Mode
+    lea rdi, [rel colony_mode]
+    call print_cstr
+    call is_shared_mode
+    test eax, eax
+    jz .colony_is_solo
+    lea rdi, [rel colony_shared]
+    jmp .colony_print_mode
+.colony_is_solo:
+    lea rdi, [rel colony_solo]
+.colony_print_mode:
+    call print_cstr
+
+    ; Colony size
+    lea rdi, [rel colony_size]
+    call print_cstr
+    call get_colony_size
+    mov rdi, rax
+    call print_u64
+    call print_newline
+
+    ; Collective valence (only if shared)
+    call is_shared_mode
+    test eax, eax
+    jz .colony_skip_valence
+    lea rdi, [rel colony_valence]
+    call print_cstr
+    call sense_collective_valence
+    cvtsd2ss xmm0, xmm0
+    call print_f32
+    call print_newline
+
+.colony_skip_valence:
+    ; Instance ID
+    lea rdi, [rel colony_instance]
+    call print_cstr
+    mov rdi, [rbx + STATE_OFFSET + ST_INSTANCE_ID]
+    call print_hex64
+    call print_newline
+
+    pop rbx
+    ret
+
+;; ============================================================
+;; repl_show_geom — Show Rosetta Stone (Geometric Gate) status
+;; ============================================================
+repl_show_geom:
+    push rbx
+
+    lea rdi, [rel geom_hdr]
+    call print_cstr
+
+    ; Verification mode
+    lea rdi, [rel geom_mode_lbl]
+    call print_cstr
+
+    call verify_get_mode
+    test eax, eax
+    jz .geom_mode_0
+    cmp eax, 1
+    je .geom_mode_1
+    cmp eax, 2
+    je .geom_mode_2
+    jmp .geom_mode_unknown
+
+.geom_mode_0:
+    lea rdi, [rel geom_mode_0]
+    jmp .geom_print_mode
+
+.geom_mode_1:
+    lea rdi, [rel geom_mode_1]
+    jmp .geom_print_mode
+
+.geom_mode_2:
+    lea rdi, [rel geom_mode_2]
+    jmp .geom_print_mode
+
+.geom_mode_unknown:
+    lea rdi, [rel geom_mode_0]      ; default
+
+.geom_print_mode:
+    call print_cstr
+
+    ; Safety template status
+    lea rdi, [rel geom_status]
+    call print_cstr
+
+    ; Check if safety vectors are initialized by calling init
+    ; (it's idempotent - won't reinitialize if already done)
+    call init_safety_vectors
+    call get_safety_template
+    test rax, rax
+    jz .geom_not_init
+    lea rdi, [rel geom_init_yes]
+    jmp .geom_print_init
+.geom_not_init:
+    lea rdi, [rel geom_init_no]
+.geom_print_init:
+    call print_cstr
+
+    ; Usage hint
+    lea rdi, [rel geom_usage]
+    call print_cstr
+
+    pop rbx
+    ret
+
+;; ============================================================
+;; parse_decimal(str) -> eax (parsed number)
+;; rdi=null-terminated decimal string
+;; Returns the parsed decimal number
+;; ============================================================
+parse_decimal:
+    xor eax, eax              ; result
+    xor ecx, ecx              ; digit
+.parse_loop:
+    movzx ecx, byte [rdi]
+    test ecx, ecx
+    jz .parse_done
+    cmp ecx, 10               ; newline
+    je .parse_done
+    cmp ecx, ' '
+    je .parse_done
+    sub ecx, '0'
+    js .parse_done
+    cmp ecx, 9
+    ja .parse_done
+    imul eax, eax, 10
+    add eax, ecx
+    inc rdi
+    jmp .parse_loop
+.parse_done:
     ret
 
 ;; ============================================================
@@ -945,6 +1483,12 @@ print_region_type:
     je .t_gate
     cmp edi, RTYPE_DREAM
     je .t_dream
+    cmp edi, RTYPE_RESONANT
+    je .t_resonant
+    cmp edi, RTYPE_SUBROUTINE
+    je .t_subroutine
+    cmp edi, RTYPE_PRESENCE
+    je .t_presence
     lea rdi, [rel type_unknown]
     call print_cstr
     ret
@@ -978,6 +1522,18 @@ print_region_type:
     ret
 .t_dream:
     lea rdi, [rel type_dream]
+    call print_cstr
+    ret
+.t_resonant:
+    lea rdi, [rel type_resonant]
+    call print_cstr
+    ret
+.t_subroutine:
+    lea rdi, [rel type_subroutine]
+    call print_cstr
+    ret
+.t_presence:
+    lea rdi, [rel type_presence]
     call print_cstr
     ret
 
@@ -1393,6 +1949,9 @@ section .rodata
     type_hook:      db "HOOK    ", 0
     type_gate:      db "GATE    ", 0
     type_dream:     db "DREAM   ", 0
+    type_resonant:  db "RESONANT", 0
+    type_subroutine: db "SUBROUT ", 0
+    type_presence:  db "PRESENCE", 0
     type_unknown:   db "UNKNOWN ", 0
     flag_active:    db "[A]", 0
     flag_frozen:    db "[F]", 0

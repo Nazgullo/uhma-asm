@@ -2,10 +2,29 @@
 %include "syscalls.inc"
 %include "constants.inc"
 
+section .data
+    ; Shared memory paths for Mycorrhiza (collective consciousness)
+    shm_vsa_path:   db "/dev/shm/uhma_vsa", 0
+    shm_holo_path:  db "/dev/shm/uhma_holo", 0
+    shm_msg:        db "[MYCORRHIZA] ", 0
+    shm_create:     db "Creating shared VSA field", 10, 0
+    shm_attach:     db "Attaching to shared VSA field", 10, 0
+    shm_solo:       db "Running in solo mode (no shared field)", 10, 0
+    shm_instance:   db "Instance ID: 0x", 0
+
 section .text
 
 extern sys_mmap
+extern sys_open
+extern sys_close
+extern sys_getrandom
 extern sym_init
+extern bp_init
+extern gene_pool_init
+extern presence_init
+extern print_cstr
+extern print_hex64
+extern print_newline
 
 ;; ============================================================
 ;; surface_init
@@ -82,6 +101,22 @@ surface_init:
     dec ecx
     jnz .zero_vocab
 
+    ; Zero confidence vector (topological metacognition)
+    ; Starts neutral — no anxiety or confidence about any context type
+    lea rdi, [rbx + CONFIDENCE_VEC_OFFSET]
+    xor eax, eax
+    mov ecx, CONFIDENCE_VEC_BYTES / 8  ; 1024 f64 elements
+.zero_confidence:
+    mov [rdi], rax
+    add rdi, 8
+    dec ecx
+    jnz .zero_confidence
+
+    ; Initialize breakpoint table (self-debugger)
+    push rbx
+    call bp_init
+    pop rbx
+
     ; Zero holographic state fields
     mov dword [rbx + STATE_OFFSET + ST_VOCAB_COUNT], 0
     mov dword [rbx + STATE_OFFSET + ST_VOCAB_TOP_DIRTY], 0
@@ -91,6 +126,16 @@ surface_init:
     ; Initialize symbolic observation system
     push rbx
     call sym_init
+    pop rbx
+
+    ; Initialize gene pool (composting system)
+    push rbx
+    call gene_pool_init
+    pop rbx
+
+    ; Initialize presence hyper-regions (hormonal modulators)
+    push rbx
+    call presence_init
     pop rbx
 
     mov rax, rbx              ; return surface base
@@ -502,4 +547,273 @@ region_merge_pass:
     pop r13
     pop r12
     pop rbx
+    ret
+
+;; ============================================================
+;; MYCORRHIZA: Shared Consciousness Infrastructure
+;; Enables multiple UHMA instances to share the VSA arena
+;; and holographic traces, creating a "hive mind" where
+;; experiences of one instance ripple through all others.
+;; ============================================================
+
+;; ============================================================
+;; surface_init_shared(mode)
+;; edi=mode (0=create new shared field, 1=attach to existing)
+;; Creates or attaches to shared memory for VSA and holographic
+;; traces. The dispatch region remains private.
+;; Returns: 0 on success, -1 on failure (falls back to solo mode)
+;; ============================================================
+global surface_init_shared
+surface_init_shared:
+    push rbx
+    push r12
+    push r13
+    push r14
+    sub rsp, 24               ; locals
+
+    mov r12d, edi             ; mode
+    mov rbx, SURFACE_BASE
+
+    ; Generate unique instance ID
+    lea rdi, [rsp]
+    mov rsi, 8
+    xor edx, edx
+    mov rax, SYS_GETRANDOM
+    syscall
+    mov r13, [rsp]            ; instance ID
+    mov [rbx + STATE_OFFSET + ST_INSTANCE_ID], r13
+
+    ; Print mode message
+    lea rdi, [rel shm_msg]
+    call print_cstr
+
+    test r12d, r12d
+    jnz .attach_mode
+
+    ; --- CREATE MODE: Open/create shared VSA file ---
+    lea rdi, [rel shm_create]
+    call print_cstr
+
+    ; Open/create shared VSA file
+    lea rdi, [rel shm_vsa_path]
+    mov esi, O_RDWR | O_CREAT ; read/write, create if not exists
+    mov edx, 0644o            ; permissions
+    mov rax, SYS_OPEN
+    syscall
+    test rax, rax
+    js .shared_fail
+    mov r14, rax              ; save fd
+
+    ; Truncate to proper size
+    mov rdi, r14              ; fd
+    mov rsi, SHARED_VSA_SIZE  ; size
+    mov rax, SYS_FTRUNCATE
+    syscall
+    test rax, rax
+    js .close_and_fail
+
+    ; Remap the VSA region as shared
+    ; First unmap the private VSA region
+    mov rdi, SURFACE_BASE + VSA_OFFSET
+    mov rsi, SHARED_VSA_SIZE
+    mov rax, SYS_MUNMAP
+    syscall
+
+    ; Mmap shared VSA
+    mov rdi, SURFACE_BASE + VSA_OFFSET  ; fixed address
+    mov rsi, SHARED_VSA_SIZE
+    mov rdx, PROT_RWX
+    mov rcx, MAP_SHARED | MAP_FIXED
+    mov r8, r14               ; fd
+    xor r9d, r9d             ; offset 0
+    call sys_mmap
+    cmp rax, -1
+    je .close_and_fail
+
+    ; Close fd (mapping persists)
+    mov rdi, r14
+    mov rax, SYS_CLOSE
+    syscall
+
+    ; Mark as shared mode
+    mov dword [rbx + STATE_OFFSET + ST_SHARED_MODE], 1
+    jmp .shared_success
+
+.attach_mode:
+    ; --- ATTACH MODE: Open existing shared VSA file ---
+    lea rdi, [rel shm_attach]
+    call print_cstr
+
+    ; Open existing shared VSA file
+    lea rdi, [rel shm_vsa_path]
+    mov esi, O_RDWR           ; read/write only, must exist
+    xor edx, edx
+    mov rax, SYS_OPEN
+    syscall
+    test rax, rax
+    js .shared_fail
+    mov r14, rax              ; save fd
+
+    ; Unmap private VSA region
+    mov rdi, SURFACE_BASE + VSA_OFFSET
+    mov rsi, SHARED_VSA_SIZE
+    mov rax, SYS_MUNMAP
+    syscall
+
+    ; Mmap shared VSA
+    mov rdi, SURFACE_BASE + VSA_OFFSET
+    mov rsi, SHARED_VSA_SIZE
+    mov rdx, PROT_RWX
+    mov rcx, MAP_SHARED | MAP_FIXED
+    mov r8, r14
+    xor r9d, r9d
+    call sys_mmap
+    cmp rax, -1
+    je .close_and_fail
+
+    ; Close fd
+    mov rdi, r14
+    mov rax, SYS_CLOSE
+    syscall
+
+    ; Mark as shared mode
+    mov dword [rbx + STATE_OFFSET + ST_SHARED_MODE], 1
+
+.shared_success:
+    ; Print instance ID
+    lea rdi, [rel shm_instance]
+    call print_cstr
+    mov rdi, r13
+    call print_hex64
+    call print_newline
+
+    ; Increment colony size in shared memory
+    lock inc dword [rbx + STATE_OFFSET + ST_COLONY_SIZE]
+
+    xor eax, eax              ; return success
+    jmp .shared_done
+
+.close_and_fail:
+    mov rdi, r14
+    mov rax, SYS_CLOSE
+    syscall
+
+.shared_fail:
+    lea rdi, [rel shm_solo]
+    call print_cstr
+
+    ; Mark as solo mode
+    mov dword [rbx + STATE_OFFSET + ST_SHARED_MODE], 0
+    mov dword [rbx + STATE_OFFSET + ST_COLONY_SIZE], 1
+
+    mov eax, -1               ; return failure
+
+.shared_done:
+    add rsp, 24
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; broadcast_pain(intensity)
+;; xmm0=pain intensity (f64)
+;; Broadcasts a "pain signal" to the shared holographic field.
+;; Other instances will detect this shift and react.
+;; Pain is encoded as negative valence superposed across traces.
+;; ============================================================
+global broadcast_pain
+broadcast_pain:
+    push rbx
+    sub rsp, 8
+
+    mov rbx, SURFACE_BASE
+
+    ; Only broadcast if in shared mode
+    cmp dword [rbx + STATE_OFFSET + ST_SHARED_MODE], 0
+    je .pain_done
+
+    ; Store pain intensity
+    movsd [rsp], xmm0
+
+    ; Generate pain vector (negative valence across all traces)
+    ; This creates a "disturbance in the field" that others detect
+    mov rdi, SURFACE_BASE + HOLO_OFFSET
+    mov ecx, HOLO_TRACES
+
+.pain_broadcast_loop:
+    test ecx, ecx
+    jz .pain_done
+
+    ; Superpose negative valence onto trace
+    movsd xmm0, [rsp]
+    movsd xmm1, [rdi + VSA_VALENCE_OFFSET]
+    subsd xmm1, xmm0          ; reduce valence (pain)
+    ; Clamp to [-1, 1]
+    mov rax, 0xBFF0000000000000  ; -1.0
+    movq xmm2, rax
+    maxsd xmm1, xmm2
+    movsd [rdi + VSA_VALENCE_OFFSET], xmm1
+
+    add rdi, HOLO_VEC_BYTES
+    dec ecx
+    jmp .pain_broadcast_loop
+
+.pain_done:
+    add rsp, 8
+    pop rbx
+    ret
+
+;; ============================================================
+;; sense_collective_valence() -> xmm0 (average valence f64)
+;; Samples the shared holographic field to sense the collective
+;; emotional state. Returns average valence across all traces.
+;; Negative = collective pain, Positive = collective well-being.
+;; ============================================================
+global sense_collective_valence
+sense_collective_valence:
+    push rbx
+
+    mov rbx, SURFACE_BASE
+    xorpd xmm0, xmm0          ; accumulator
+    mov rdi, SURFACE_BASE + HOLO_OFFSET
+    mov ecx, HOLO_TRACES
+
+.sense_loop:
+    test ecx, ecx
+    jz .sense_done
+
+    addsd xmm0, [rdi + VSA_VALENCE_OFFSET]
+    add rdi, HOLO_VEC_BYTES
+    dec ecx
+    jmp .sense_loop
+
+.sense_done:
+    ; Divide by trace count for average
+    mov eax, HOLO_TRACES
+    cvtsi2sd xmm1, eax
+    divsd xmm0, xmm1
+
+    pop rbx
+    ret
+
+;; ============================================================
+;; get_colony_size() -> eax (number of instances)
+;; Returns the number of instances sharing the VSA field.
+;; ============================================================
+global get_colony_size
+get_colony_size:
+    mov rax, SURFACE_BASE
+    mov eax, [rax + STATE_OFFSET + ST_COLONY_SIZE]
+    ret
+
+;; ============================================================
+;; is_shared_mode() -> eax (0=solo, 1=shared)
+;; Returns whether this instance is connected to the hive.
+;; ============================================================
+global is_shared_mode
+is_shared_mode:
+    mov rax, SURFACE_BASE
+    mov eax, [rax + STATE_OFFSET + ST_SHARED_MODE]
     ret

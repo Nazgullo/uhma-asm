@@ -10,11 +10,14 @@ section .data
     evolve_and:     db " × ", 0
     evolve_nl:      db 10, 0
     evolve_done:    db "[EVOLVE] Cycle complete", 10, 0
+    evolve_gene_msg: db "Resurrecting from gene pool: ctx=0x", 0
+    evolve_tok_msg:  db " token=0x", 0
 
 section .text
 
 extern print_cstr
 extern print_u64
+extern print_hex32
 extern print_newline
 extern region_alloc
 extern emit_dispatch_pattern
@@ -23,6 +26,7 @@ extern sys_getrandom
 extern gate_test_modification
 extern sym_observe_mod
 extern sym_record_anomaly
+extern gene_pool_sample
 
 ;; ============================================================
 ;; evolve_cycle
@@ -183,6 +187,10 @@ evolve_cycle:
     mov esi, [rsp + rax]      ; parent B (second)
     call evolve_crossover
 .no_crossover:
+
+    ; --- Resurrect from gene pool (composted knowledge) ---
+    ; Sample a proven pattern from the gene pool and recreate it
+    call evolve_from_gene_pool
 
     lea rdi, [rel evolve_done]
     call print_cstr
@@ -370,6 +378,61 @@ evolve_crossover:
     call emit_dispatch_pattern
 
 .done:
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; evolve_from_gene_pool
+;; Sample from the gene pool and resurrect a pattern
+;; This recycles composted knowledge from condemned regions
+;; ============================================================
+global evolve_from_gene_pool
+evolve_from_gene_pool:
+    push rbx
+    push r12
+    push r13
+    sub rsp, 8
+
+    mov rbx, SURFACE_BASE
+
+    ; Sample a gene from the pool
+    call gene_pool_sample             ; → eax = ctx_hash, edx = token_id, xmm0 = fitness
+
+    ; Check if we got a valid gene (ctx_hash != 0)
+    test eax, eax
+    jz .no_gene
+
+    ; Save the gene data
+    mov r12d, eax                     ; ctx_hash
+    mov r13d, edx                     ; token_id
+
+    ; Print resurrection message
+    push r12
+    push r13
+    lea rdi, [rel evolve_msg]
+    call print_cstr
+    lea rdi, [rel evolve_gene_msg]
+    call print_cstr
+    mov edi, r12d
+    call print_hex32
+    lea rdi, [rel evolve_tok_msg]
+    call print_cstr
+    mov edi, r13d
+    call print_hex32
+    call print_newline
+    pop r13
+    pop r12
+
+    ; Emit a new region from the gene
+    mov edi, r12d                     ; ctx_hash
+    mov esi, r13d                     ; token_id
+    mov edx, [rbx + STATE_OFFSET + ST_GLOBAL_STEP]
+    call emit_dispatch_pattern
+
+.no_gene:
+    add rsp, 8
     pop r13
     pop r12
     pop rbx

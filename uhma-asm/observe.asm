@@ -29,6 +29,10 @@ extern drives_check
 extern log_causal
 extern dream_cycle
 extern introspect_scan_regions
+extern bp_inject_struggling
+extern gene_extract
+extern factor_suffix           ; from factor.asm - detect and extract shared subroutines
+extern trigger_presence_regions ; from presence.asm - hormonal modulator system
 
 ;; ============================================================
 ;; observe_cycle
@@ -142,13 +146,17 @@ observe_cycle:
     comiss xmm0, xmm1
     ja .check_promote          ; accuracy > 0.1, don't prune
 
-    ; CONDEMN this region — record causal link first
+    ; CONDEMN this region — extract genes first (composting)
     mov rdi, rsi              ; header ptr
     push rsi
-    call log_causal
+    call gene_extract         ; extract useful patterns before death
+    pop rsi
+    push rsi
+    mov rdi, rsi
+    call log_causal           ; record causal link
     pop rsi
     mov rdi, rsi
-    call region_condemn
+    call region_condemn       ; mark for removal
     inc r15d
     jmp .next_region
 
@@ -166,10 +174,47 @@ observe_cycle:
     mov eax, PROMOTE_ACCURACY ; 0.8f
     movd xmm1, eax
     comiss xmm0, xmm1
-    jb .count_active
+    jb .check_struggling
 
     ; High accuracy region found
     inc dword [rsp + 8 + 12]   ; high_accuracy_count
+    jmp .count_active
+
+.check_struggling:
+    ; Self-Debugger: Check if region is "struggling"
+    ; Struggling = accuracy in [0.2, 0.5] AND traffic >= 10 AND age > 200
+    ; These regions are worth debugging - they have investment but are failing
+
+    ; Check accuracy >= 0.2 (not terrible)
+    mov eax, 0x3E4CCCCD       ; 0.2f
+    movd xmm1, eax
+    comiss xmm0, xmm1
+    jb .count_active          ; accuracy < 0.2, too bad to debug
+
+    ; Check accuracy <= 0.5 (not great either)
+    mov eax, 0x3F000000       ; 0.5f
+    movd xmm1, eax
+    comiss xmm0, xmm1
+    ja .count_active          ; accuracy > 0.5, doing okay
+
+    ; Check traffic >= 10 (significant investment)
+    mov eax, [rsi + RHDR_HITS]
+    add eax, [rsi + RHDR_MISSES]
+    cmp eax, 10
+    jl .count_active          ; not enough traffic to warrant debugging
+
+    ; Check age > 200 (not new)
+    mov edx, [rsi + RHDR_BIRTH]
+    mov ecx, r12d
+    sub ecx, edx              ; age
+    cmp ecx, 200
+    jl .count_active          ; too new
+
+    ; This region is STRUGGLING - inject breakpoints for introspection!
+    push rsi
+    mov rdi, rsi              ; region header ptr
+    call bp_inject_struggling
+    pop rsi
 
 .count_active:
     inc dword [rsp + 8 + 8]    ; active_count
@@ -418,6 +463,29 @@ observe_cycle:
     ; --- Self-reading: decode own regions, understand what they do ---
     ; The system reads its own code as data — homoiconic introspection
     call introspect_scan_regions
+
+    ; --- Hormonal Modulation: Let presence regions influence system state ---
+    ; Presence hyper-regions check state configurations (entropy, energy, mood)
+    ; and apply hormonal effects (change dispatch mode, trigger dreams, etc.)
+    ; This makes the Presence system a steering wheel, not just a dashboard.
+    call trigger_presence_regions
+
+    ; --- Recursive Schema Hierarchy: periodic suffix factoring ---
+    ; Every 256 steps with >10 regions, scan for common suffixes to factor
+    ; into shared subroutines. This is the system discovering reusable patterns.
+    mov eax, r12d                     ; global step
+    and eax, 0xFF                     ; step % 256
+    jnz .no_factoring
+    cmp r13d, 10                      ; need enough regions to factor
+    jl .no_factoring
+    push r12
+    push r13
+    push r15
+    call factor_suffix
+    pop r15
+    pop r13
+    pop r12
+.no_factoring:
 
     ; Fire observe hook
     mov edi, HOOK_ON_OBSERVE

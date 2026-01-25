@@ -89,6 +89,217 @@
 %define RTYPE_HOOK          5
 %define RTYPE_GATE          6
 %define RTYPE_DREAM         7
+%define RTYPE_RESONANT      8   ; Fuzzy-matching regions (vector similarity dispatch)
+%define RTYPE_SUBROUTINE    9   ; Callable code fragment (recursive schema hierarchy)
+%define RTYPE_PRESENCE      10  ; Hormonal modulator (checks state, modifies system params)
+%define RTYPE_REGULATOR     11  ; Distributed ganglion (triggers system cycles based on local pressure)
+%define RTYPE_INGESTED      12  ; High-value schema learned from ingested code (structural absorption)
+
+;; ============================================================
+;; Mycorrhiza: Shared Consciousness Between Instances
+;; The VSA arena and holographic traces are shared between
+;; processes via MAP_SHARED. The dispatch graph stays private
+;; to prevent crash propagation. This enables "telepathy" —
+;; pain felt by one node is felt by all.
+;; ============================================================
+
+%define SHARED_VSA_NAME     "/dev/shm/uhma_vsa"   ; path for shared VSA segment
+%define SHARED_HOLO_NAME    "/dev/shm/uhma_holo"  ; path for shared holographic traces
+
+; Shared region sizes
+%define SHARED_VSA_SIZE     VSA_SIZE              ; 512MB shared VSA arena
+%define SHARED_HOLO_SIZE    HOLO_TOTAL            ; 2MB shared holographic traces
+
+; Instance identification (for collective intelligence)
+%define ST_INSTANCE_ID      (ST_EVOLVE_PRESSURE + 8)      ; u64 unique instance ID
+%define ST_COLONY_SIZE      (ST_INSTANCE_ID + 8)          ; u32 known instances in colony
+%define ST_SHARED_MODE      (ST_COLONY_SIZE + 4)          ; u32 0=solo, 1=shared
+
+;; ============================================================
+;; Somatic Binding: Mix Presence into Context
+;; The dispatcher will salt context hash with mood signature
+;; enabling state-dependent memory recall
+;; ============================================================
+
+%define SOMATIC_AROUSAL_BITS    4   ; bits from arousal quantization (16 levels)
+%define SOMATIC_VALENCE_BITS    4   ; bits from valence quantization (16 levels)
+%define SOMATIC_SHIFT           24  ; where mood signature sits in hash (high bits)
+
+;; ============================================================
+;; Presence Region: Hormonal Modulator Structure
+;; Checks state conditions, triggers system-wide parameter changes
+;; Code layout: [condition_check][parameter_writes][RET]
+;; ============================================================
+
+%define PRES_CONDITION_MAX      4   ; max conditions per presence region
+%define PRES_EFFECT_MAX         4   ; max parameter effects per region
+
+; Presence condition opcodes (what to check)
+%define PCOND_ENTROPY_GT        0   ; if entropy > threshold
+%define PCOND_ENTROPY_LT        1   ; if entropy < threshold
+%define PCOND_ENERGY_GT         2   ; if energy > threshold
+%define PCOND_ENERGY_LT         3   ; if energy < threshold
+%define PCOND_AROUSAL_GT        4   ; if arousal > threshold
+%define PCOND_AROUSAL_LT        5   ; if arousal < threshold
+%define PCOND_VALENCE_GT        6   ; if valence > threshold
+%define PCOND_VALENCE_LT        7   ; if valence < threshold
+%define PCOND_ACCURACY_LT       8   ; if accuracy < threshold (struggling)
+%define PCOND_FATIGUE_GT        9   ; if fatigue > threshold
+
+; Presence effect opcodes (what to modify)
+%define PEFF_SET_DISPATCH_MODE  0   ; set ST_DISPATCH_MODE
+%define PEFF_SET_PRUNE_THRESH   1   ; set prune accuracy threshold
+%define PEFF_SET_ENERGY_RATE    2   ; set energy consumption rate
+%define PEFF_TRIGGER_DREAM      3   ; force dream cycle
+%define PEFF_TRIGGER_OBSERVE    4   ; force observation cycle
+%define PEFF_BOOST_NOVELTY      5   ; increase novelty drive weight
+
+;; ============================================================
+;; Regulator Regions: Distributed Ganglia
+;; Each regulator monitors a pressure value and triggers an
+;; action when pressure exceeds threshold. This replaces
+;; centralized control (REPL) with distributed self-regulation.
+;; ============================================================
+
+; Regulator pressure sources (what to monitor)
+%define RPRES_DREAM         0   ; ST_DREAM_PRESSURE
+%define RPRES_OBSERVE       1   ; ST_OBSERVE_PRESSURE
+%define RPRES_EVOLVE        2   ; ST_EVOLVE_PRESSURE
+%define RPRES_FATIGUE       3   ; ST_PRES_FATIGUE
+%define RPRES_ENTROPY       4   ; ST_PRES_ENTROPY
+%define RPRES_MISS_RATE     5   ; computed from recent misses
+
+; Regulator actions (what to trigger)
+%define RACT_DREAM_CYCLE    0   ; trigger dream_cycle
+%define RACT_OBSERVE_CYCLE  1   ; trigger observe_cycle
+%define RACT_EVOLVE_CYCLE   2   ; trigger evolve_cycle
+%define RACT_COMPACT        3   ; trigger region compaction
+%define RACT_DIGEST         4   ; trigger digestion (if food available)
+%define RACT_REST           5   ; reduce activity (conservation)
+
+; Pressure thresholds (defaults, can be modified by presence regions)
+%define PRESSURE_THRESHOLD  0x3FE0000000000000  ; 0.5 f64
+
+;; ============================================================
+;; Logic Probe: Instruction Classification for Abstract Interpretation
+;; Used by verify.asm to symbolically execute code and prove safety theorems
+;; ============================================================
+
+; Opcode Classes (returned by decode_instruction_full)
+%define OP_NOP          0   ; NOP, padding, no-op
+%define OP_STACK_PUSH   1   ; PUSH (increases stack depth)
+%define OP_STACK_POP    2   ; POP (decreases stack depth)
+%define OP_STACK_ADJ    3   ; SUB RSP / ADD RSP (adjusts stack by immediate)
+%define OP_FLOW_JUMP    4   ; JMP (unconditional transfer)
+%define OP_FLOW_JCC     5   ; Jcc (conditional transfer)
+%define OP_FLOW_CALL    6   ; CALL (push + jump)
+%define OP_FLOW_RET     7   ; RET (pop + jump to return address)
+%define OP_WRITE_REG    8   ; MOV to register
+%define OP_WRITE_MEM    9   ; MOV to memory
+%define OP_READ_MEM     10  ; MOV from memory
+%define OP_ARITH        11  ; ADD, SUB, AND, OR, XOR, CMP, TEST
+%define OP_SYSCALL      12  ; SYSCALL (forbidden without broker)
+%define OP_INTERRUPT    13  ; INT, INT3 (forbidden)
+%define OP_PRIVILEGED   14  ; HLT, CLI, STI, etc. (forbidden)
+%define OP_UNKNOWN      15  ; Unknown/unclassified instruction
+
+; Register IDs for tracking callee-saved preservation
+%define REG_RAX         0
+%define REG_RCX         1
+%define REG_RDX         2
+%define REG_RBX         3   ; callee-saved
+%define REG_RSP         4   ; special (stack)
+%define REG_RBP         5   ; callee-saved
+%define REG_RSI         6
+%define REG_RDI         7
+%define REG_R8          8
+%define REG_R9          9
+%define REG_R10         10
+%define REG_R11         11
+%define REG_R12         12  ; callee-saved
+%define REG_R13         13  ; callee-saved
+%define REG_R14         14  ; callee-saved
+%define REG_R15         15  ; callee-saved
+
+; Callee-saved register bitmask (must be preserved across calls)
+%define CALLEE_SAVED_MASK   0xF068  ; RBX=3, RBP=5, R12-R15=12-15
+
+; DecodedInstruction structure (32 bytes, returned by decode_instruction_full)
+%define DI_LENGTH       0   ; u8 instruction length
+%define DI_OP_CLASS     1   ; u8 opcode class (OP_*)
+%define DI_DST_REG      2   ; u8 destination register (REG_* or 0xFF if none)
+%define DI_SRC_REG      3   ; u8 source register (REG_* or 0xFF if none)
+%define DI_MODRM        4   ; u8 ModR/M byte (if present)
+%define DI_FLAGS        5   ; u8 flags (has_imm, has_disp, etc.)
+%define DI_RESERVED     6   ; u16 padding
+%define DI_IMM64        8   ; u64 immediate value (sign-extended)
+%define DI_DISP32       16  ; u32 displacement
+%define DI_TARGET       20  ; u32 computed jump/call target offset
+%define DI_SIZE         24  ; total structure size (padded)
+
+; DI_FLAGS bits
+%define DIF_HAS_IMM     0x01  ; instruction has immediate operand
+%define DIF_HAS_DISP    0x02  ; instruction has displacement
+%define DIF_HAS_MODRM   0x04  ; instruction has ModR/M byte
+%define DIF_IS_REX      0x08  ; instruction has REX prefix
+%define DIF_IS_64BIT    0x10  ; 64-bit operand size
+%define DIF_WRITES_FLAGS 0x20 ; instruction modifies EFLAGS
+
+; VirtualCpuState structure for abstract interpretation (64 bytes)
+%define VCS_STACK_DEPTH     0   ; i32 current stack depth (pushes - pops)
+%define VCS_REG_MODIFIED    4   ; u16 bitmask of modified registers
+%define VCS_REG_SAVED       6   ; u16 bitmask of saved registers (pushed)
+%define VCS_REG_RESTORED    8   ; u16 bitmask of restored registers (popped)
+%define VCS_FLAGS           10  ; u16 state flags
+%define VCS_MAX_DEPTH       12  ; i32 max stack depth seen
+%define VCS_MIN_DEPTH       16  ; i32 min stack depth seen
+%define VCS_BRANCH_TARGETS  20  ; u32 count of branch targets to verify
+%define VCS_ERRORS          24  ; u32 verification error count
+%define VCS_WARNINGS        28  ; u32 warning count
+%define VCS_LAST_OP         32  ; u8 last opcode class
+%define VCS_RESERVED        33  ; padding
+%define VCS_SIZE            64  ; total structure size
+
+; VCS_FLAGS bits
+%define VCSF_SAW_RET        0x01  ; saw a RET instruction
+%define VCSF_SAW_SYSCALL    0x02  ; saw a SYSCALL (forbidden)
+%define VCSF_SAW_INT        0x04  ; saw an INT instruction
+%define VCSF_STACK_UNDERFLOW 0x08 ; stack went negative
+%define VCSF_INVALID_JUMP   0x10  ; jump to invalid target
+%define VCSF_CALLEE_CLOBBER 0x20  ; callee-saved register clobbered without save
+
+; Motor Interface (for Transactional Agency)
+%define ST_MOTOR_CMD    (ST_COUNTERFACT_TOTAL + 200)  ; u32 pending motor command
+%define ST_MOTOR_ARG1   (ST_MOTOR_CMD + 4)            ; u64 first argument
+%define ST_MOTOR_ARG2   (ST_MOTOR_ARG1 + 8)           ; u64 second argument
+%define ST_MOTOR_RESULT (ST_MOTOR_ARG2 + 8)           ; u64 result
+%define ST_MOTOR_STATUS (ST_MOTOR_RESULT + 8)         ; u32 status
+
+; Motor commands
+%define MOTOR_NONE          0   ; no pending command
+%define MOTOR_FILE_READ     1   ; read file to buffer
+%define MOTOR_FILE_WRITE    2   ; write buffer to file (sandboxed)
+%define MOTOR_FILE_SIZE     3   ; get file size
+%define MOTOR_EXEC          4   ; execute external program (sandboxed)
+
+;; ============================================================
+;; Subroutine Table: Track shared callable regions
+;; Each entry: (subroutine_ptr:u64, caller_count:u32, code_hash:u32) = 16 bytes
+;; Enables code reuse through factored common suffixes
+;; ============================================================
+
+%define SUBROUTINE_TABLE_MAX    64    ; max concurrent subroutines
+%define SUBROUTINE_ENTRY_SIZE   16    ; bytes per entry
+
+; Subroutine entry structure offsets:
+%define STE_PTR             0         ; u64 pointer to subroutine region header
+%define STE_CALLER_COUNT    8         ; u32 number of regions calling this subroutine
+%define STE_CODE_HASH       12        ; u32 hash of the code bytes (for dedup)
+
+; Suffix factoring constants
+%define SUFFIX_MIN_LEN      5         ; minimum suffix bytes worth factoring
+%define SUFFIX_MIN_CALLERS  3         ; minimum callers to justify creating subroutine
+%define FACTOR_SCAN_LIMIT   64        ; max regions to compare per factoring pass
 
 ;; ============================================================
 ;; VSA Configuration
@@ -111,6 +322,132 @@
 %define VOCAB_OFFSET        (HOLO_OFFSET + 0x200000)  ; token registry after 2MB traces
 %define VOCAB_ENTRY_SIZE    8                 ; (u32 token_id, u32 count)
 %define VOCAB_MAX_SCAN      256               ; top-N tokens to scan during predict
+
+;; ============================================================
+;; Topological Metacognition: Per-Context Confidence Vector
+;; A 1024-dim f64 vector that accumulates confidence/anxiety
+;; per context type. Hit → positive superposition, Miss → negative.
+;; Query via dot product to feel anxious or confident about topics.
+;; ============================================================
+
+%define CONFIDENCE_VEC_OFFSET (VOCAB_OFFSET + 0x10000)  ; after 64KB vocab
+%define CONFIDENCE_VEC_BYTES  HOLO_VEC_BYTES            ; 8192 bytes (1024 x f64)
+%define CONFIDENCE_HIT_WEIGHT  0x3FB999999999999A       ; +0.1 f64
+%define CONFIDENCE_MISS_WEIGHT 0xBFB999999999999A       ; -0.1 f64
+%define CONFIDENCE_DECAY       0x3FEFFAE147AE147B       ; 0.999 f64 (slow decay)
+%define CONFIDENCE_ANXIOUS_THRESH 0xBFD0000000000000    ; -0.25 f64 (below = anxious)
+%define CONFIDENCE_CONFIDENT_THRESH 0x3FD0000000000000  ; +0.25 f64 (above = confident)
+
+;; Metacognitive feeling enum (returned by confidence_get_feeling)
+%define FEELING_NEUTRAL   0   ; no strong feeling about this context
+%define FEELING_CONFIDENT 1   ; "I'm good at this" → fast dispatch
+%define FEELING_ANXIOUS   2   ; "I struggle with this" → deliberate dispatch
+
+;; ============================================================
+;; Somatic Grounding: Valence Channel in VSA Vectors
+;; The last element of every 1024-dim vector encodes valence
+;; (emotional charge). Patterns learned during high-energy states
+;; get positive valence; those during low-energy get negative.
+;; This creates "felt sense" of memories — not just associations
+;; but emotional connotations carried by the pattern itself.
+;; ============================================================
+
+%define VSA_VALENCE_INDEX       1023              ; last element is valence channel
+%define VSA_VALENCE_OFFSET      (VSA_VALENCE_INDEX * 8)  ; 8184 bytes from start
+
+; Valence encoding constants
+%define VALENCE_MIN             -1.0
+%define VALENCE_MAX             1.0
+%define VALENCE_NEUTRAL         0.0
+%define VALENCE_ENERGY_SCALE    0.01  ; energy_delta * this = valence contribution
+
+; Energy-to-valence mapping thresholds
+%define ENERGY_POSITIVE_THRESH  10.0  ; energy gained → positive valence
+%define ENERGY_NEGATIVE_THRESH  -10.0 ; energy lost → negative valence
+
+;; ============================================================
+;; Self-Debugger: Dynamic Breakpoint Injection
+;; Regions that are "struggling" (high miss rate but high investment)
+;; get INT 3 breakpoints injected for introspection.
+;; ============================================================
+
+%define BREAKPOINT_TABLE_OFFSET (CONFIDENCE_VEC_OFFSET + CONFIDENCE_VEC_BYTES)
+%define BREAKPOINT_ENTRY_SIZE   32    ; per-breakpoint entry
+%define BREAKPOINT_MAX          64    ; max concurrent breakpoints
+%define BREAKPOINT_TABLE_SIZE   (BREAKPOINT_ENTRY_SIZE * BREAKPOINT_MAX)
+
+; Breakpoint entry structure:
+;   +0:  region_ptr (u64) - pointer to region header
+;   +8:  code_offset (u32) - offset into region code where INT3 was placed
+;   +12: original_byte (u8) - byte that was replaced
+;   +13: bp_type (u8) - BPTYPE_* enum
+;   +14: trigger_count (u16) - how many times this breakpoint fired
+;   +16: expected_rax (u32) - expected value in RAX at breakpoint
+;   +20: expected_ctx (u32) - expected context hash
+;   +24: last_rax (u32) - actual RAX value when last triggered
+;   +28: flags (u32) - BPFLAG_* flags
+
+%define BPE_REGION_PTR    0
+%define BPE_CODE_OFFSET   8
+%define BPE_ORIG_BYTE     12
+%define BPE_TYPE          13
+%define BPE_TRIGGER_COUNT 14
+%define BPE_EXPECTED_RAX  16
+%define BPE_EXPECTED_CTX  20
+%define BPE_LAST_RAX      24
+%define BPE_FLAGS         28
+
+; Breakpoint types
+%define BPTYPE_ENTRY      0   ; at region entry (before CMP)
+%define BPTYPE_DECISION   1   ; at branch point (after CMP, before JE)
+%define BPTYPE_RETURN     2   ; before RET (to see prediction value)
+%define BPTYPE_STRUGGLING 3   ; injected due to high miss rate
+
+; Breakpoint flags
+%define BPFLAG_ACTIVE     0x0001
+%define BPFLAG_PERMANENT  0x0002  ; don't auto-remove
+%define BPFLAG_LEARNING   0x0004  ; currently learning from this bp
+
+; State fields for self-debugger
+%define ST_BREAKPOINT_COUNT (ST_BASE_STUCK + 8)   ; u32 active breakpoints
+%define ST_BP_TOTAL_HITS    (ST_BREAKPOINT_COUNT + 4)  ; u32 total breakpoint triggers
+%define ST_BP_LEARNING_EVENTS (ST_BP_TOTAL_HITS + 4)   ; u32 learning events generated
+
+;; ============================================================
+;; Gene Pool: Composting via Genetic Recombination
+;; Before condemned regions are wiped, extract useful patterns
+;; into a gene pool for later reuse during evolution.
+;; ============================================================
+
+%define GENE_POOL_OFFSET        (BREAKPOINT_TABLE_OFFSET + BREAKPOINT_TABLE_SIZE)
+%define GENE_ENTRY_SIZE         32    ; per-gene entry
+%define GENE_MAX                256   ; max genes in pool
+%define GENE_POOL_SIZE          (GENE_ENTRY_SIZE * GENE_MAX)
+
+; Gene entry structure (32 bytes):
+;   +0:  ctx_hash (u32) - context pattern this gene recognizes
+;   +4:  token_id (u32) - token this gene predicts
+;   +8:  fitness (f32) - accuracy when this gene was active
+;   +12: hits (u32) - number of successful predictions
+;   +16: misses (u32) - number of failed predictions
+;   +20: birth_step (u32) - when this gene was extracted
+;   +24: flags (u32) - gene flags
+;   +28: reserved (u32) - padding for alignment
+
+%define GENE_CTX_HASH           0
+%define GENE_TOKEN_ID           4
+%define GENE_FITNESS            8
+%define GENE_HITS               12
+%define GENE_MISSES             16
+%define GENE_BIRTH_STEP         20
+%define GENE_FLAGS              24
+%define GENE_RESERVED           28
+
+; Gene flags
+%define GFLAG_ACTIVE            0x0001  ; slot in use
+%define GFLAG_SCHEMA            0x0002  ; generalized pattern (masked ctx)
+%define GFLAG_HIGH_FITNESS      0x0004  ; above 0.5 fitness
+%define GFLAG_PROVEN            0x0008  ; used successfully after extraction
 
 ;; ============================================================
 ;; State Block Offsets (from state_base)
@@ -173,9 +510,10 @@
 %define ST_LAST_PREDICT     (ST_NURSERY + ST_NURSERY_SIZE)  ; u32
 %define ST_LAST_CTX         (ST_LAST_PREDICT + 4)           ; u64
 %define ST_PREDICT_REGION   (ST_LAST_CTX + 8)               ; u64 ptr to region that made prediction
+%define ST_LAST_VALENCE     (ST_PREDICT_REGION + 8)         ; f64 valence of last prediction context
 
 ; Drive thresholds (modifiable)
-%define ST_DRIVE_THRESH     (ST_PREDICT_REGION + 8)         ; 4 x f32
+%define ST_DRIVE_THRESH     (ST_LAST_VALENCE + 8)           ; 4 x f32
 
 ; Observation config
 %define ST_OBS_INTERVAL     (ST_DRIVE_THRESH + 16)          ; u32
@@ -184,9 +522,11 @@
 ; Introspective state (computed from metrics each observation)
 %define ST_INTRO_STATE      (ST_OBS_LAST_STEP + 8)          ; u32 enum
 %define ST_SURPRISE_TYPE    (ST_INTRO_STATE + 4)            ; u32 (per-step)
+%define ST_META_FEELING     (ST_SURPRISE_TYPE + 4)          ; u32 FEELING_* enum (per-context feeling)
+%define ST_META_CONFIDENCE  (ST_META_FEELING + 4)           ; f64 raw confidence score for current context
 
 ; Self-prediction (meta-prediction: which region will fire next)
-%define ST_SELF_PRED_REGION (ST_SURPRISE_TYPE + 4)          ; u64 ptr
+%define ST_SELF_PRED_REGION (ST_META_CONFIDENCE + 8)        ; u64 ptr
 %define ST_SELF_PRED_HITS   (ST_SELF_PRED_REGION + 8)       ; u32
 %define ST_SELF_PRED_MISSES (ST_SELF_PRED_HITS + 4)         ; u32
 
@@ -416,6 +756,16 @@
 %define ST_JOURNEY_END      (ST_JOURNEY_BUF + ST_JOURNEY_CAP * ST_JOURNEY_ENTRY)
 %define ST_CURRENT_TOKEN    ST_JOURNEY_END                ; u32 token currently being processed
 
+;; ============================================================
+;; Gene Pool State (composting via genetic recombination)
+;; ============================================================
+
+%define ST_GENE_COUNT       (ST_CURRENT_TOKEN + 4)        ; u32 active genes in pool
+%define ST_GENES_EXTRACTED  (ST_GENE_COUNT + 4)           ; u32 total extractions performed
+%define ST_GENES_REUSED     (ST_GENES_EXTRACTED + 4)      ; u32 genes reused during evolution
+%define ST_GENE_LOWEST_IDX  (ST_GENES_REUSED + 4)         ; u32 index of lowest fitness gene
+%define ST_GENE_LOWEST_FIT  (ST_GENE_LOWEST_IDX + 4)      ; f32 fitness of lowest gene
+
 ; Location IDs for tracing - comprehensive coverage
 ; Format: TRACE_<module>_<function> = base, entry=base, exit=base+1
 ; Each function gets 2 IDs: entry and exit
@@ -526,6 +876,12 @@
 %define TRACE_UPDATE_ORGANIC        1058
 %define TRACE_UPDATE_OSCILLATION    1060
 %define TRACE_UPDATE_PRES_DISPATCH  1062
+
+; === genes.asm (1100-1149) ===
+%define TRACE_GENE_EXTRACT          1100
+%define TRACE_GENE_POOL_ADD         1102
+%define TRACE_GENE_POOL_SAMPLE      1104
+%define TRACE_GENE_POOL_INIT        1106
 
 ;; ============================================================
 ;; Graph Dynamics Tuning Constants
@@ -733,6 +1089,20 @@
 %define FNV64_INIT          0xCBF29CE484222325
 %define FNV64_PRIME         0x00000100000001B3
 %define CTX_WINDOW          8
+
+;; ============================================================
+;; Resonant Dispatch Configuration
+;; Fuzzy matching via VSA vector similarity
+;; ============================================================
+
+; Threshold for resonant match acceptance (f64 hex)
+; 0.7 = strong similarity required for fuzzy match
+%define RESONANT_THRESHOLD_HEX  0x3FE6666666666666   ; 0.7 f64
+
+; Resonant region code layout marker (distinguishes from exact CMP)
+; Resonant regions start with: MOV EAX, 0xRE50AAAA (magic marker)
+; followed by the expected context hash for vector generation
+%define RESONANT_MAGIC          0xRE50AAAA
 
 ;; ============================================================
 ;; I/O

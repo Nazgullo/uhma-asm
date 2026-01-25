@@ -7,6 +7,7 @@ section .data
     emit_ctx_msg:   db " ctx=0x", 0
     emit_tok_msg:   db " tok=0x", 0
     emit_nl:        db 10, 0
+    emit_res_msg:   db "[EMIT] Resonant pattern at 0x", 0
 
 section .text
 
@@ -173,6 +174,34 @@ emit_dispatch_pattern:
     ret
 
 ;; ============================================================
+;; emit_call_rel32(ptr, target)
+;; Writes a CALL rel32 instruction at ptr targeting a subroutine.
+;; rdi = destination pointer (where to write CALL)
+;; rsi = absolute target address
+;; Returns: eax = bytes written (5)
+;;
+;; Instruction: E8 rel32
+;; rel32 = target - (current + 5)
+;;
+;; This enables recursive schema hierarchy: regions can CALL
+;; shared subroutines for code reuse.
+;; ============================================================
+global emit_call_rel32
+emit_call_rel32:
+    ; Compute relative offset
+    lea rax, [rdi + 5]          ; address after CALL instruction
+    sub rsi, rax                ; rel32 = target - (current + 5)
+
+    ; Write CALL opcode
+    mov byte [rdi], 0xE8
+
+    ; Write 32-bit relative offset
+    mov [rdi + 1], esi
+
+    mov eax, 5
+    ret
+
+;; ============================================================
 ;; emit_nop_sled(ptr, count)
 ;; rdi=destination, esi=byte count
 ;; Fills with NOP (0x90)
@@ -249,4 +278,111 @@ emit_xor_eax_eax:
     mov byte [rdi], 0x31
     mov byte [rdi + 1], 0xC0
     mov eax, 2
+    ret
+
+;; ============================================================
+;; emit_resonant_pattern(ctx_hash_32, token_id, birth_step)
+;; edi=expected context hash (32-bit), esi=predicted token_id, edx=birth_step
+;;
+;; Emits a new RESONANT dispatch region for fuzzy matching:
+;; Unlike exact dispatch patterns (CMP EAX, imm32), resonant regions
+;; store the expected context hash for vector generation and matching
+;; via cosine similarity in VSA space.
+;;
+;; Code layout (11 bytes):
+;;   [0-4]:   MOV EAX, <ctx_hash>      ; B8 xx xx xx xx (stores expected ctx)
+;;   [5-9]:   MOV EAX, <token_id>      ; B8 xx xx xx xx (predicted token)
+;;   [10]:    RET                       ; C3
+;;
+;; The first MOV stores the expected context hash (not executed directly).
+;; dispatch_predict() calls resonant_match() which extracts this hash,
+;; generates VSA vectors, and computes similarity.
+;;
+;; Returns: rax = ptr to new region header
+;; ============================================================
+global emit_resonant_pattern
+emit_resonant_pattern:
+    push rbx
+    push r12
+    push r13
+    push r14
+
+    mov r12d, edi             ; ctx_hash
+    mov r13d, esi             ; token_id
+    mov r14d, edx             ; birth_step
+
+    ; JOURNEY: record emit_resonant_pattern (reuse emit dispatch trace ID)
+    push r12
+    push r13
+    mov edi, TRACE_EMIT_DISPATCH_PATTERN
+    call journey_step
+    pop r13
+    pop r12
+
+    ; Allocate region: 11 bytes of code, RTYPE_RESONANT
+    mov rdi, 11               ; code size
+    mov rsi, RTYPE_RESONANT   ; type = resonant (fuzzy matching)
+    mov edx, r14d             ; birth step
+    call region_alloc
+    mov rbx, rax              ; header ptr
+
+    ; Symbolic observation: log this modification
+    lea rdi, [rbx + RHDR_SIZE]  ; code address
+    mov rsi, 11                  ; size
+    mov edx, 1                   ; type 1 = resonant emit
+    mov rcx, SURFACE_BASE
+    mov ecx, [rcx + STATE_OFFSET + ST_GLOBAL_STEP]
+    call sym_observe_mod
+
+    ; Now write the code at rbx + RHDR_SIZE
+    lea rdi, [rbx + RHDR_SIZE]
+
+    ; Byte 0-4: MOV EAX, ctx_hash (stores expected context for VSA)
+    mov byte [rdi + 0], 0xB8
+    mov [rdi + 1], r12d       ; expected ctx_hash
+
+    ; Byte 5-9: MOV EAX, token_id (predicted token)
+    mov byte [rdi + 5], 0xB8
+    mov [rdi + 6], r13d       ; token_id
+
+    ; Byte 10: RET
+    mov byte [rdi + 10], 0xC3
+
+    ; Update code length in header
+    mov word [rbx + RHDR_CODE_LEN], 11
+
+    ; Print emission info
+    push rbx
+    lea rdi, [rel emit_res_msg]
+    call print_cstr
+    lea rdi, [rbx + RHDR_SIZE]
+    call print_hex64
+
+    lea rdi, [rel emit_ctx_msg]
+    call print_cstr
+    mov edi, r12d
+    call print_hex32
+
+    lea rdi, [rel emit_tok_msg]
+    call print_cstr
+    mov edi, r13d
+    call print_hex32
+    call print_newline
+    pop rbx
+
+    ; Fire emit hook
+    mov edi, HOOK_ON_EMIT
+    mov esi, r12d
+    call fire_hook
+
+    ; Wire new region into connectivity graph
+    mov rdi, rbx              ; header ptr
+    mov esi, r13d             ; token_id (for finding same-token regions)
+    call wire_new_region
+
+    mov rax, rbx              ; return header ptr
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
     ret

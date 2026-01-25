@@ -6,6 +6,9 @@
 %define SYS_WRITE           1
 %define SYS_OPEN            2
 %define SYS_CLOSE           3
+%define SYS_STAT            4
+%define SYS_FSTAT           5
+%define SYS_LSTAT           6
 %define SYS_MMAP            9
 %define SYS_MPROTECT        10
 %define SYS_MUNMAP          11
@@ -30,9 +33,10 @@
 %define PROT_RWX            (PROT_READ | PROT_WRITE | PROT_EXEC)
 
 ; mmap flags
+%define MAP_SHARED          0x01
 %define MAP_PRIVATE         0x02
-%define MAP_ANONYMOUS       0x20
 %define MAP_FIXED           0x10
+%define MAP_ANONYMOUS       0x20
 
 ; open flags
 %define O_RDONLY            0
@@ -50,6 +54,7 @@
 %define SIGBUS              7
 %define SIGILL              4
 %define SIGPIPE             13
+%define SIGTRAP             5     ; INT 3 breakpoint (self-debugger)
 
 ; sigaction flags
 %define SA_SIGINFO          0x04

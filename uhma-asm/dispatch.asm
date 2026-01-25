@@ -25,6 +25,11 @@ section .data
     align 8
     holo_thresh:    dq 0.5
 
+    ; Resonant dispatch threshold (f64) - similarity required for fuzzy match
+    ; 0.7 = strong similarity required (can adjust based on noise tolerance)
+    align 8
+    resonant_thresh: dq 0.7
+
 section .bss
     word_buf:       resb MAX_WORD_LEN
 
@@ -43,7 +48,10 @@ extern region_alloc
 extern find_existing_pattern
 extern learn_connections
 extern observe_cycle
+extern tick_regulators
+extern accrue_pressure
 extern holo_predict
+extern holo_query_valence
 extern holo_decay_all
 extern update_organic_pressure
 extern update_anticipatory
@@ -52,6 +60,13 @@ extern update_oscillation
 extern update_presence_dispatch
 extern introspect_scan_regions
 extern journey_step
+extern confidence_update
+extern confidence_query
+extern confidence_get_feeling
+extern confidence_decay_all
+extern resonant_match
+extern resonant_get_threshold
+extern resonant_extract_token
 
 ;; ============================================================
 ;; dispatch_init
@@ -244,6 +259,10 @@ process_input:
     ; Holographic decay (interference traces)
     call holo_decay_all
 
+    ; Topological metacognition: decay confidence vector toward neutral
+    ; Prevents runaway confidence/anxiety over time
+    call confidence_decay_all
+
     ; Decay dynamics once per line (not per token)
     call decay_all_regions
 
@@ -369,9 +388,9 @@ process_token:
     inc dword [rbx + STATE_OFFSET + ST_NOVELTY_RECENT]
 .token_seen:
 
-    ; --- Context hash = immediate predecessor only (true bigram) ---
-    ; Deterministic: prev_token determines context for predicting current
-    ; This ensures "hello → world" matches every time after learning once
+    ; --- Context hash = predecessor + SOMATIC BINDING (mood-dependent addressing) ---
+    ; The same input triggers different regions based on internal state.
+    ; This creates state-dependent memory: "I respond differently when tired."
     lea rsi, [rbx + STATE_OFFSET + ST_TOKEN_BUF]
     mov ecx, [rbx + STATE_OFFSET + ST_TOKEN_POS]
     mov r9, 0x9E3779B97F4A7C15  ; golden ratio prime
@@ -381,11 +400,51 @@ process_token:
     and ecx, (ST_TOKEN_BUF_CAP - 1)
     mov r10d, [rsi + rcx * 4]  ; previous token
 
-    ; Context = just prev_token * prime (simple, deterministic)
+    ; Context = prev_token * prime (base context)
     mov rax, r10
     imul rax, r9
+
+    ; --- SOMATIC BINDING: Salt context with mood signature ---
+    ; Read arousal (f32 at PRES_AROUSAL index 3) and valence (index 4)
+    ; Presence array is 30 f32 values starting at ST_PRESENCE
+    movss xmm0, [rbx + STATE_OFFSET + ST_PRESENCE + PRES_AROUSAL * 4]
+    movss xmm1, [rbx + STATE_OFFSET + ST_PRESENCE + PRES_VALENCE * 4]
+
+    ; Quantize to 0-15 range: clamp to [0,1], multiply by 15, truncate
+    ; xmm2 = 0.0, xmm3 = 1.0, xmm4 = 15.0
+    xorps xmm2, xmm2
+    mov ecx, 0x3F800000         ; 1.0f
+    movd xmm3, ecx
+    mov ecx, 0x41700000         ; 15.0f
+    movd xmm4, ecx
+
+    ; Clamp arousal to [0, 1]
+    maxss xmm0, xmm2            ; max(arousal, 0)
+    minss xmm0, xmm3            ; min(arousal, 1)
+    mulss xmm0, xmm4            ; arousal * 15
+    cvtss2si ecx, xmm0          ; quantized arousal 0-15
+    and ecx, 0xF                ; safety mask
+
+    ; Clamp valence to [0, 1] (valence can be negative, so add 0.5 bias)
+    mov edx, 0x3F000000         ; 0.5f
+    movd xmm5, edx
+    addss xmm1, xmm5            ; shift [-0.5,0.5] → [0,1]
+    maxss xmm1, xmm2
+    minss xmm1, xmm3
+    mulss xmm1, xmm4
+    cvtss2si edx, xmm1          ; quantized valence 0-15
+    and edx, 0xF
+
+    ; Combine into mood signature: (arousal << 4) | valence
+    shl ecx, SOMATIC_AROUSAL_BITS
+    or ecx, edx                 ; mood_sig = arousal_q << 4 | valence_q
+
+    ; Mix mood into context hash (high bits for mood-dependent addressing)
+    shl rcx, SOMATIC_SHIFT      ; shift into bits 24-31
+    xor rax, rcx                ; SOMATIC BINDING: context now includes mood
+
     mov r13, rax
-    ; Store context
+    ; Store context (now mood-salted)
     mov [rbx + STATE_OFFSET + ST_CTX_HASH], r13
 
     ; --- Update token ring buffer ---
@@ -486,6 +545,12 @@ process_token:
     lea rcx, [rbx + STATE_OFFSET + ST_CTX_TYPE_TOTAL]
     inc dword [rcx + rax * 4]       ; total[ctx_type]++
 
+    ; --- Topological metacognition: update confidence vector on HIT ---
+    ; The system becomes more confident about this context type
+    mov edi, r13d             ; ctx_hash (lower 32 bits from r13)
+    mov esi, 1                ; is_hit = true
+    call confidence_update
+
     ; Increment hit counter on the predicting region
     lea rax, [rbx + STATE_OFFSET + ST_PREDICT_REGION]
     mov rcx, [rax]
@@ -498,6 +563,12 @@ process_token:
     mov rdi, rcx              ; firing region ptr
     call learn_connections
     pop rcx
+
+    ; OCTOPUS: Hits slightly reduce dream pressure (performing well)
+    mov edi, RPRES_DREAM
+    mov rax, 0xBF847AE147AE147B  ; -0.01 f64 (small decay on success)
+    movq xmm0, rax
+    call accrue_pressure
 
     ; Schema coverage: did a generalized pattern match this context?
     ; (flag set during dispatch_predict scan)
@@ -628,6 +699,12 @@ process_token:
     lea rcx, [rbx + STATE_OFFSET + ST_CTX_TYPE_TOTAL]
     inc dword [rcx + rax * 4]       ; total[ctx_type]++ (no hit increment)
 
+    ; --- Topological metacognition: update confidence vector on MISS ---
+    ; The system becomes more anxious about this context type
+    mov edi, r13d             ; ctx_hash (lower 32 bits from r13)
+    xor esi, esi              ; is_hit = false (miss)
+    call confidence_update
+
     ; Increment miss counter on the predicting region
     lea rax, [rbx + STATE_OFFSET + ST_PREDICT_REGION]
     mov rcx, [rax]
@@ -712,7 +789,16 @@ process_token:
     ; Current context (hash of prev token) → should predict this token
     mov rdi, r13              ; current context = hash(prev_token)
     mov esi, r12d             ; token to predict
+    ; SOMATIC GROUNDING: negative energy_delta for miss (mistakes are costly)
+    mov rax, 0xC024000000000000  ; -10.0 f64 (negative valence for errors)
+    movq xmm0, rax
     call learn_pattern
+
+    ; OCTOPUS: Misses accrue dream pressure (urge to consolidate)
+    mov edi, RPRES_DREAM
+    mov rax, 0x3FB999999999999A  ; 0.1 f64 pressure per miss
+    movq xmm0, rax
+    call accrue_pressure
 
     ; --- Inhibitory competition: wrong predictor should be suppressed ---
     ; If a confident region predicted wrong, the correct region should inhibit it.
@@ -764,7 +850,15 @@ process_token:
     test rdi, rdi
     jz .after_counter         ; no context yet
     mov esi, r12d
+    ; SOMATIC GROUNDING: neutral energy_delta for new context (just learning)
+    xorpd xmm0, xmm0          ; 0.0 f64 (neutral valence for new info)
     call learn_pattern
+
+    ; OCTOPUS: New contexts accrue observe pressure (need to monitor growth)
+    mov edi, RPRES_OBSERVE
+    mov rax, 0x3FA999999999999A  ; 0.05 f64 pressure per new token
+    movq xmm0, rax
+    call accrue_pressure
 
 .after_counter:
     ; --- Organic dynamics: let internal pressure drive actions ---
@@ -786,6 +880,18 @@ process_token:
     pop rax
     lea rcx, [rbx + STATE_OFFSET + ST_LAST_CTX]
     mov [rcx], rax
+
+    ; SOMATIC GROUNDING: Query and store valence for this context
+    ; This gives us the "felt sense" of past experiences with this context
+    push rax                  ; save ctx for valence query
+    mov edi, eax              ; ctx_hash (lower 32)
+    call holo_query_valence   ; → xmm0 = valence f64
+    movsd [rbx + STATE_OFFSET + ST_LAST_VALENCE], xmm0
+    pop rax
+
+    ; OCTOPUS NERVOUS SYSTEM: Let distributed ganglia react
+    ; This replaces centralized REPL control with local pressure-based triggering
+    call tick_regulators
 
     ; Fire input hook
     mov edi, HOOK_ON_INPUT
@@ -910,6 +1016,153 @@ dispatch_predict:
     call update_anticipatory
 .no_antic_signal:
 
+    ; --- Topological Metacognition: Feel the context before choosing strategy ---
+    ; Query how we "feel" about this context type: anxious, neutral, or confident
+    ; This creates per-topic dispatch mode selection (e.g., "I'm bad at math")
+
+    ; First, get raw confidence score for observability
+    mov edi, r12d             ; ctx_hash
+    push r12                  ; save ctx_hash across call
+    call confidence_query     ; → xmm0 = f64 confidence score
+    movsd [rbx + STATE_OFFSET + ST_META_CONFIDENCE], xmm0
+    pop r12
+
+    ; Now get the feeling enum
+    mov edi, r12d             ; ctx_hash
+    call confidence_get_feeling
+    ; eax = 0 (neutral), 1 (confident), 2 (anxious)
+
+    ; Store for observability
+    mov [rbx + STATE_OFFSET + ST_META_FEELING], eax
+
+    cmp eax, FEELING_ANXIOUS
+    je .feeling_anxious
+    cmp eax, FEELING_CONFIDENT
+    je .feeling_confident
+    jmp .entry_point_select    ; neutral → use current dispatch mode
+
+.feeling_anxious:
+    ; "I'm anxious about this context" → be careful, deliberate
+    ; Override dispatch mode to DELIBERATE for this prediction only
+    mov dword [rbx + STATE_OFFSET + ST_DISPATCH_MODE], DMODE_DELIBERATE
+    jmp .entry_point_select
+
+.feeling_confident:
+    ; "I'm confident about this context" → be quick, intuitive
+    ; Override dispatch mode to FAST for this prediction only
+    mov dword [rbx + STATE_OFFSET + ST_DISPATCH_MODE], DMODE_FAST
+
+    ; --- ANTICIPATORY INTERFERENCE: Let the ghosts haunt the machine ---
+    ; Scan anticipatory buffer for strong (but not yet fired) signals.
+    ; Pre-bias RHDR_PRIME of regions that predict those tokens.
+    ; This creates "priming": pathways lower their resistance before evidence arrives.
+.anticipatory_prime:
+    push r12                    ; save ctx_hash
+    lea r14, [rbx + STATE_OFFSET + ST_ANTIC_BUF]
+    xor ecx, ecx                ; antic buffer index
+
+.antic_prime_loop:
+    cmp ecx, ST_ANTIC_CAP
+    jge .antic_prime_done
+
+    push rcx
+    imul edx, ecx, ST_ANTIC_ENTRY_SIZE
+    lea rsi, [r14 + rdx]
+
+    ; Check if this slot is active (token_id != 0)
+    mov eax, [rsi + ABE_TOKEN_ID]
+    test eax, eax
+    jz .antic_prime_next
+
+    ; Check if accumulated confidence is above priming threshold (0.3)
+    movsd xmm0, [rsi + ABE_ACCUM_CONF]
+    mov rax, 0x3FD3333333333333      ; 0.3 f64
+    movq xmm1, rax
+    ucomisd xmm0, xmm1
+    jbe .antic_prime_next           ; not strong enough to prime
+
+    ; This is a GHOST - strong anticipation for this token
+    ; Find regions that predict this token and boost their activation
+    mov r15d, eax                   ; anticipated token_id
+    movsd xmm7, xmm0                ; save confidence
+
+    ; Scan region table for regions predicting this token
+    lea rdi, [rbx + REGION_TABLE_OFFSET]
+    xor r8d, r8d                    ; region index
+
+.antic_region_scan:
+    cmp r8d, 32                     ; scan up to 32 regions (limit work)
+    jge .antic_prime_next
+
+    push r8
+    imul eax, r8d, RTE_SIZE
+    lea r9, [rdi + rax]
+
+    ; Get region address
+    mov r10, [r9 + RTE_ADDR]
+    test r10, r10
+    jz .antic_region_next
+
+    ; Check if active dispatch region
+    movzx eax, word [r9 + RTE_TYPE]
+    cmp eax, RTYPE_DISPATCH
+    jne .antic_check_resonant
+    jmp .antic_check_prediction
+
+.antic_check_resonant:
+    cmp eax, RTYPE_RESONANT
+    jne .antic_region_next
+
+.antic_check_prediction:
+    ; Decode what token this region predicts
+    ; Dispatch: CMP EAX, ctx (3D xx xx xx xx) then MOV EAX, token (B8 xx xx xx xx) after JE
+    ; Resonant: MOV EAX, ctx (B8 xx xx xx xx) then MOV EAX, token (B8 xx xx xx xx)
+    lea rsi, [r10 + RHDR_SIZE]      ; code start
+    movzx eax, byte [rsi]
+
+    cmp al, 0x3D                    ; CMP EAX, imm32 (dispatch)
+    jne .antic_try_resonant
+    ; Skip past CMP (5) + JE (2) = 7, then MOV EAX at offset 7
+    cmp byte [rsi + 7], 0xB8
+    jne .antic_region_next
+    mov eax, [rsi + 8]              ; predicted token
+    jmp .antic_compare_token
+
+.antic_try_resonant:
+    cmp al, 0xB8                    ; MOV EAX, imm32 (resonant)
+    jne .antic_region_next
+    ; Second MOV EAX at offset 5
+    cmp byte [rsi + 5], 0xB8
+    jne .antic_region_next
+    mov eax, [rsi + 6]              ; predicted token
+
+.antic_compare_token:
+    cmp eax, r15d                   ; does this region predict our ghost token?
+    jne .antic_region_next
+
+    ; MATCH: This region predicts the anticipated token
+    ; Boost its PRIME by confidence * 0.5 (ghosts partially activate pathways)
+    movsd xmm0, xmm7                ; anticipated confidence
+    mov rax, 0x3FE0000000000000     ; 0.5 f64
+    movq xmm1, rax
+    mulsd xmm0, xmm1                ; prime_boost = conf * 0.5
+    addsd xmm0, [r10 + RHDR_PRIME]
+    movsd [r10 + RHDR_PRIME], xmm0  ; GHOSTLY PRIMING APPLIED
+
+.antic_region_next:
+    pop r8
+    inc r8d
+    jmp .antic_region_scan
+
+.antic_prime_next:
+    pop rcx
+    inc ecx
+    jmp .antic_prime_loop
+
+.antic_prime_done:
+    pop r12                         ; restore ctx_hash
+
+.entry_point_select:
     ; --- Entry point selection ---
     ; entry_slot = (ctx_hash >> 4) & 0xF
     mov eax, r12d
@@ -1009,10 +1262,17 @@ dispatch_predict:
     inc dword [rbx + STATE_OFFSET + ST_TRACE_CANDIDATES]
     inc dword [rsp + 28]      ; visited++
 
-    ; Check context match (same bytecode inspection as before)
+    ; Detect region type by first opcode
+    ; 0x3D = CMP EAX, imm32 (exact dispatch)
+    ; 0xB8 = MOV EAX, imm32 (resonant dispatch)
     cmp byte [r13 + RHDR_SIZE], 0x3D
-    jne .graph_follow_next
+    je .graph_exact_dispatch
+    cmp byte [r13 + RHDR_SIZE], 0xB8
+    je .graph_resonant_dispatch
+    jmp .graph_follow_next
 
+.graph_exact_dispatch:
+    ; Standard exact-match context check
     mov eax, [r13 + RHDR_SIZE + 1]   ; stored context (imm32)
 
     ; Schema handling
@@ -1028,9 +1288,30 @@ dispatch_predict:
 .graph_exact_cmp:
     cmp eax, r12d
     jne .graph_no_match
-.graph_ctx_matched:
+    jmp .graph_ctx_matched
 
-    ; --- MATCH: compute effective_weight ---
+.graph_resonant_dispatch:
+    ; --- RESONANT GRAPH: Fuzzy VSA matching ---
+    ; Call resonant_match(region_ptr, ctx_hash) → xmm0 = similarity
+    push r13                  ; save current region ptr
+    mov rdi, r13
+    mov esi, r12d
+    call resonant_match
+    pop r13                   ; restore region ptr
+
+    ; Check if similarity exceeds threshold
+    ucomisd xmm0, [rel resonant_thresh]
+    jbe .graph_no_match       ; below threshold, try other paths
+
+    ; Store similarity for weight calculation
+    sub rsp, 8
+    movsd [rsp], xmm0         ; save similarity on stack
+
+    ; Fall through to matched path - we have a resonant match
+    jmp .graph_ctx_matched_resonant
+
+.graph_ctx_matched:
+    ; --- EXACT MATCH: compute effective_weight ---
     inc dword [rbx + STATE_OFFSET + ST_TRACE_MATCHED]
 
     ; effective_weight = hits/(hits+misses) + activation + prime_level
@@ -1049,7 +1330,35 @@ dispatch_predict:
     addsd xmm0, [r13 + RHDR_ACTIVATION]
     addsd xmm0, [r13 + RHDR_PRIME]
     ; xmm0 = effective_weight
+    jmp .graph_compare_best
 
+.graph_ctx_matched_resonant:
+    ; --- RESONANT MATCH: compute effective_weight with similarity weighting ---
+    inc dword [rbx + STATE_OFFSET + ST_TRACE_MATCHED]
+
+    ; Retrieve saved similarity from stack
+    movsd xmm2, [rsp]         ; xmm2 = similarity
+    add rsp, 8                ; restore stack
+
+    ; effective_weight = (hits/(hits+misses) + activation + prime) * similarity
+    mov eax, [r13 + RHDR_HITS]
+    mov edx, [r13 + RHDR_MISSES]
+    add edx, eax
+    test edx, edx
+    jz .graph_res_ew_zero
+    cvtsi2sd xmm0, eax
+    cvtsi2sd xmm1, edx
+    divsd xmm0, xmm1          ; accuracy ratio
+    jmp .graph_res_ew_add
+.graph_res_ew_zero:
+    xorpd xmm0, xmm0
+.graph_res_ew_add:
+    addsd xmm0, [r13 + RHDR_ACTIVATION]
+    addsd xmm0, [r13 + RHDR_PRIME]
+    mulsd xmm0, xmm2          ; weight by similarity
+    ; xmm0 = effective_weight (similarity-weighted)
+
+.graph_compare_best:
     ; Compare with best
     ucomisd xmm0, [rsp + 8]
     jbe .graph_check_runner_up
@@ -1062,8 +1371,16 @@ dispatch_predict:
     mov rax, [rsp + 16]
     mov [rsp + 56], rax               ; runner_up_region = old best_region
 
-    ; Store new best
-    mov eax, [r13 + RHDR_SIZE + 8]    ; predicted token (B8 imm32)
+    ; Store new best - token location differs for exact vs resonant
+    ; Exact: [RHDR_SIZE+8] after JNE offset
+    ; Resonant: [RHDR_SIZE+6] after first MOV EAX
+    cmp byte [r13 + RHDR_SIZE], 0xB8
+    je .graph_store_resonant_token
+    mov eax, [r13 + RHDR_SIZE + 8]    ; exact: predicted token after JNE
+    jmp .graph_store_best
+.graph_store_resonant_token:
+    mov eax, [r13 + RHDR_SIZE + 6]    ; resonant: token from second MOV
+.graph_store_best:
     mov [rsp + 0], eax                ; best_token
     movsd [rsp + 8], xmm0             ; best_weight
     mov [rsp + 16], r13               ; best_region_ptr
@@ -1074,7 +1391,13 @@ dispatch_predict:
     ucomisd xmm0, [rsp + 48]
     jbe .graph_not_best
     ; New runner-up (counterfactual alternative)
-    mov eax, [r13 + RHDR_SIZE + 8]
+    cmp byte [r13 + RHDR_SIZE], 0xB8
+    je .graph_runner_resonant
+    mov eax, [r13 + RHDR_SIZE + 8]    ; exact token
+    jmp .graph_store_runner
+.graph_runner_resonant:
+    mov eax, [r13 + RHDR_SIZE + 6]    ; resonant token
+.graph_store_runner:
     mov [rsp + 40], eax               ; runner_up_token
     movsd [rsp + 48], xmm0            ; runner_up_weight
     mov [rsp + 56], r13               ; runner_up_region
@@ -1132,8 +1455,19 @@ dispatch_predict:
     imul rdi, rdx, RTE_SIZE
     add rdi, r13
     movzx eax, word [rdi + RTE_TYPE]
+
+    ; Check for exact dispatch regions (RTYPE_DISPATCH)
     cmp eax, RTYPE_DISPATCH
-    jne .fallback_skip
+    je .fallback_check_dispatch
+
+    ; Check for resonant regions (RTYPE_RESONANT) - fuzzy matching
+    cmp eax, RTYPE_RESONANT
+    je .fallback_check_resonant
+
+    jmp .fallback_skip
+
+.fallback_check_dispatch:
+    ; Standard exact-match dispatch region
     movzx eax, word [rdi + RTE_FLAGS]
     test eax, RFLAG_CONDEMNED
     jnz .fallback_skip
@@ -1185,9 +1519,63 @@ dispatch_predict:
     mov [rsp + 16 + 0], eax
     movsd [rsp + 16 + 8], xmm0
     mov [rsp + 16 + 16], rsi
+    jmp .fallback_skip
 
-    ; Repair routing: if we came from a dead-end graph, wire it
-    ; (The last graph node should get next_a → this region)
+.fallback_check_resonant:
+    ; --- RESONANT FALLBACK: Fuzzy matching via VSA similarity ---
+    movzx eax, word [rdi + RTE_FLAGS]
+    test eax, RFLAG_CONDEMNED
+    jnz .fallback_skip
+
+    mov rsi, [rdi + RTE_ADDR]
+    inc dword [rbx + STATE_OFFSET + ST_TRACE_CANDIDATES]
+
+    ; Save rsi across call
+    push rsi
+
+    ; Call resonant_match(region_ptr, ctx_hash) → xmm0 = similarity
+    mov rdi, rsi
+    mov esi, r12d
+    call resonant_match
+
+    ; Restore rsi
+    pop rsi
+
+    ; Check if similarity exceeds threshold
+    ucomisd xmm0, [rel resonant_thresh]
+    jbe .fallback_skip
+
+    ; RESONANT MATCH
+    inc dword [rbx + STATE_OFFSET + ST_TRACE_MATCHED]
+
+    ; Save similarity in xmm2
+    movsd xmm2, xmm0
+
+    ; Compute effective_weight with similarity weighting
+    mov eax, [rsi + RHDR_HITS]
+    mov edx, [rsi + RHDR_MISSES]
+    add edx, eax
+    test edx, edx
+    jz .fb_res_ew_zero
+    cvtsi2sd xmm0, eax
+    cvtsi2sd xmm1, edx
+    divsd xmm0, xmm1
+    jmp .fb_res_ew_add
+.fb_res_ew_zero:
+    xorpd xmm0, xmm0
+.fb_res_ew_add:
+    addsd xmm0, [rsi + RHDR_ACTIVATION]
+    addsd xmm0, [rsi + RHDR_PRIME]
+    mulsd xmm0, xmm2          ; weight by similarity
+
+    ; Compare with best
+    ucomisd xmm0, [rsp + 16 + 8]
+    jbe .fallback_skip
+    ; New best resonant match
+    mov eax, [rsi + RHDR_SIZE + 6]    ; token from resonant region
+    mov [rsp + 16 + 0], eax
+    movsd [rsp + 16 + 8], xmm0
+    mov [rsp + 16 + 16], rsi
 
 .fallback_skip:
     pop rdx
@@ -1215,8 +1603,19 @@ dispatch_predict:
     imul rdi, rdx, RTE_SIZE
     add rdi, r13
     movzx eax, word [rdi + RTE_TYPE]
+
+    ; Check for exact dispatch regions (RTYPE_DISPATCH)
     cmp eax, RTYPE_DISPATCH
-    jne .linear_skip
+    je .linear_check_dispatch
+
+    ; Check for resonant regions (RTYPE_RESONANT) - fuzzy matching
+    cmp eax, RTYPE_RESONANT
+    je .linear_check_resonant
+
+    jmp .linear_skip
+
+.linear_check_dispatch:
+    ; Standard exact-match dispatch region
     movzx eax, word [rdi + RTE_FLAGS]
     test eax, RFLAG_CONDEMNED
     jnz .linear_skip
@@ -1263,6 +1662,69 @@ dispatch_predict:
     mov [rsp + 16 + 0], eax
     movsd [rsp + 16 + 8], xmm0
     mov [rsp + 16 + 16], rsi
+    jmp .linear_skip
+
+.linear_check_resonant:
+    ; --- RESONANT DISPATCH: Fuzzy matching via VSA similarity ---
+    ; RTYPE_RESONANT regions use vector similarity instead of exact CMP
+    movzx eax, word [rdi + RTE_FLAGS]
+    test eax, RFLAG_CONDEMNED
+    jnz .linear_skip
+
+    mov rsi, [rdi + RTE_ADDR]
+    inc dword [rbx + STATE_OFFSET + ST_TRACE_CANDIDATES]
+
+    ; Save rsi (region ptr) across call - use stack
+    push rsi
+
+    ; Call resonant_match(region_ptr, ctx_hash) → xmm0 = similarity
+    mov rdi, rsi              ; region_ptr
+    mov esi, r12d             ; ctx_hash
+    call resonant_match
+    ; xmm0 = similarity score [0.0, 1.0]
+
+    ; Restore rsi
+    pop rsi
+
+    ; Check if similarity exceeds resonant threshold (0.7)
+    ucomisd xmm0, [rel resonant_thresh]
+    jbe .linear_skip          ; below threshold, no match
+
+    ; RESONANT MATCH: similarity > threshold
+    inc dword [rbx + STATE_OFFSET + ST_TRACE_MATCHED]
+
+    ; Compute effective_weight = similarity * (accuracy + activation + prime)
+    ; First, save similarity in xmm2
+    movsd xmm2, xmm0
+
+    ; Compute accuracy
+    mov eax, [rsi + RHDR_HITS]
+    mov edx, [rsi + RHDR_MISSES]
+    add edx, eax
+    test edx, edx
+    jz .res_ew_zero
+    cvtsi2sd xmm0, eax
+    cvtsi2sd xmm1, edx
+    divsd xmm0, xmm1          ; accuracy
+    jmp .res_ew_add
+.res_ew_zero:
+    xorpd xmm0, xmm0
+.res_ew_add:
+    addsd xmm0, [rsi + RHDR_ACTIVATION]
+    addsd xmm0, [rsi + RHDR_PRIME]
+    ; Multiply by similarity score (weigh by how fuzzy the match is)
+    mulsd xmm0, xmm2          ; effective_weight = (acc + act + prime) * similarity
+
+    ; Compare with current best
+    ucomisd xmm0, [rsp + 16 + 8]
+    jbe .linear_skip
+
+    ; New best - extract predicted token from resonant region
+    ; Resonant layout: [+0] MOV EAX, ctx_hash; [+5] MOV EAX, token_id; [+10] RET
+    mov eax, [rsi + RHDR_SIZE + 6]    ; token_id (from second MOV instruction)
+    mov [rsp + 16 + 0], eax           ; best_token
+    movsd [rsp + 16 + 8], xmm0        ; best_weight
+    mov [rsp + 16 + 16], rsi          ; best_region_ptr
 
 .linear_skip:
     pop rdx

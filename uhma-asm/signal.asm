@@ -11,6 +11,13 @@ section .data
     max_consec:     equ 3             ; max consecutive faults before forced return
     fault_recover_msg: db "[FAULT] Recovery — returning to REPL", 10, 0
 
+    ; Self-debugger messages
+    trap_msg:       db "[TRAP] Breakpoint at RIP=0x", 0
+    trap_rax_msg:   db " RAX=0x", 0
+    trap_ctx_msg:   db " CTX=0x", 0
+    trap_learn_msg: db " → Learning event", 10, 0
+    trap_mismatch:  db " MISMATCH expected=0x", 0
+
 section .bss
     global fault_safe_rsp
     fault_safe_rsp: resq 1            ; saved RSP for crash recovery
@@ -93,6 +100,14 @@ install_fault_handlers:
     mov rax, SYS_RT_SIGACTION
     syscall
 
+    ; Install for SIGTRAP (INT 3 breakpoints — self-debugger)
+    mov edi, SIGTRAP
+    lea rsi, [rsp]
+    xor edx, edx
+    mov r10, 8
+    mov rax, SYS_RT_SIGACTION
+    syscall
+
     add rsp, 152
     pop rbx
     ret
@@ -156,6 +171,10 @@ fault_handler:
     ; Special case: SIGPIPE = stdout closed, exit cleanly
     cmp ebx, SIGPIPE
     je .exit_clean
+
+    ; Special case: SIGTRAP = INT 3 breakpoint (self-debugger)
+    cmp ebx, SIGTRAP
+    je .handle_trap
 
     ; Recovery strategy based on fault location
     mov rax, [r12 + 168]      ; faulting RIP
@@ -261,6 +280,82 @@ fault_handler:
 .set_rip:
     mov [r12 + 168], rax      ; update RIP in ucontext
 
+.handle_trap:
+    ; --- SIGTRAP: INT 3 breakpoint hit (Self-Debugger) ---
+    ; This is a LEARNING EVENT, not a crash!
+    ; RIP points to instruction AFTER INT 3 (which was 1 byte)
+    mov r13, [r12 + 168]      ; RIP after INT 3
+    dec r13                   ; back up to INT 3 location
+    mov r14, [r12 + 144]      ; RAX value at breakpoint
+
+    ; Print trap message
+    lea rdi, [rel trap_msg]
+    call print_cstr
+    mov rdi, r13
+    call print_hex64
+    lea rdi, [rel trap_rax_msg]
+    call print_cstr
+    mov rdi, r14
+    call print_hex64
+
+    ; Increment trap hit counter
+    mov rax, SURFACE_BASE
+    inc dword [rax + STATE_OFFSET + ST_BP_TOTAL_HITS]
+
+    ; Look up breakpoint in table
+    mov rdi, r13              ; breakpoint address
+    call bp_find_by_addr
+    test rax, rax
+    jz .trap_unknown          ; not in our table
+
+    ; Found breakpoint entry in rax
+    mov r15, rax              ; save entry ptr
+
+    ; Increment trigger count
+    inc word [r15 + BPE_TRIGGER_COUNT]
+
+    ; Store actual RAX value
+    mov [r15 + BPE_LAST_RAX], r14d
+
+    ; Check for mismatch with expected value
+    mov ecx, [r15 + BPE_EXPECTED_RAX]
+    cmp ecx, r14d
+    je .trap_match
+
+    ; MISMATCH: This is where we learn!
+    lea rdi, [rel trap_mismatch]
+    call print_cstr
+    mov edi, ecx
+    call print_hex64
+
+    ; Generate learning event
+    mov rax, SURFACE_BASE
+    inc dword [rax + STATE_OFFSET + ST_BP_LEARNING_EVENTS]
+
+    ; Mark breakpoint as learning
+    or word [r15 + BPE_FLAGS], BPFLAG_LEARNING
+
+.trap_match:
+    lea rdi, [rel trap_learn_msg]
+    call print_cstr
+
+    ; Restore original byte and continue execution
+    movzx eax, byte [r15 + BPE_ORIG_BYTE]
+    mov [r13], al             ; restore original instruction byte
+
+    ; RIP already points past INT 3, but we restored the original byte
+    ; at the INT 3 location, so we need to re-execute that instruction
+    mov [r12 + 168], r13      ; set RIP back to the restored instruction
+
+    jmp .handler_done
+
+.trap_unknown:
+    ; Unknown breakpoint — just skip past it
+    lea rdi, [rel trap_learn_msg]
+    call print_cstr
+    ; RIP already points past INT 3, so we can just continue
+    jmp .handler_done
+
 .exit_clean:
     ; SIGPIPE or fatal — exit process cleanly
     mov edi, 0
@@ -299,4 +394,311 @@ sig_restorer:
 global get_fault_count
 get_fault_count:
     mov rax, [rel fault_count]
+    ret
+
+;; ============================================================
+;; Self-Debugger: Breakpoint Management Functions
+;; ============================================================
+
+;; ============================================================
+;; bp_init()
+;; Initialize breakpoint table to zero.
+;; ============================================================
+global bp_init
+bp_init:
+    mov rdi, SURFACE_BASE + BREAKPOINT_TABLE_OFFSET
+    xor eax, eax
+    mov ecx, BREAKPOINT_TABLE_SIZE / 8
+.bp_init_loop:
+    mov [rdi], rax
+    add rdi, 8
+    dec ecx
+    jnz .bp_init_loop
+    ; Clear state counters
+    mov rax, SURFACE_BASE
+    mov dword [rax + STATE_OFFSET + ST_BREAKPOINT_COUNT], 0
+    mov dword [rax + STATE_OFFSET + ST_BP_TOTAL_HITS], 0
+    mov dword [rax + STATE_OFFSET + ST_BP_LEARNING_EVENTS], 0
+    ret
+
+;; ============================================================
+;; bp_find_by_addr(addr) → rax (entry ptr or 0)
+;; rdi = code address where INT 3 was hit
+;; Returns pointer to breakpoint entry, or 0 if not found.
+;; ============================================================
+global bp_find_by_addr
+bp_find_by_addr:
+    mov rsi, SURFACE_BASE + BREAKPOINT_TABLE_OFFSET
+    xor ecx, ecx             ; index
+
+.bp_find_loop:
+    cmp ecx, BREAKPOINT_MAX
+    jge .bp_find_not_found
+
+    ; Check if entry is active
+    mov eax, [rsi + BPE_FLAGS]
+    test eax, BPFLAG_ACTIVE
+    jz .bp_find_next
+
+    ; Calculate breakpoint address: region_ptr + RHDR_SIZE + code_offset
+    mov rax, [rsi + BPE_REGION_PTR]
+    add rax, RHDR_SIZE
+    mov edx, [rsi + BPE_CODE_OFFSET]
+    add rax, rdx
+
+    ; Compare with target address
+    cmp rax, rdi
+    je .bp_find_found
+
+.bp_find_next:
+    add rsi, BREAKPOINT_ENTRY_SIZE
+    inc ecx
+    jmp .bp_find_loop
+
+.bp_find_found:
+    mov rax, rsi
+    ret
+
+.bp_find_not_found:
+    xor eax, eax
+    ret
+
+;; ============================================================
+;; bp_inject(region_ptr, code_offset, bp_type, expected_rax) → eax (1=success, 0=fail)
+;; rdi = region header pointer
+;; esi = offset into region code (after RHDR_SIZE)
+;; edx = breakpoint type (BPTYPE_*)
+;; ecx = expected RAX value at this point
+;; Injects INT 3 (0xCC) at the specified location.
+;; ============================================================
+global bp_inject
+bp_inject:
+    push rbx
+    push r12
+    push r13
+    push r14
+
+    mov r12, rdi              ; region_ptr
+    mov r13d, esi             ; code_offset
+    mov r14d, edx             ; bp_type
+    mov ebx, ecx              ; expected_rax
+
+    ; Find empty slot in breakpoint table
+    mov rdi, SURFACE_BASE + BREAKPOINT_TABLE_OFFSET
+    xor ecx, ecx
+
+.bp_inject_find:
+    cmp ecx, BREAKPOINT_MAX
+    jge .bp_inject_full
+
+    mov eax, [rdi + BPE_FLAGS]
+    test eax, BPFLAG_ACTIVE
+    jz .bp_inject_slot_found
+
+    add rdi, BREAKPOINT_ENTRY_SIZE
+    inc ecx
+    jmp .bp_inject_find
+
+.bp_inject_slot_found:
+    ; rdi = empty slot
+    ; Calculate actual code address
+    lea rax, [r12 + RHDR_SIZE]
+    add rax, r13              ; rax = code address
+
+    ; Save original byte
+    movzx edx, byte [rax]
+    mov [rdi + BPE_ORIG_BYTE], dl
+
+    ; Fill in breakpoint entry
+    mov [rdi + BPE_REGION_PTR], r12
+    mov [rdi + BPE_CODE_OFFSET], r13d
+    mov [rdi + BPE_TYPE], r14b
+    mov word [rdi + BPE_TRIGGER_COUNT], 0
+    mov [rdi + BPE_EXPECTED_RAX], ebx
+    ; Get current context hash for expected_ctx
+    mov rax, SURFACE_BASE
+    mov edx, [rax + STATE_OFFSET + ST_CTX_HASH]
+    mov [rdi + BPE_EXPECTED_CTX], edx
+    mov dword [rdi + BPE_LAST_RAX], 0
+    mov dword [rdi + BPE_FLAGS], BPFLAG_ACTIVE
+
+    ; Inject INT 3 (0xCC)
+    lea rax, [r12 + RHDR_SIZE]
+    add rax, r13
+    mov byte [rax], 0xCC
+
+    ; Increment breakpoint count
+    mov rax, SURFACE_BASE
+    inc dword [rax + STATE_OFFSET + ST_BREAKPOINT_COUNT]
+
+    mov eax, 1                ; success
+    jmp .bp_inject_done
+
+.bp_inject_full:
+    xor eax, eax              ; failure
+
+.bp_inject_done:
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; bp_remove(region_ptr) → eax (1=removed, 0=not found)
+;; rdi = region header pointer
+;; Removes all breakpoints for this region and restores original bytes.
+;; ============================================================
+global bp_remove
+bp_remove:
+    push rbx
+    push r12
+
+    mov r12, rdi              ; region_ptr
+    xor ebx, ebx              ; removed count
+
+    mov rsi, SURFACE_BASE + BREAKPOINT_TABLE_OFFSET
+    xor ecx, ecx
+
+.bp_remove_loop:
+    cmp ecx, BREAKPOINT_MAX
+    jge .bp_remove_done
+
+    ; Check if entry is active and matches region
+    mov eax, [rsi + BPE_FLAGS]
+    test eax, BPFLAG_ACTIVE
+    jz .bp_remove_next
+
+    cmp [rsi + BPE_REGION_PTR], r12
+    jne .bp_remove_next
+
+    ; Found matching entry — restore original byte
+    lea rax, [r12 + RHDR_SIZE]
+    mov edx, [rsi + BPE_CODE_OFFSET]
+    add rax, rdx
+    movzx edx, byte [rsi + BPE_ORIG_BYTE]
+    mov [rax], dl
+
+    ; Clear entry
+    mov dword [rsi + BPE_FLAGS], 0
+    mov qword [rsi + BPE_REGION_PTR], 0
+
+    ; Decrement breakpoint count
+    mov rax, SURFACE_BASE
+    dec dword [rax + STATE_OFFSET + ST_BREAKPOINT_COUNT]
+
+    inc ebx
+
+.bp_remove_next:
+    add rsi, BREAKPOINT_ENTRY_SIZE
+    inc ecx
+    jmp .bp_remove_loop
+
+.bp_remove_done:
+    mov eax, ebx
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; bp_inject_struggling(region_ptr) → eax (1=injected, 0=already has bp or fail)
+;; rdi = region header pointer
+;; Injects breakpoints at key decision points in a "struggling" region.
+;; A struggling region has high miss rate but has received significant traffic.
+;; ============================================================
+global bp_inject_struggling
+bp_inject_struggling:
+    push rbx
+    push r12
+    push r13
+
+    mov r12, rdi              ; region_ptr
+
+    ; Check if region already has breakpoints
+    mov rdi, r12
+    call bp_has_breakpoints
+    test eax, eax
+    jnz .bp_struggling_skip   ; already has breakpoints
+
+    ; Get region code length
+    movzx eax, word [r12 + RHDR_CODE_LEN]
+    cmp eax, 5                ; need at least 5 bytes for meaningful bp
+    jl .bp_struggling_skip
+
+    ; Inject at entry (offset 0) — see context hash in RAX before CMP
+    mov rdi, r12
+    xor esi, esi              ; offset 0
+    mov edx, BPTYPE_STRUGGLING
+    ; Expected RAX is the context we're checking for
+    ; Read it from the CMP instruction if present
+    lea rax, [r12 + RHDR_SIZE]
+    cmp byte [rax], 0x3D      ; CMP EAX, imm32?
+    jne .bp_struggling_no_cmp
+    mov ecx, [rax + 1]        ; the immediate value
+    jmp .bp_struggling_inject
+
+.bp_struggling_no_cmp:
+    xor ecx, ecx              ; unknown expected value
+
+.bp_struggling_inject:
+    call bp_inject
+    mov r13d, eax             ; save result
+
+    ; If first bp succeeded, also inject at decision point (after CMP, offset 5)
+    test r13d, r13d
+    jz .bp_struggling_done
+
+    movzx eax, word [r12 + RHDR_CODE_LEN]
+    cmp eax, 7                ; need space for second bp
+    jl .bp_struggling_done
+
+    mov rdi, r12
+    mov esi, 5                ; after CMP EAX, imm32
+    mov edx, BPTYPE_DECISION
+    xor ecx, ecx              ; no specific expected value
+    call bp_inject
+
+    mov eax, 1
+    jmp .bp_struggling_done
+
+.bp_struggling_skip:
+    xor eax, eax
+
+.bp_struggling_done:
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; bp_has_breakpoints(region_ptr) → eax (1=has bp, 0=no bp)
+;; rdi = region header pointer
+;; ============================================================
+global bp_has_breakpoints
+bp_has_breakpoints:
+    mov rsi, SURFACE_BASE + BREAKPOINT_TABLE_OFFSET
+    xor ecx, ecx
+
+.bp_has_loop:
+    cmp ecx, BREAKPOINT_MAX
+    jge .bp_has_no
+
+    mov eax, [rsi + BPE_FLAGS]
+    test eax, BPFLAG_ACTIVE
+    jz .bp_has_next
+
+    cmp [rsi + BPE_REGION_PTR], rdi
+    je .bp_has_yes
+
+.bp_has_next:
+    add rsi, BREAKPOINT_ENTRY_SIZE
+    inc ecx
+    jmp .bp_has_loop
+
+.bp_has_yes:
+    mov eax, 1
+    ret
+
+.bp_has_no:
+    xor eax, eax
     ret
