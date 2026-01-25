@@ -37,6 +37,7 @@ extern fire_hook
 extern holo_store
 extern vocab_register
 extern region_merge_pass
+extern journey_step
 
 ;; ============================================================
 ;; learn_pattern(ctx_hash, token_id)
@@ -52,8 +53,15 @@ learn_pattern:
 
     mov r12d, edi             ; ctx_hash (lower 32)
     mov r13d, esi             ; token_id
-
     mov rbx, SURFACE_BASE
+
+    ; JOURNEY: record learn_pattern
+    push r12
+    push r13
+    mov edi, TRACE_LEARN_PATTERN
+    call journey_step
+    pop r13
+    pop r12
 
     ; ALWAYS store holographically (never fails, interference just gets denser)
     mov edi, r12d             ; ctx_hash
@@ -180,8 +188,16 @@ find_existing_pattern:
 
     mov r12d, edi             ; ctx_hash
     mov r13d, esi             ; token_id
-
     mov rbx, SURFACE_BASE
+
+    ; JOURNEY: record find_existing_pattern
+    push r12
+    push r13
+    mov edi, TRACE_FIND_EXISTING_PATTERN
+    call journey_step
+    pop r13
+    pop r12
+
     lea rax, [rbx + REGION_TABLE_OFFSET]
     push rax                  ; save table base
     lea rax, [rbx + STATE_OFFSET + ST_REGION_COUNT]

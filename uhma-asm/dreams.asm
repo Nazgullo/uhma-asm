@@ -20,6 +20,8 @@ extern find_existing_pattern
 extern emit_dispatch_pattern
 extern fire_hook
 extern gate_test_modification
+extern journey_step
+extern sym_scan_for_discoveries
 
 ;; ============================================================
 ;; dream_cycle
@@ -39,6 +41,10 @@ dream_cycle:
     push r15
 
     mov rbx, SURFACE_BASE
+
+    ; JOURNEY: record dream_cycle
+    mov edi, TRACE_DREAM_CYCLE
+    call journey_step
 
     ; Fire dream start hook
     mov edi, HOOK_ON_DREAM_START
@@ -105,7 +111,7 @@ dream_cycle:
     lea rax, [rbx + STATE_OFFSET + ST_REGION_COUNT]
     mov eax, [rax]
     cmp eax, REGION_TABLE_MAX - 8  ; leave room
-    jge .dream_done            ; table full, stop dreaming
+    jge .table_full            ; table full, stop dreaming
 
     ; Emit speculative pattern
     ; Recover context and token from miss entry
@@ -143,6 +149,11 @@ dream_cycle:
     inc r14d
     cmp r15d, DREAM_REPLAY_COUNT / 2   ; limit emissions per cycle
     jl .replay_loop
+    jmp .dream_done
+
+.table_full:
+    ; Stack has loop r14 on top - pop it before exiting
+    pop r14
 
 .dream_done:
     ; --- Schema extraction pass ---
@@ -160,6 +171,9 @@ dream_cycle:
     movzx rdi, r15w
     call print_u64
     call print_newline
+
+    ; Scan for emergent patterns (things that work despite looking wrong)
+    call sym_scan_for_discoveries
 
     ; Fire dream end hook
     mov edi, HOOK_ON_DREAM_END

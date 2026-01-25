@@ -51,6 +51,7 @@ extern decay_anticipatory
 extern update_oscillation
 extern update_presence_dispatch
 extern introspect_scan_regions
+extern journey_step
 
 ;; ============================================================
 ;; dispatch_init
@@ -335,6 +336,21 @@ process_token:
 
     mov r12d, edi             ; save token_id
     mov rbx, SURFACE_BASE
+
+    ; Store current token for journey tracing
+    mov [rbx + STATE_OFFSET + ST_CURRENT_TOKEN], r12d
+
+    ; Check if we should start tracing this token (0xFFFFFFFF = trace next)
+    cmp dword [rbx + STATE_OFFSET + ST_JOURNEY_TOKEN], 0xFFFFFFFF
+    jne .no_start_journey
+    ; Start tracing this token
+    mov [rbx + STATE_OFFSET + ST_JOURNEY_TOKEN], r12d
+    mov dword [rbx + STATE_OFFSET + ST_JOURNEY_POS], 0
+.no_start_journey:
+
+    ; JOURNEY: record this token passing through process_token
+    mov edi, TRACE_PROCESS_TOKEN
+    call journey_step
 
     ; --- Novelty tracking: bloom filter for unique token detection ---
     ; Hash token to 3 bloom positions, check if ALL set (seen before)
@@ -813,6 +829,10 @@ dispatch_predict:
     mov r12d, edi             ; context hash (lower 32 bits)
     mov [rsp + 36], edi       ; save copy
     mov rbx, SURFACE_BASE
+
+    ; JOURNEY: record dispatch_predict
+    mov edi, TRACE_DISPATCH_PREDICT
+    call journey_step
 
     ; --- Metabolic cost: prediction attempt costs energy ---
     mov rax, ENERGY_PREDICT_COST

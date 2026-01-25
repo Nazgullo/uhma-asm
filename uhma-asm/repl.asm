@@ -21,9 +21,11 @@ section .data
                     db "  save <file>   Save surface to file", 10
                     db "  load <file>   Restore surface from file", 10
                     db "  reset         Reset counters (not knowledge)", 10
+                    db "  trace         Toggle debug tracing on/off", 10
                     db "  quit          Exit", 10
                     db "  <text>        Process as token sequence", 10, 0
     bye_str:        db "Surface frozen. Goodbye.", 10, 0
+    trace_next_msg: db "[JOURNEY] Will trace next token. Type text to trace, 'trace' to show.", 10, 0
     unknown_str:    db "Unknown command. Type 'help'.", 10, 0
     status_hdr:     db "--- Status ---", 10, 0
     regions_lbl:    db "Regions: ", 0
@@ -63,6 +65,9 @@ extern holo_dot_f64
 extern holo_magnitude_f64
 extern fault_safe_rsp
 extern fault_safe_rip
+extern journey_start
+extern journey_stop
+extern journey_dump
 
 ;; ============================================================
 ;; repl_run
@@ -282,6 +287,21 @@ repl_run:
     jmp .cmd_self
 .not_self:
 
+    ; "trace" (toggle tracing on/off)
+    cmp dword [rbx], 'trac'
+    jne .not_trace
+    cmp byte [rbx + 4], 'e'
+    jne .not_trace
+    movzx eax, byte [rbx + 5]
+    test eax, eax
+    jz .cmd_trace
+    cmp eax, ' '
+    je .cmd_trace
+    cmp eax, 10
+    je .cmd_trace
+    jmp .not_trace
+.not_trace:
+
     ; Not a command → process as text input
     ; Compute string length (rbx is null-terminated)
     mov rdi, rbx
@@ -351,6 +371,22 @@ repl_run:
 
 .cmd_self:
     call repl_show_self
+    jmp .loop
+
+.cmd_trace:
+    ; Toggle journey: if tracing, show journey and stop. If not, trace next token.
+    mov rax, SURFACE_BASE
+    cmp dword [rax + STATE_OFFSET + ST_JOURNEY_TOKEN], 0
+    je .trace_next
+    ; Currently tracing - dump and stop
+    call journey_dump
+    call journey_stop
+    jmp .loop
+.trace_next:
+    ; Set flag to trace next token (0xFFFFFFFF means "trace next")
+    mov dword [rax + STATE_OFFSET + ST_JOURNEY_TOKEN], 0xFFFFFFFF
+    lea rdi, [rel trace_next_msg]
+    call print_cstr
     jmp .loop
 
 .quit:
@@ -979,6 +1015,7 @@ print_flags:
 ;; repl_reset_counters
 ;; ============================================================
 repl_reset_counters:
+    push rbx
     mov rbx, SURFACE_BASE
     ; Reset global step
     lea rax, [rbx + STATE_OFFSET + ST_GLOBAL_STEP]
@@ -989,6 +1026,7 @@ repl_reset_counters:
     ; Reset miss pos
     lea rax, [rbx + STATE_OFFSET + ST_MISS_POS]
     mov qword [rax], 0
+    pop rbx
     ret
 
 ;; ============================================================

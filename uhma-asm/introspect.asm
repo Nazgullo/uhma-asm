@@ -48,6 +48,7 @@ extern observe_cycle
 extern evolve_cycle
 extern fire_hook
 extern drives_check
+extern journey_step
 
 ;; ============================================================
 ;; introspect_region(region_ptr) → fills cache entry
@@ -478,6 +479,10 @@ update_organic_pressure:
 
     mov rbx, SURFACE_BASE
     lea r12, [rbx + STATE_OFFSET]
+
+    ; JOURNEY: record update_organic_pressure
+    mov edi, TRACE_UPDATE_ORGANIC
+    call journey_step
 
     ; --- Update miss pressure (EMA of recent miss rate) ---
     ; miss_pressure = alpha * (was_miss ? 1.0 : 0.0) + (1-alpha) * miss_pressure

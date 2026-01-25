@@ -17,6 +17,8 @@ extern print_newline
 extern region_alloc
 extern fire_hook
 extern wire_new_region
+extern journey_step
+extern sym_observe_mod
 
 ;; ============================================================
 ;; emit_dispatch_pattern(ctx_hash_32, token_id, birth_step)
@@ -44,12 +46,29 @@ emit_dispatch_pattern:
     mov r13d, esi             ; token_id
     mov r14d, edx             ; birth_step
 
+    ; JOURNEY: record emit_dispatch_pattern
+    push r12
+    push r13
+    mov edi, TRACE_EMIT_DISPATCH_PATTERN
+    call journey_step
+    pop r13
+    pop r12
+
     ; Allocate region: 17 bytes of code
     mov rdi, 17               ; code size
     mov rsi, RTYPE_DISPATCH   ; type
     mov edx, r14d             ; birth step
     call region_alloc
     mov rbx, rax              ; header ptr
+
+    ; Symbolic observation: log this modification
+    lea rdi, [rbx + RHDR_SIZE]  ; code address
+    mov rsi, 17                  ; size
+    xor edx, edx                 ; type 0 = emit
+    mov rcx, SURFACE_BASE
+    mov ecx, [rcx + STATE_OFFSET + ST_GLOBAL_STEP]
+    call sym_observe_mod
+    ; Note: we proceed even if blocked - observer, not gatekeeper
 
     ; Now write the code at rbx + RHDR_SIZE
     lea rdi, [rbx + RHDR_SIZE]

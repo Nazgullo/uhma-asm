@@ -4,6 +4,8 @@
 
 section .text
 
+extern journey_step
+
 ;; ============================================================
 ;; fire_hook(hook_id, arg)
 ;; edi=hook_id (0-21), esi=argument (context-dependent)
@@ -19,6 +21,14 @@ fire_hook:
 
     mov r12d, edi             ; hook_id
     mov r13d, esi             ; arg
+
+    ; JOURNEY: record fire_hook
+    push r12
+    push r13
+    mov edi, TRACE_FIRE_HOOK
+    call journey_step
+    pop r13
+    pop r12
 
     ; Validate hook_id
     cmp r12d, NUM_HOOKS
@@ -53,15 +63,15 @@ fire_hook:
     test rdx, rdx
     jz .skip_handler
 
-    ; Safety: validate handler is not in surface region (detect corruption)
-    mov r8, SURFACE_BASE
+    ; Safety: validate handler is in valid .text section
+    ; Valid code range: 0x401000 - 0x408000 (program's .text)
+    ; Reject: NULL, data sections (.bss/.data), surface region
+    mov r8, 0x401000
     cmp rdx, r8
-    jb .call_safe                   ; below surface = safe
-    lea r8, [r8 + SURFACE_SIZE]
+    jb .skip_handler                ; below .text = invalid (NULL, etc)
+    mov r8, 0x408000
     cmp rdx, r8
-    jae .call_safe                  ; above surface = safe
-    ; Handler points into surface — corruption detected, skip it
-    jmp .skip_handler
+    jae .skip_handler               ; above .text = invalid (data section, surface, etc)
 
 .call_safe:
     ; Call handler(hook_id, arg)

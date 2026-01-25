@@ -26,6 +26,7 @@ extern print_u64
 extern print_hex64
 extern print_newline
 extern sys_sigaction
+extern journey_dump
 
 ;; ============================================================
 ;; install_fault_handlers
@@ -148,6 +149,9 @@ fault_handler:
     mov rdi, [r12 + 168]
     call print_hex64
     call print_newline
+
+    ; Dump trace buffer (shows execution path leading to fault)
+    call journey_dump
 
     ; Special case: SIGPIPE = stdout closed, exit cleanly
     cmp ebx, SIGPIPE

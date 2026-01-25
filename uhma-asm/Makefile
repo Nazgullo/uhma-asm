@@ -7,7 +7,8 @@ TARGET = uhma
 SRCS = boot.asm io.asm format.asm signal.asm surface.asm repl.asm \
        vsa.asm dispatch.asm emit.asm learn.asm hooks.asm \
        observe.asm modify.asm gate.asm decode.asm drives.asm \
-       evolve.asm dreams.asm persist.asm introspect.asm
+       evolve.asm dreams.asm persist.asm introspect.asm trace.asm \
+       symbolic.asm
 
 OBJS = $(SRCS:.asm=.o)
 

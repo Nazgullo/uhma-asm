@@ -21,6 +21,8 @@ extern emit_dispatch_pattern
 extern fire_hook
 extern sys_getrandom
 extern gate_test_modification
+extern sym_observe_mod
+extern sym_record_anomaly
 
 ;; ============================================================
 ;; evolve_cycle

@@ -397,6 +397,137 @@
 %define ST_BASE_STUCK       (ST_BASE_LEARNING + 4)        ; f32 accumulated stuck signal
 
 ;; ============================================================
+;; Debug Trace Buffer (togglable, ring buffer for crash analysis)
+;; ============================================================
+; Each entry: loc_id:u32 + rdi:u64 + rsi:u64 + rdx:u64 + rax:u64 = 36 bytes, pad to 40
+%define ST_DEBUG_ENABLED    (ST_BASE_STUCK + 4)           ; u32 (0=off, 1=on)
+%define ST_DEBUG_POS        (ST_DEBUG_ENABLED + 4)        ; u32 ring position
+%define ST_DEBUG_TRACE      (ST_DEBUG_POS + 4)            ; trace entries start here
+%define ST_DEBUG_ENTRY_SIZE 40                            ; bytes per entry
+%define ST_DEBUG_TRACE_CAP  64                            ; number of entries
+%define ST_DEBUG_TRACE_END  (ST_DEBUG_TRACE + ST_DEBUG_ENTRY_SIZE * ST_DEBUG_TRACE_CAP)
+
+; Token Journey Tracing - the token records its own path
+%define ST_JOURNEY_TOKEN    ST_DEBUG_TRACE_END            ; u32 token being traced (0=none)
+%define ST_JOURNEY_POS      (ST_JOURNEY_TOKEN + 4)        ; u32 position in journey
+%define ST_JOURNEY_BUF      (ST_JOURNEY_POS + 4)          ; journey entries: u16 func_id + u16 extra
+%define ST_JOURNEY_CAP      256                           ; max steps in journey
+%define ST_JOURNEY_ENTRY    4                             ; bytes per step
+%define ST_JOURNEY_END      (ST_JOURNEY_BUF + ST_JOURNEY_CAP * ST_JOURNEY_ENTRY)
+%define ST_CURRENT_TOKEN    ST_JOURNEY_END                ; u32 token currently being processed
+
+; Location IDs for tracing - comprehensive coverage
+; Format: TRACE_<module>_<function> = base, entry=base, exit=base+1
+; Each function gets 2 IDs: entry and exit
+
+; === io.asm (100-149) ===
+%define TRACE_IO_WRITE_STDOUT       100
+%define TRACE_IO_READ_STDIN         102
+
+; === surface.asm (150-199) ===
+%define TRACE_SURFACE_INIT          150
+%define TRACE_REGION_ALLOC          152
+%define TRACE_REGION_CONDEMN        154
+%define TRACE_REGION_COMPACT        156
+%define TRACE_REGION_MERGE_PASS     158
+
+; === signal.asm (200-249) ===
+%define TRACE_FAULT_HANDLER         200
+%define TRACE_FAULT_RETURN_STUB     202
+
+; === repl.asm (250-299) ===
+%define TRACE_REPL_RUN              250
+%define TRACE_REPL_LOOP             252
+
+; === vsa.asm (300-399) ===
+%define TRACE_VSA_INIT_RANDOM       300
+%define TRACE_VSA_DOT               302
+%define TRACE_VSA_BIND              304
+%define TRACE_VSA_SUPERPOSE         306
+%define TRACE_HOLO_STORE            308
+%define TRACE_HOLO_PREDICT          310
+%define TRACE_VOCAB_REGISTER        312
+
+; === dispatch.asm (400-499) ===
+%define TRACE_DISPATCH_INIT         400
+%define TRACE_PROCESS_INPUT         402
+%define TRACE_TOKENIZE_WORD         404
+%define TRACE_PROCESS_TOKEN         406
+%define TRACE_DISPATCH_PREDICT      408
+%define TRACE_SPREAD_ACTIVATION     410
+%define TRACE_DECAY_ALL_REGIONS     412
+%define TRACE_RECORD_FIRE           414
+%define TRACE_FIND_REGION_INDEX     416
+
+; === emit.asm (500-549) ===
+%define TRACE_EMIT_DISPATCH_PATTERN 500
+%define TRACE_EMIT_NOP_SLED         502
+%define TRACE_EMIT_RET              504
+
+; === learn.asm (550-599) ===
+%define TRACE_LEARN_PATTERN         550
+%define TRACE_FIND_EXISTING_PATTERN 552
+%define TRACE_STRENGTHEN_REGION     554
+%define TRACE_WEAKEN_REGION         556
+%define TRACE_WIRE_NEW_REGION       558
+%define TRACE_LEARN_CONNECTIONS     560
+
+; === hooks.asm (600-649) ===
+%define TRACE_FIRE_HOOK             600
+%define TRACE_FIRE_HOOK_CALL        602
+%define TRACE_HOOK_REGISTER         604
+%define TRACE_HOOK_UNREGISTER       606
+
+; === observe.asm (650-699) ===
+%define TRACE_OBSERVE_CYCLE         650
+%define TRACE_PRESENCE_SHOW         652
+%define TRACE_DECAY_CONN_WEIGHTS    654
+%define TRACE_REPAIR_ROUTING        656
+
+; === modify.asm (700-749) ===
+%define TRACE_MODIFY_PRUNE          700
+%define TRACE_MODIFY_PROMOTE        702
+%define TRACE_MODIFY_SPECIALIZE     704
+%define TRACE_MODIFY_GENERALIZE     706
+%define TRACE_LOG_CAUSAL            708
+
+; === gate.asm (750-799) ===
+%define TRACE_GATE_TEST_MOD         750
+%define TRACE_GATE_CHECK_REGION     752
+
+; === decode.asm (800-849) ===
+%define TRACE_DECODE_INSTR_LEN      800
+%define TRACE_DECODE_REGION_INSTR   802
+
+; === drives.asm (850-899) ===
+%define TRACE_DRIVES_CHECK          850
+%define TRACE_DRIVES_SHOW           852
+
+; === evolve.asm (900-949) ===
+%define TRACE_EVOLVE_CYCLE          900
+%define TRACE_EVOLVE_REPRODUCE      902
+%define TRACE_EVOLVE_MUTATE         904
+%define TRACE_EVOLVE_CROSSOVER      906
+
+; === dreams.asm (950-999) ===
+%define TRACE_DREAM_CYCLE           950
+%define TRACE_DREAM_CONSOLIDATE     952
+%define TRACE_DREAM_EXTRACT_SCHEMAS 954
+
+; === persist.asm (1000-1049) ===
+%define TRACE_PERSIST_SAVE          1000
+%define TRACE_PERSIST_LOAD          1002
+
+; === introspect.asm (1050-1099) ===
+%define TRACE_INTROSPECT_REGION     1050
+%define TRACE_INTROSPECT_SCAN       1052
+%define TRACE_UPDATE_ANTICIPATORY   1054
+%define TRACE_DECAY_ANTICIPATORY    1056
+%define TRACE_UPDATE_ORGANIC        1058
+%define TRACE_UPDATE_OSCILLATION    1060
+%define TRACE_UPDATE_PRES_DISPATCH  1062
+
+;; ============================================================
 ;; Graph Dynamics Tuning Constants
 ;; ============================================================
 

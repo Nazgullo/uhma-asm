@@ -5,6 +5,7 @@
 section .text
 
 extern sys_mmap
+extern sym_init
 
 ;; ============================================================
 ;; surface_init
@@ -86,6 +87,11 @@ surface_init:
     mov dword [rbx + STATE_OFFSET + ST_VOCAB_TOP_DIRTY], 0
     mov qword [rbx + STATE_OFFSET + ST_HOLO_PREDICT_SUM], 0  ; f64
     mov dword [rbx + STATE_OFFSET + ST_HOLO_PREDICT_N], 0
+
+    ; Initialize symbolic observation system
+    push rbx
+    call sym_init
+    pop rbx
 
     mov rax, rbx              ; return surface base
     pop r12
