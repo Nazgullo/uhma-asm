@@ -19,9 +19,11 @@ section .data
     half_point_o:   dq 0.5
     activ_thresh:   dq 0.1
 
-    ; Holographic threshold (f64) - set high to prefer graph dispatch
+    ; Holographic threshold (f64) - confidence required to use holographic prediction
+    ; VSA element-wise binding produces ~0.7-0.8 confidence for exact matches
+    ; Set at 0.5 to allow holographic predictions while filtering noise
     align 8
-    holo_thresh:    dq 0.95
+    holo_thresh:    dq 0.5
 
 section .bss
     word_buf:       resb MAX_WORD_LEN
