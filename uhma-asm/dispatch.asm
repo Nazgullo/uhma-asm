@@ -9,6 +9,11 @@ section .data
     miss_msg:       db " [MISS]", 10, 0
     no_predict_msg: db " [NEW]", 10, 0
     process_hdr:    db "Processing: ", 0
+    dbg_credit_msg: db "[CREDIT]", 10, 0
+    dbg_nocredit_msg: db "[NO_CREDIT]", 10, 0
+    dbg_search_msg: db "[SEARCH] ctx=0x", 0
+    dbg_tok_msg:    db " tok=0x", 0
+    dbg_region_msg: db "[REGION] ", 0
 
     ; f64 constants for graph dynamics
     align 8
@@ -38,6 +43,7 @@ section .text
 extern print_cstr
 extern print_str
 extern print_hex32
+extern print_hex64
 extern print_u64
 extern print_newline
 extern learn_pattern
@@ -67,6 +73,7 @@ extern confidence_decay_all
 extern resonant_match
 extern resonant_get_threshold
 extern resonant_extract_token
+extern emit_receipt_simple
 
 ;; ============================================================
 ;; dispatch_init
@@ -558,6 +565,15 @@ process_token:
     jz .holo_hit              ; holo prediction — still count as hit
     inc dword [rcx + RHDR_HITS]
 
+    ; === EMIT RECEIPT: EVENT_HIT ===
+    push rcx                  ; save region ptr
+    mov edi, EVENT_HIT        ; event_type
+    mov esi, r13d             ; ctx_hash (lower 32 bits of context)
+    mov edx, r12d             ; token_id
+    movss xmm0, [rbx + STATE_OFFSET + ST_EXPECT_CONF]  ; confidence
+    call emit_receipt_simple
+    pop rcx
+
     ; STDP connection learning — strengthen temporal links
     push rcx
     mov rdi, rcx              ; firing region ptr
@@ -772,6 +788,13 @@ process_token:
     inc dword [rbx + STATE_OFFSET + ST_COUNTERFACT_WINS]
 .counterfact_done:
 
+    ; === EMIT RECEIPT: EVENT_MISS ===
+    mov edi, EVENT_MISS       ; event_type
+    mov esi, r13d             ; ctx_hash (lower 32 bits of context)
+    mov edx, r12d             ; token_id (actual)
+    movss xmm0, [rbx + STATE_OFFSET + ST_EXPECT_CONF]  ; confidence (was wrong)
+    call emit_receipt_simple
+
     ; Fire miss hook
     mov edi, HOOK_ON_MISS
     mov esi, r12d
@@ -838,6 +861,13 @@ process_token:
 
 .no_prediction:
     ; No prediction existed — this is a new context
+    ; === EMIT RECEIPT: EVENT_NEW ===
+    mov edi, EVENT_NEW        ; event_type
+    mov esi, r13d             ; ctx_hash (lower 32 bits of context)
+    mov edx, r12d             ; token_id
+    xorps xmm0, xmm0          ; confidence = 0 (no prediction)
+    call emit_receipt_simple
+
     lea rdi, [rel token_msg]
     call print_cstr
     mov edi, r12d
@@ -992,6 +1022,71 @@ dispatch_predict:
     mov [rbx + STATE_OFFSET + ST_EXPECT_TOKEN], eax
     cvtsd2ss xmm1, xmm0
     movss [rbx + STATE_OFFSET + ST_EXPECT_CONF], xmm1
+
+    ; --- MEMBRANE CREDIT SHARING ---
+    ; Holo predicted; check if a DISPATCH region agrees and credit it
+    ; This allows NURSERY regions to accumulate hits for promotion
+    push rax                    ; save predicted token
+    ; DEBUG: print ctx and token being searched
+    push rax
+    lea rdi, [rel dbg_search_msg]
+    call print_cstr
+    mov edi, r12d
+    call print_hex32
+    lea rdi, [rel dbg_tok_msg]
+    call print_cstr
+    pop rax
+    push rax
+    mov edi, eax
+    call print_hex32
+    call print_newline
+    pop rax
+    ; END DEBUG
+    mov edi, r12d               ; context hash
+    mov esi, eax                ; predicted token
+    call find_existing_pattern  ; → rax = matching region ptr or 0
+    mov rcx, rax
+    pop rax                     ; restore predicted token
+    ; DEBUG: print if match found
+    push rax
+    push rcx
+    test rcx, rcx
+    jz .dbg_no_match
+    lea rdi, [rel dbg_credit_msg]
+    jmp .dbg_print
+.dbg_no_match:
+    lea rdi, [rel dbg_nocredit_msg]
+.dbg_print:
+    call print_cstr
+    pop rcx
+    pop rax
+    ; END DEBUG
+    test rcx, rcx
+    jz .holo_no_dispatch
+    ; Found matching DISPATCH region — credit it
+    ; DEBUG: print region pointer
+    push rax
+    push rcx
+    lea rdi, [rel dbg_region_msg]
+    call print_cstr
+    mov rdi, rcx
+    call print_hex64
+    call print_newline
+    pop rcx
+    pop rax
+    ; END DEBUG
+    inc dword [rcx + RHDR_HITS]
+    ; Sync to region table entry
+    push rax
+    push rcx
+    mov rdi, rcx
+    call update_region_table_hits
+    pop rcx
+    pop rax
+    mov qword [rbx + STATE_OFFSET + ST_PREDICT_REGION], rcx
+    mov qword [rbx + STATE_OFFSET + ST_EXPECT_REGION], rcx
+    jmp .predict_return
+.holo_no_dispatch:
     mov qword [rbx + STATE_OFFSET + ST_EXPECT_REGION], 0
     mov qword [rbx + STATE_OFFSET + ST_PREDICT_REGION], 0
     jmp .predict_return
@@ -1273,20 +1368,25 @@ dispatch_predict:
 
 .graph_exact_dispatch:
     ; Standard exact-match context check
+    ; Compare BASE context only (bits 0-23), ignore mood (bits 24-31)
+    ; Mood orients self-regulation, but skills work regardless of mood
     mov eax, [r13 + RHDR_SIZE + 1]   ; stored context (imm32)
+    and eax, 0x00FFFFFF              ; strip mood from stored
+    mov edi, r12d
+    and edi, 0x00FFFFFF              ; strip mood from current
 
     ; Schema handling
     test eax, 0x0F
     jnz .graph_exact_cmp
-    ; Schema pattern — mask incoming context
-    mov edi, r12d
-    and edi, 0xFFFFFFF0
+    ; Schema pattern — mask to schema granularity
+    and edi, 0x00FFFFF0
+    and eax, 0x00FFFFF0
     cmp eax, edi
     jne .graph_no_match
     mov dword [rbx + STATE_OFFSET + ST_EXPECT_IS_SCHEMA], 1
     jmp .graph_ctx_matched
 .graph_exact_cmp:
-    cmp eax, r12d
+    cmp eax, edi
     jne .graph_no_match
     jmp .graph_ctx_matched
 

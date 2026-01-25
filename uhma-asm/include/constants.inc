@@ -766,10 +766,83 @@
 %define ST_CURRENT_TOKEN    ST_JOURNEY_END                ; u32 token currently being processed
 
 ;; ============================================================
+;; Receipt/Resonance Layer: Unified Holographic Memory
+;;
+;; One memory. One architecture. One math. Fidelity as the dial.
+;;
+;; Receipts are holographic memory entries with fidelity parameter:
+;;   fidelity=1.0 → lossless, exact storage (persists forever)
+;;   fidelity=0.5 → partial abstraction (decays slowly)
+;;   fidelity=0.1 → semantic trace only (blends into background)
+;;
+;; Storage is the SAME holographic surface used for everything else.
+;; Query via resonance (VSA dot product), not exact lookup.
+;; ============================================================
+
+; Event types (what happened) - each gets a pre-computed basis vector
+%define EVENT_HIT           0     ; prediction matched actual
+%define EVENT_MISS          1     ; prediction did not match
+%define EVENT_NEW           2     ; new token (never seen before)
+%define EVENT_LEARN         3     ; pattern learned
+%define EVENT_EMIT          4     ; code emitted
+%define EVENT_PRUNE         5     ; region pruned
+%define EVENT_PROMOTE       6     ; region promoted (nursery → active)
+%define EVENT_DREAM         7     ; dream cycle executed
+%define EVENT_OBSERVE       8     ; observation cycle executed
+%define EVENT_EVOLVE        9     ; evolution cycle executed
+%define EVENT_HOLO_PRED     10    ; holographic prediction made
+%define EVENT_GRAPH_PRED    11    ; graph-based prediction made
+%define EVENT_JOURNEY       12    ; legacy journey_step compatibility
+%define EVENT_TYPE_COUNT    13    ; total event types
+
+; Base fidelity by event type (f64 bit patterns)
+; Higher fidelity = more persistent storage, less decay
+; These are modulated by |valence| at emission time
+%define FIDELITY_HIT        0x3FD3333333333333  ; 0.30 - routine, decays fast
+%define FIDELITY_MISS       0x3FE999999999999A  ; 0.80 - important, persists
+%define FIDELITY_NEW        0x3FE6666666666666  ; 0.70 - novel, fairly persistent
+%define FIDELITY_LEARN      0x3FE999999999999A  ; 0.80 - learning moment, persists
+%define FIDELITY_EMIT       0x3FE6666666666666  ; 0.70 - code creation, persistent
+%define FIDELITY_PRUNE      0x3FE0000000000000  ; 0.50 - moderate importance
+%define FIDELITY_PROMOTE    0x3FE0000000000000  ; 0.50 - moderate importance
+%define FIDELITY_DREAM      0x3FD999999999999A  ; 0.40 - background process
+%define FIDELITY_OBSERVE    0x3FD999999999999A  ; 0.40 - background process
+%define FIDELITY_EVOLVE     0x3FE0000000000000  ; 0.50 - moderate importance
+%define FIDELITY_CRYSTALLIZE 0x3FF0000000000000 ; 1.00 - permanent, no decay
+
+; Listener bitmask (who gets notified)
+%define LISTENER_HOLO       0x0001  ; store in holographic memory (primary)
+%define LISTENER_PRINT      0x0002  ; print to stdout (debug)
+%define LISTENER_HOOK       0x0004  ; fire hook handlers
+%define LISTENER_GUI        0x0008  ; notify GUI visualizer
+%define LISTENER_WORKING    0x0010  ; write to tiny working buffer
+
+; Working buffer - tiny ring for immediate/debug access (NOT primary storage)
+; Primary storage is holographic. This is just for "show me last few" debugging.
+%define ST_RECEIPT_WORKING  (ST_CURRENT_TOKEN + 4)        ; tiny working buffer
+%define ST_RECEIPT_WORK_CAP 16                            ; just 16 entries
+%define ST_RECEIPT_WORK_SIZE (ST_RECEIPT_WORK_CAP * 64)   ; 1KB (64 bytes each)
+%define ST_RECEIPT_WORK_POS (ST_RECEIPT_WORKING + ST_RECEIPT_WORK_SIZE)  ; u32 position
+%define ST_RECEIPT_TOTAL    (ST_RECEIPT_WORK_POS + 4)     ; u64 total emitted
+%define ST_RECEIPT_LISTENER (ST_RECEIPT_TOTAL + 8)        ; u32 listener bitmask
+%define ST_RECEIPT_END      (ST_RECEIPT_LISTENER + 4)
+
+; Receipt holographic trace indices (within main HOLO_OFFSET area)
+; We use dedicated trace slots for receipt types, enabling targeted queries
+; These are indices into the holographic trace array
+%define RCPT_TRACE_HIT      240   ; trace index for HIT events
+%define RCPT_TRACE_MISS     241   ; trace index for MISS events
+%define RCPT_TRACE_NEW      242   ; trace index for NEW events
+%define RCPT_TRACE_LEARN    243   ; trace index for LEARN events
+%define RCPT_TRACE_EMIT     244   ; trace index for EMIT events
+%define RCPT_TRACE_COMBINED 245   ; combined trace (all events superposed)
+%define RCPT_TRACE_COUNT    6     ; number of receipt traces
+
+;; ============================================================
 ;; Gene Pool State (composting via genetic recombination)
 ;; ============================================================
 
-%define ST_GENE_COUNT       (ST_CURRENT_TOKEN + 4)        ; u32 active genes in pool
+%define ST_GENE_COUNT       ST_RECEIPT_END                ; u32 active genes in pool
 %define ST_GENES_EXTRACTED  (ST_GENE_COUNT + 4)           ; u32 total extractions performed
 %define ST_GENES_REUSED     (ST_GENES_EXTRACTED + 4)      ; u32 genes reused during evolution
 %define ST_GENE_LOWEST_IDX  (ST_GENES_REUSED + 4)         ; u32 index of lowest fitness gene
@@ -946,6 +1019,11 @@
 %define TRACE_GENE_POOL_ADD         1102
 %define TRACE_GENE_POOL_SAMPLE      1104
 %define TRACE_GENE_POOL_INIT        1106
+
+; === receipt.asm (1150-1199) ===
+%define TRACE_RECEIPT_EMIT          1150
+%define TRACE_RECEIPT_RESONATE      1152
+%define TRACE_RECEIPT_DUMP          1154
 
 ;; ============================================================
 ;; Graph Dynamics Tuning Constants

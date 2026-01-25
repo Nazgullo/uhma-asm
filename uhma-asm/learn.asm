@@ -9,6 +9,13 @@ section .data
     learn_new_msg:  db " (new pattern)", 10, 0
     strengthen_msg: db "[STRENGTHEN] region at 0x", 0
     weaken_msg:     db "[WEAKEN] region at 0x", 0
+    dbg_stored_msg: db "[DBG] stored=0x", 0
+    dbg_query_msg:  db " query=0x", 0
+    dbg_idx_msg:    db "[IDX] ", 0
+    dbg_ctx_match_msg: db "[CTX_MATCH]", 10, 0
+    dbg_full_match_msg: db "[FULL_MATCH]", 10, 0
+    dbg_tok_msg:    db "[TOK] stored=0x", 0
+    dbg_vs_msg:     db " query=0x", 0
 
     ; Holographic learning rate (f64)
     align 8
@@ -42,6 +49,7 @@ extern vsa_energy_to_valence
 extern vsa_gen_valence_vec
 extern holo_superpose_f64
 extern holo_gen_vec
+extern emit_receipt_simple
 
 ;; ============================================================
 ;; learn_pattern(ctx_hash, token_id, energy_delta)
@@ -174,6 +182,16 @@ learn_pattern:
     mov edx, [rax]            ; birth_step (lower 32 of global step)
     call emit_dispatch_pattern
 
+    ; === EMIT RECEIPT: EVENT_LEARN ===
+    push rax                  ; save region ptr
+    mov edi, EVENT_LEARN      ; event_type
+    mov esi, r12d             ; ctx_hash
+    mov edx, r13d             ; token_id
+    movsd xmm0, [rsp + 8 + HOLO_VEC_BYTES]  ; reload energy_delta as confidence
+    cvtsd2ss xmm0, xmm0       ; convert f64 to f32
+    call emit_receipt_simple
+    pop rax
+
     ; Track recent emission count (for introspective state)
     lea rax, [rbx + STATE_OFFSET + ST_RECENT_EMITS]
     inc dword [rax]
@@ -284,9 +302,14 @@ find_existing_pattern:
     mov rdi, [rdi + RTE_ADDR]
 
     ; Check the CMP immediate (ctx_hash)
+    ; Compare BASE context only (bits 0-23), ignore mood (bits 24-31)
     cmp byte [rdi + RHDR_SIZE], 0x3D
     jne .skip
-    cmp [rdi + RHDR_SIZE + 1], r12d
+    mov eax, [rdi + RHDR_SIZE + 1]
+    and eax, 0x00FFFFFF              ; strip mood from stored
+    mov r8d, r12d
+    and r8d, 0x00FFFFFF              ; strip mood from query
+    cmp eax, r8d
     jne .skip
 
     ; Check the MOV immediate (token_id)

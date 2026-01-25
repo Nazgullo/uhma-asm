@@ -16,6 +16,8 @@ section .data
                     db "  debugger      Show self-debugger status (breakpoints, learning events)", 10
                     db "  genes         Show gene pool status (composted patterns)", 10
                     db "  subroutines   Show shared subroutines (recursive schemas)", 10
+                    db "  receipts [n]  Show last n receipts (default 10)", 10
+                    db "  listen        Enable receipt stream (ring+print)", 10
                     db "  regions       List all regions with hit/miss stats", 10
                     db "  presence      Show presence field values", 10
                     db "  drives        Show drive levels and thresholds", 10
@@ -38,6 +40,7 @@ section .data
     debugger_bp:    db "  Breakpoints: ", 0
     debugger_hits:  db "  Total hits: ", 0
     debugger_learn: db "  Learning events: ", 0
+    listen_enabled_msg: db "[RECEIPT] Listeners enabled (ring+print)", 10, 0
     bye_str:        db "Surface frozen. Goodbye.", 10, 0
     trace_next_msg: db "[JOURNEY] Will trace next token. Type text to trace, 'trace' to show.", 10, 0
     unknown_str:    db "Unknown command. Type 'help'.", 10, 0
@@ -123,6 +126,9 @@ extern journey_dump
 extern metacog_report
 extern gene_pool_show
 extern subroutines_show       ; from factor.asm - show subroutine table
+extern receipt_dump           ; from receipt.asm - dump recent receipts
+extern receipt_listen         ; from receipt.asm - enable receipt listeners
+extern receipt_mute           ; from receipt.asm - disable receipt listeners
 
 ;; ============================================================
 ;; repl_run
@@ -499,6 +505,36 @@ repl_run:
     jmp .not_subroutines
 .not_subroutines:
 
+    ; "receipts" (8-char match: r-e-c-e-i-p-t-s)
+    cmp dword [rbx], 'rece'
+    jne .not_receipts
+    cmp dword [rbx + 4], 'ipts'
+    jne .not_receipts
+    movzx eax, byte [rbx + 8]
+    test eax, eax
+    jz .cmd_receipts
+    cmp eax, ' '
+    je .cmd_receipts_arg       ; receipts with optional count argument
+    cmp eax, 10
+    je .cmd_receipts
+    jmp .not_receipts
+.not_receipts:
+
+    ; "listen" (6-char match: l-i-s-t-e-n) - enable receipt listeners
+    cmp dword [rbx], 'list'
+    jne .not_listen
+    cmp word [rbx + 4], 'en'
+    jne .not_listen
+    movzx eax, byte [rbx + 6]
+    test eax, eax
+    jz .cmd_listen
+    cmp eax, ' '
+    je .cmd_listen
+    cmp eax, 10
+    je .cmd_listen
+    jmp .not_listen
+.not_listen:
+
     ; Not a command → process as text input
     ; Compute string length (rbx is null-terminated)
     mov rdi, rbx
@@ -731,6 +767,30 @@ repl_run:
 .cmd_subroutines:
     ; Show subroutine table (recursive schema hierarchy)
     call subroutines_show
+    jmp .loop
+
+.cmd_receipts:
+    ; Dump last 10 receipts (default)
+    mov edi, 10
+    call receipt_dump
+    jmp .loop
+
+.cmd_receipts_arg:
+    ; Parse count from "receipts <n>"
+    lea rdi, [rbx + 9]        ; skip "receipts "
+    call parse_decimal        ; → eax = count
+    test eax, eax
+    jz .cmd_receipts          ; if 0 or invalid, use default
+    mov edi, eax
+    call receipt_dump
+    jmp .loop
+
+.cmd_listen:
+    ; Enable receipt listeners (HOLO | PRINT | WORKING for interactive use)
+    mov edi, (LISTENER_HOLO | LISTENER_PRINT | LISTENER_WORKING)
+    call receipt_listen
+    lea rdi, [rel listen_enabled_msg]
+    call print_cstr
     jmp .loop
 
 .quit:

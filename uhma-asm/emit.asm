@@ -22,6 +22,7 @@ extern journey_step
 extern sym_observe_mod
 extern verify_modification
 extern region_condemn
+extern emit_receipt_simple
 
 ;; ============================================================
 ;; emit_dispatch_pattern(ctx_hash_32, token_id, birth_step)
@@ -151,6 +152,20 @@ emit_dispatch_pattern:
     xor eax, eax                   ; return NULL
     jmp .emit_done
 .verify_passed:
+
+    ; === EMIT RECEIPT: EVENT_EMIT ===
+    push rbx
+    push r12
+    push r13
+    mov edi, EVENT_EMIT       ; event_type
+    mov esi, r12d             ; ctx_hash
+    mov edx, r13d             ; token_id
+    mov eax, 0x3F800000       ; 1.0f confidence (we just emitted, so confidence is 1)
+    movd xmm0, eax
+    call emit_receipt_simple
+    pop r13
+    pop r12
+    pop rbx
 
     ; Print emission info
     push rbx

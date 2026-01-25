@@ -22,6 +22,7 @@ extern sym_init
 extern bp_init
 extern gene_pool_init
 extern presence_init
+extern receipt_init
 extern print_cstr
 extern print_hex64
 extern print_newline
@@ -136,6 +137,11 @@ surface_init:
     ; Initialize presence hyper-regions (hormonal modulators)
     push rbx
     call presence_init
+    pop rbx
+
+    ; Initialize receipt/resonance layer
+    push rbx
+    call receipt_init
     pop rbx
 
     mov rax, rbx              ; return surface base
