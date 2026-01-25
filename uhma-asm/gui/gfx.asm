@@ -6,6 +6,9 @@
 section .data
     display_name:   db 0
 
+section .data
+    font_name:      db "fixed", 0
+
 section .bss
     ; X11 state
     display:        resq 1
@@ -13,12 +16,21 @@ section .bss
     root_window:    resq 1
     window:         resq 1
     gc:             resq 1
+    font:           resq 1
     fb_width:       resd 1
     fb_height:      resd 1
 
     ; Colors
     color_black:    resq 1
     color_white:    resq 1
+
+    ; Last keycode from KeyPress event
+    last_keycode:   resd 1
+
+    ; Mouse state
+    last_mouse_x:   resd 1
+    last_mouse_y:   resd 1
+    last_mouse_btn: resd 1
 
 section .text
 
@@ -42,6 +54,9 @@ extern XDrawPoint
 extern XBlackPixel
 extern XWhitePixel
 extern XClearWindow
+extern XDrawString
+extern XLoadQueryFont
+extern XTextWidth
 
 ;; ============================================================
 ;; gfx_init — Initialize graphics system
@@ -119,10 +134,18 @@ gfx_init:
     call XCreateGC
     mov [rel gc], rax
 
+    ; Load font
+    mov rdi, r12
+    lea rsi, [rel font_name]
+    call XLoadQueryFont
+    mov [rel font], rax
+
     ; Select input events
+    ; KeyPressMask=0x1, ButtonPressMask=0x4, PointerMotionMask=0x40,
+    ; ExposureMask=0x8000, StructureNotifyMask=0x20000
     mov rdi, r12
     mov rsi, [rel window]
-    mov rdx, 0x020005       ; ExposureMask | KeyPressMask | ButtonPressMask
+    mov rdx, 0x028045       ; All needed events including mouse motion
     call XSelectInput
 
     ; Map window
@@ -386,6 +409,7 @@ gfx_flip:
 ;; ============================================================
 ;; gfx_poll_event — Non-blocking event poll
 ;; Returns: rax = event type or 0
+;; Saves keycode for KeyPress, mouse pos for ButtonPress/MotionNotify
 ;; ============================================================
 global gfx_poll_event
 gfx_poll_event:
@@ -403,9 +427,141 @@ gfx_poll_event:
     call XNextEvent
 
     mov eax, [rbp - 200]    ; event type
+
+    cmp eax, 2              ; KeyPress
+    jne .not_keypress
+    ; Save keycode (at offset 84 in XKeyEvent)
+    mov edx, [rbp - 200 + 84]
+    mov [rel last_keycode], edx
+    jmp .done
+
+.not_keypress:
+    cmp eax, 4              ; ButtonPress
+    je .save_mouse
+    cmp eax, 6              ; MotionNotify
+    jne .done
+
+.save_mouse:
+    ; Save mouse position (x at offset 64, y at offset 68)
+    mov edx, [rbp - 200 + 64]
+    mov [rel last_mouse_x], edx
+    mov edx, [rbp - 200 + 68]
+    mov [rel last_mouse_y], edx
+    ; For ButtonPress, save button (offset 84)
+    cmp eax, 4
+    jne .done
+    mov edx, [rbp - 200 + 84]
+    mov [rel last_mouse_btn], edx
     jmp .done
 
 .no_event:
+    xor eax, eax
+
+.done:
+    add rsp, 208
+    pop rbp
+    ret
+
+;; ============================================================
+;; gfx_get_last_keycode — Get keycode from last KeyPress event
+;; Returns: eax = keycode
+;; ============================================================
+global gfx_get_last_keycode
+gfx_get_last_keycode:
+    mov eax, [rel last_keycode]
+    ret
+
+;; ============================================================
+;; gfx_get_mouse_pos — Get last mouse position
+;; Returns: eax = x, edx = y
+;; ============================================================
+global gfx_get_mouse_pos
+gfx_get_mouse_pos:
+    mov eax, [rel last_mouse_x]
+    mov edx, [rel last_mouse_y]
+    ret
+
+;; ============================================================
+;; gfx_get_mouse_button — Get last mouse button
+;; Returns: eax = button (1=left, 2=middle, 3=right)
+;; ============================================================
+global gfx_get_mouse_button
+gfx_get_mouse_button:
+    mov eax, [rel last_mouse_btn]
+    ret
+
+;; ============================================================
+;; gfx_text — Draw text string
+;; edi = x, esi = y, rdx = string pointer, ecx = length, r8d = color
+;; ============================================================
+global gfx_text
+gfx_text:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 8
+
+    mov r12d, edi           ; x
+    mov r13d, esi           ; y
+    mov r14, rdx            ; string
+    mov r15d, ecx           ; length
+    mov ebx, r8d            ; color
+
+    ; Set color
+    mov rdi, [rel display]
+    mov rsi, [rel gc]
+    mov edx, ebx
+    call XSetForeground
+
+    ; Draw string
+    mov rdi, [rel display]
+    mov rsi, [rel window]
+    mov rdx, [rel gc]
+    mov ecx, r12d           ; x
+    mov r8d, r13d           ; y
+    mov r9, r14             ; string
+    mov eax, r15d
+    mov [rsp], rax          ; length
+    call XDrawString
+
+    add rsp, 8
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; gfx_get_key — Get key from last event (call after poll returns KeyPress)
+;; Returns: rax = keycode
+;; ============================================================
+global gfx_get_key
+gfx_get_key:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 208
+
+    mov rdi, [rel display]
+    call XPending
+    test eax, eax
+    jz .no_key
+
+    mov rdi, [rel display]
+    lea rsi, [rbp - 200]
+    call XNextEvent
+
+    mov eax, [rbp - 200]    ; event type
+    cmp eax, 2              ; KeyPress
+    jne .no_key
+
+    ; KeyPress event: keycode is at offset 84
+    mov eax, [rbp - 200 + 84]
+    jmp .done
+
+.no_key:
     xor eax, eax
 
 .done:

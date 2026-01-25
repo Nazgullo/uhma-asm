@@ -50,6 +50,7 @@ main:
     call dispatch_init
 
     ; Initialize visualizer (includes gfx_init)
+    mov rdi, r12            ; pass surface base
     call vis_init
     test eax, eax
     jz .gfx_fail
