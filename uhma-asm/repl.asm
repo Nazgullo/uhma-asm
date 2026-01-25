@@ -25,7 +25,7 @@ section .data
                     db "  save <file>   Save surface to file", 10
                     db "  load <file>   Restore surface from file", 10
                     db "  eat <file>    Digest file as food (extract tokens, gain energy)", 10
-                    db "  pressure      Show regulator pressures (Octopus nervous system)", 10
+                    db "  hive          Show hive pheromone levels (swarm intelligence)", 10
                     db "  share         Enable shared VSA (Mycorrhiza collective consciousness)", 10
                     db "  colony        Show colony status (hive mind instances)", 10
                     db "  export <n>    Export region n as .gene file (spore)", 10
@@ -42,12 +42,12 @@ section .data
     trace_next_msg: db "[JOURNEY] Will trace next token. Type text to trace, 'trace' to show.", 10, 0
     unknown_str:    db "Unknown command. Type 'help'.", 10, 0
     status_hdr:     db "--- Status ---", 10, 0
-    pressure_hdr:   db "--- Octopus Nervous System ---", 10, 0
-    pressure_dream: db "  Dream pressure:   ", 0
-    pressure_obs:   db "  Observe pressure: ", 0
-    pressure_evol:  db "  Evolve pressure:  ", 0
-    pressure_fat:   db "  Fatigue:          ", 0
-    pressure_thresh:db "  Threshold:        0.5", 10, 0
+    hive_hdr:       db "--- Hive Mind (Pheromone Levels) ---", 10, 0
+    hive_dream:     db "  Dream pheromone:   ", 0
+    hive_observe:   db "  Observe pheromone: ", 0
+    hive_evolve:    db "  Evolve pheromone:  ", 0
+    hive_fatigue:   db "  Fatigue:           ", 0
+    hive_thresh:    db "  Activation threshold: 0.5", 10, 0
     colony_hdr:     db "--- Mycorrhiza Colony ---", 10, 0
     colony_mode:    db "  Mode: ", 0
     colony_solo:    db "SOLO (isolated)", 10, 0
@@ -334,18 +334,16 @@ repl_run:
     jmp .cmd_eat
 .not_eat:
 
-    ; "pressure" (show regulator pressures)
-    cmp dword [rbx], 'pres'
-    jne .not_pressure
-    cmp dword [rbx + 4], 'sure'
-    jne .not_pressure
-    movzx eax, byte [rbx + 8]
+    ; "hive" (show hive pheromone levels)
+    cmp dword [rbx], 'hive'
+    jne .not_hive
+    movzx eax, byte [rbx + 4]
     test eax, eax
-    jz .cmd_pressure
+    jz .cmd_hive
     cmp eax, 10
-    je .cmd_pressure
-    jmp .not_pressure
-.not_pressure:
+    je .cmd_hive
+    jmp .not_hive
+.not_hive:
 
     ; "geom" (show geometric gate status)
     cmp dword [rbx], 'geom'
@@ -585,9 +583,9 @@ repl_run:
     call digest_file
     jmp .loop
 
-.cmd_pressure:
-    ; Show regulator pressures (Octopus nervous system state)
-    call repl_show_pressures
+.cmd_hive:
+    ; Show hive pheromone levels (swarm intelligence state)
+    call repl_show_hive
     jmp .loop
 
 .cmd_geom:
@@ -975,33 +973,33 @@ repl_show_status:
     ret
 
 ;; ============================================================
-;; repl_show_pressures — Show Octopus nervous system pressures
+;; repl_show_hive — Show hive pheromone levels (swarm intelligence)
 ;; ============================================================
-repl_show_pressures:
+repl_show_hive:
     push rbx
     mov rbx, SURFACE_BASE
 
-    lea rdi, [rel pressure_hdr]
+    lea rdi, [rel hive_hdr]
     call print_cstr
 
-    ; Dream pressure
-    lea rdi, [rel pressure_dream]
+    ; Dream pheromone
+    lea rdi, [rel hive_dream]
     call print_cstr
     movsd xmm0, [rbx + STATE_OFFSET + ST_DREAM_PRESSURE]
     cvtsd2ss xmm0, xmm0
     call print_f32
     call print_newline
 
-    ; Observe pressure
-    lea rdi, [rel pressure_obs]
+    ; Observe pheromone
+    lea rdi, [rel hive_observe]
     call print_cstr
     movsd xmm0, [rbx + STATE_OFFSET + ST_OBSERVE_PRESSURE]
     cvtsd2ss xmm0, xmm0
     call print_f32
     call print_newline
 
-    ; Evolve pressure
-    lea rdi, [rel pressure_evol]
+    ; Evolve pheromone
+    lea rdi, [rel hive_evolve]
     call print_cstr
     movsd xmm0, [rbx + STATE_OFFSET + ST_EVOLVE_PRESSURE]
     cvtsd2ss xmm0, xmm0
@@ -1009,14 +1007,14 @@ repl_show_pressures:
     call print_newline
 
     ; Fatigue
-    lea rdi, [rel pressure_fat]
+    lea rdi, [rel hive_fatigue]
     call print_cstr
     movss xmm0, [rbx + STATE_OFFSET + ST_PRESENCE + PRES_FATIGUE * 4]
     call print_f32
     call print_newline
 
     ; Threshold
-    lea rdi, [rel pressure_thresh]
+    lea rdi, [rel hive_thresh]
     call print_cstr
 
     pop rbx

@@ -92,7 +92,7 @@
 %define RTYPE_RESONANT      8   ; Fuzzy-matching regions (vector similarity dispatch)
 %define RTYPE_SUBROUTINE    9   ; Callable code fragment (recursive schema hierarchy)
 %define RTYPE_PRESENCE      10  ; Hormonal modulator (checks state, modifies system params)
-%define RTYPE_REGULATOR     11  ; Distributed ganglion (triggers system cycles based on local pressure)
+%define RTYPE_WORKER        11  ; Specialized hive worker caste (responds to pheromone signals)
 %define RTYPE_INGESTED      12  ; High-value schema learned from ingested code (structural absorption)
 
 ;; ============================================================
@@ -155,30 +155,39 @@
 %define PEFF_BOOST_NOVELTY      5   ; increase novelty drive weight
 
 ;; ============================================================
-;; Regulator Regions: Distributed Ganglia
-;; Each regulator monitors a pressure value and triggers an
-;; action when pressure exceeds threshold. This replaces
-;; centralized control (REPL) with distributed self-regulation.
+;; Hive Worker Castes: Pheromone-Driven Swarm Intelligence
+;; Each worker caste monitors a pheromone channel and performs
+;; specialized work when the level exceeds threshold. This
+;; enables decentralized self-regulation like a bee hive.
 ;; ============================================================
 
-; Regulator pressure sources (what to monitor)
-%define RPRES_DREAM         0   ; ST_DREAM_PRESSURE
-%define RPRES_OBSERVE       1   ; ST_OBSERVE_PRESSURE
-%define RPRES_EVOLVE        2   ; ST_EVOLVE_PRESSURE
-%define RPRES_FATIGUE       3   ; ST_PRES_FATIGUE
-%define RPRES_ENTROPY       4   ; ST_PRES_ENTROPY
-%define RPRES_MISS_RATE     5   ; computed from recent misses
+; Pheromone channels (chemical signals in hive)
+%define PHERO_DREAM         0   ; ST_DREAM_PRESSURE - consolidation pheromone
+%define PHERO_OBSERVE       1   ; ST_OBSERVE_PRESSURE - observation pheromone
+%define PHERO_EVOLVE        2   ; ST_EVOLVE_PRESSURE - evolution pheromone
+%define PHERO_FATIGUE       3   ; ST_PRES_FATIGUE - exhaustion signal
+%define PHERO_ENTROPY       4   ; ST_PRES_ENTROPY - chaos signal
+%define PHERO_MISS_RATE     5   ; computed from recent misses
 
-; Regulator actions (what to trigger)
-%define RACT_DREAM_CYCLE    0   ; trigger dream_cycle
-%define RACT_OBSERVE_CYCLE  1   ; trigger observe_cycle
-%define RACT_EVOLVE_CYCLE   2   ; trigger evolve_cycle
-%define RACT_COMPACT        3   ; trigger region compaction
-%define RACT_DIGEST         4   ; trigger digestion (if food available)
-%define RACT_REST           5   ; reduce activity (conservation)
+; Worker caste actions (what each caste does when activated)
+%define CASTE_DREAM         0   ; trigger dream_cycle (consolidation worker)
+%define CASTE_OBSERVE       1   ; trigger observe_cycle (observation worker)
+%define CASTE_EVOLVE        2   ; trigger evolve_cycle (evolution worker)
+%define CASTE_COMPACT       3   ; trigger region compaction (cleanup worker)
+%define CASTE_DIGEST        4   ; trigger digestion (forager worker)
+%define CASTE_REST          5   ; reduce activity (conservation worker)
 
-; Pressure thresholds (defaults, can be modified by presence regions)
-%define PRESSURE_THRESHOLD  0x3FE0000000000000  ; 0.5 f64
+; Pheromone thresholds (defaults, can be modified by presence regions)
+%define PHEROMONE_THRESHOLD 0x3FE0000000000000  ; 0.5 f64
+
+; Legacy aliases for compatibility
+%define RPRES_DREAM         PHERO_DREAM
+%define RPRES_OBSERVE       PHERO_OBSERVE
+%define RPRES_EVOLVE        PHERO_EVOLVE
+%define RACT_DREAM_CYCLE    CASTE_DREAM
+%define RACT_OBSERVE_CYCLE  CASTE_OBSERVE
+%define RACT_EVOLVE_CYCLE   CASTE_EVOLVE
+%define PRESSURE_THRESHOLD  PHEROMONE_THRESHOLD
 
 ;; ============================================================
 ;; Logic Probe: Instruction Classification for Abstract Interpretation

@@ -1074,23 +1074,23 @@ absorb_code:
     ret
 
 ;; ============================================================
-;; REGULATOR SYSTEM: Distributed Ganglia (Octopus Arms)
-;; Replaces centralized REPL control with local pressure-based
-;; triggering. Each regulator monitors a pressure and fires
-;; when threshold exceeded.
+;; HIVE WORKER SYSTEM: Pheromone-Driven Swarm Intelligence
+;; Replaces centralized REPL control with pheromone-triggered
+;; worker castes. Each caste responds to its pheromone channel
+;; and performs specialized work when threshold exceeded.
 ;; ============================================================
 
 section .data
-    reg_trigger_msg:    db "[GANGLION] ", 0
-    reg_dream:          db "Dream ganglion fired (pressure=", 0
-    reg_observe:        db "Observe ganglion fired (pressure=", 0
-    reg_evolve:         db "Evolve ganglion fired (pressure=", 0
-    reg_compact:        db "Compact ganglion fired", 10, 0
-    reg_rest:           db "Rest ganglion fired (fatigue=", 0
-    reg_close:          db ")", 10, 0
+    worker_trigger_msg: db "[HIVE] ", 0
+    worker_dream:       db "Dream worker activated (pheromone=", 0
+    worker_observe:     db "Observe worker activated (pheromone=", 0
+    worker_evolve:      db "Evolve worker activated (pheromone=", 0
+    worker_compact:     db "Compact worker activated", 10, 0
+    worker_rest:        db "Rest worker activated (fatigue=", 0
+    worker_close:       db ")", 10, 0
 
     align 8
-    reg_threshold:      dq 0.5    ; default pressure threshold
+    pheromone_threshold: dq 0.5   ; default activation threshold
 
 section .text
 
@@ -1100,13 +1100,15 @@ extern evolve_cycle
 extern region_compact
 
 ;; ============================================================
-;; tick_regulators()
-;; Called each processing step. Scans pressure values and
-;; triggers appropriate cycles when thresholds exceeded.
-;; This is the "nervous system" — distributed local control.
-;; Returns: eax = number of actions triggered
+;; tick_workers()
+;; Called each processing step. Scans pheromone levels and
+;; activates worker castes when thresholds exceeded.
+;; This is the hive's swarm intelligence — distributed control.
+;; Returns: eax = number of workers activated
 ;; ============================================================
-global tick_regulators
+global tick_workers
+tick_workers:
+global tick_regulators          ; legacy alias
 tick_regulators:
     push rbx
     push r12
@@ -1116,22 +1118,22 @@ tick_regulators:
     xor r12d, r12d            ; actions triggered
 
     ; Load threshold
-    movsd xmm7, [rel reg_threshold]
+    movsd xmm7, [rel pheromone_threshold]
 
-    ; --- Check dream pressure ---
+    ; --- Check dream pheromone ---
     movsd xmm0, [rbx + STATE_OFFSET + ST_DREAM_PRESSURE]
     ucomisd xmm0, xmm7
     jbe .check_observe
 
-    ; Dream pressure exceeded — trigger dream cycle
-    lea rdi, [rel reg_trigger_msg]
+    ; Dream pheromone exceeded — activate consolidation worker
+    lea rdi, [rel worker_trigger_msg]
     call print_cstr
-    lea rdi, [rel reg_dream]
+    lea rdi, [rel worker_dream]
     call print_cstr
     movsd xmm0, [rbx + STATE_OFFSET + ST_DREAM_PRESSURE]
     cvtsd2ss xmm0, xmm0
     call print_f32
-    lea rdi, [rel reg_close]
+    lea rdi, [rel worker_close]
     call print_cstr
 
     call dream_cycle
@@ -1142,20 +1144,20 @@ tick_regulators:
     movsd [rbx + STATE_OFFSET + ST_DREAM_PRESSURE], xmm0
 
 .check_observe:
-    ; --- Check observe pressure ---
+    ; --- Check observe pheromone ---
     movsd xmm0, [rbx + STATE_OFFSET + ST_OBSERVE_PRESSURE]
     ucomisd xmm0, xmm7
     jbe .check_evolve
 
-    ; Observe pressure exceeded — trigger observe cycle
-    lea rdi, [rel reg_trigger_msg]
+    ; Observe pheromone exceeded — activate observation worker
+    lea rdi, [rel worker_trigger_msg]
     call print_cstr
-    lea rdi, [rel reg_observe]
+    lea rdi, [rel worker_observe]
     call print_cstr
     movsd xmm0, [rbx + STATE_OFFSET + ST_OBSERVE_PRESSURE]
     cvtsd2ss xmm0, xmm0
     call print_f32
-    lea rdi, [rel reg_close]
+    lea rdi, [rel worker_close]
     call print_cstr
 
     call observe_cycle
@@ -1166,20 +1168,20 @@ tick_regulators:
     movsd [rbx + STATE_OFFSET + ST_OBSERVE_PRESSURE], xmm0
 
 .check_evolve:
-    ; --- Check evolve pressure ---
+    ; --- Check evolve pheromone ---
     movsd xmm0, [rbx + STATE_OFFSET + ST_EVOLVE_PRESSURE]
     ucomisd xmm0, xmm7
     jbe .check_fatigue
 
-    ; Evolve pressure exceeded — trigger evolve cycle
-    lea rdi, [rel reg_trigger_msg]
+    ; Evolve pheromone exceeded — activate evolution worker
+    lea rdi, [rel worker_trigger_msg]
     call print_cstr
-    lea rdi, [rel reg_evolve]
+    lea rdi, [rel worker_evolve]
     call print_cstr
     movsd xmm0, [rbx + STATE_OFFSET + ST_EVOLVE_PRESSURE]
     cvtsd2ss xmm0, xmm0
     call print_f32
-    lea rdi, [rel reg_close]
+    lea rdi, [rel worker_close]
     call print_cstr
 
     call evolve_cycle
@@ -1190,25 +1192,25 @@ tick_regulators:
     movsd [rbx + STATE_OFFSET + ST_EVOLVE_PRESSURE], xmm0
 
 .check_fatigue:
-    ; --- Check fatigue (high fatigue = rest) ---
+    ; --- Check fatigue (high fatigue = rest worker) ---
     movss xmm0, [rbx + STATE_OFFSET + ST_PRESENCE + PRES_FATIGUE * 4]
     cvtss2sd xmm0, xmm0
     mov rax, 0x3FE8000000000000  ; 0.75 threshold for rest
     movq xmm1, rax
     ucomisd xmm0, xmm1
-    jbe .regulators_done
+    jbe .workers_done
 
-    ; Fatigue high — trigger rest (reduce activity)
-    lea rdi, [rel reg_trigger_msg]
+    ; Fatigue high — activate rest worker (reduce activity)
+    lea rdi, [rel worker_trigger_msg]
     call print_cstr
-    lea rdi, [rel reg_rest]
+    lea rdi, [rel worker_rest]
     call print_cstr
     movss xmm0, [rbx + STATE_OFFSET + ST_PRESENCE + PRES_FATIGUE * 4]
     call print_f32
-    lea rdi, [rel reg_close]
+    lea rdi, [rel worker_close]
     call print_cstr
 
-    ; Rest action: reduce fatigue, slow down dispatch
+    ; Rest worker action: reduce fatigue, slow down dispatch
     movss xmm0, [rbx + STATE_OFFSET + ST_PRESENCE + PRES_FATIGUE * 4]
     mov eax, 0x3F000000        ; 0.5f multiplier
     movd xmm1, eax
@@ -1217,20 +1219,22 @@ tick_regulators:
 
     inc r12d
 
-.regulators_done:
-    mov eax, r12d             ; return actions triggered
+.workers_done:
+    mov eax, r12d             ; return workers activated
     add rsp, 8
     pop r12
     pop rbx
     ret
 
 ;; ============================================================
-;; accrue_pressure(source, delta)
-;; edi=pressure source (RPRES_*), xmm0=delta (f64)
-;; Adds delta to the specified pressure accumulator.
-;; This is how events create "urges" in the nervous system.
+;; release_pheromone(channel, delta)
+;; edi=pheromone channel (PHERO_*), xmm0=delta (f64)
+;; Adds delta to the specified pheromone level.
+;; This is how events signal worker castes in the hive.
 ;; ============================================================
-global accrue_pressure
+global release_pheromone
+release_pheromone:
+global accrue_pressure          ; legacy alias
 accrue_pressure:
     mov rax, SURFACE_BASE
 
