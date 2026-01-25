@@ -96,9 +96,9 @@ emit_dispatch_pattern:
     mov byte [rdi + 0], 0x3D
     mov [rdi + 1], r12d
 
-    ; jne +8 (skip mov+ret, land on xor)
+    ; jne +6 (skip mov+ret, land on xor at offset 13)
     mov byte [rdi + 5], 0x75
-    mov byte [rdi + 6], 7     ; +7 lands at offset 13
+    mov byte [rdi + 6], 6     ; +6 lands at offset 13 (7+6=13)
 
     ; mov eax, token_id (hit path)
     mov byte [rdi + 7], 0xB8

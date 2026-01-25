@@ -53,6 +53,17 @@ fire_hook:
     test rdx, rdx
     jz .skip_handler
 
+    ; Safety: validate handler is not in surface region (detect corruption)
+    mov r8, SURFACE_BASE
+    cmp rdx, r8
+    jb .call_safe                   ; below surface = safe
+    lea r8, [r8 + SURFACE_SIZE]
+    cmp rdx, r8
+    jae .call_safe                  ; above surface = safe
+    ; Handler points into surface — corruption detected, skip it
+    jmp .skip_handler
+
+.call_safe:
     ; Call handler(hook_id, arg)
     mov edi, r12d
     mov esi, r13d
