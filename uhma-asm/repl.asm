@@ -1219,7 +1219,9 @@ repl_show_regions:
     ; Flags
     push rdi
     movzx edi, word [rdi + RTE_FLAGS]
+    push rdi                  ; save flags
     call print_space
+    pop rdi                   ; restore flags to rdi (print_flags expects edi)
     call print_flags
     pop rdi
 

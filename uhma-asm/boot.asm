@@ -11,6 +11,7 @@ extern install_fault_handlers
 extern repl_run
 extern dispatch_init
 extern vsa_init_random
+extern verify_init
 
 ;; ============================================================
 ;; _start — Entry point
@@ -38,7 +39,10 @@ _start:
     ; 4. Initialize VSA arena with random vectors for initial tokens
     call vsa_init_random
 
-    ; 5. Initialize metabolic energy pool
+    ; 5. Initialize verification system (assembly brittleness protection)
+    call verify_init
+
+    ; 6. Initialize metabolic energy pool
     mov rbx, SURFACE_BASE
     mov rax, ENERGY_INITIAL
     mov [rbx + STATE_OFFSET + ST_ENERGY], rax

@@ -7,7 +7,7 @@
 ;; ============================================================
 
 %define SURFACE_BASE        0x100000000
-%define SURFACE_SIZE        0x31000000        ; ~784MB (f64 VSA + holographic memory + vocab)
+%define SURFACE_SIZE        0x33000000        ; ~816MB (f64 VSA + 32MB holographic memory + vocab)
 
 %define BOOTSTRAP_OFFSET    0x0
 %define BOOTSTRAP_SIZE      0x10000           ; 64KB
@@ -323,12 +323,12 @@
 ;; ============================================================
 
 %define HOLO_OFFSET         0x30030000        ; after STATE block
-%define HOLO_TRACES         256               ; independent interference traces
+%define HOLO_TRACES         4096              ; independent interference traces (was 256, increased for fidelity)
 %define HOLO_DIM            1024              ; elements per trace vector
 %define HOLO_VEC_BYTES      (HOLO_DIM * 8)    ; 8192 bytes per trace (1024 x f64)
 %define HOLO_TOTAL          (HOLO_TRACES * HOLO_VEC_BYTES)  ; 2MB
 
-%define VOCAB_OFFSET        (HOLO_OFFSET + 0x200000)  ; token registry after 2MB traces
+%define VOCAB_OFFSET        (HOLO_OFFSET + HOLO_TOTAL)  ; token registry after holographic traces
 %define VOCAB_ENTRY_SIZE    8                 ; (u32 token_id, u32 count)
 %define VOCAB_MAX_SCAN      256               ; top-N tokens to scan during predict
 
@@ -774,6 +774,61 @@
 %define ST_GENES_REUSED     (ST_GENES_EXTRACTED + 4)      ; u32 genes reused during evolution
 %define ST_GENE_LOWEST_IDX  (ST_GENES_REUSED + 4)         ; u32 index of lowest fitness gene
 %define ST_GENE_LOWEST_FIT  (ST_GENE_LOWEST_IDX + 4)      ; f32 fitness of lowest gene
+
+;; ============================================================
+;; Developmental Maturity & External Awareness
+;; The system must master itself before perceiving the outside.
+;; Stage 0: Infant — learning internal dynamics only
+;; Stage 1: Aware — can perceive external (read-only /proc/self)
+;; Stage 2: Active — motor feedback loop enabled
+;; ============================================================
+
+; Maturity tracking
+%define ST_MATURITY_LEVEL   (ST_GENE_LOWEST_FIT + 4)      ; u32 developmental stage (0/1/2)
+%define ST_MATURITY_SCORE   (ST_MATURITY_LEVEL + 4)       ; f64 composite maturity metric [0,1]
+
+; Self-mastery metrics (must all be high for maturity advancement)
+%define ST_MASTERY_ACC      (ST_MATURITY_SCORE + 8)       ; f64 rolling accuracy (EMA)
+%define ST_MASTERY_STABILITY (ST_MASTERY_ACC + 8)         ; f64 metabolic stability (low variance)
+%define ST_MASTERY_GENE_RATE (ST_MASTERY_STABILITY + 8)   ; f64 gene verification success rate
+%define ST_MASTERY_COHERENCE (ST_MASTERY_GENE_RATE + 8)   ; f64 graph-holo agreement rate
+%define ST_MASTERY_WINDOW   (ST_MASTERY_COHERENCE + 8)    ; u32 steps in assessment window
+%define ST_MASTERY_LAST_CHECK (ST_MASTERY_WINDOW + 4)     ; u64 last step maturity was assessed
+
+; External perception (dormant until Stage 1)
+%define ST_EXTERN_ENABLED   (ST_MASTERY_LAST_CHECK + 8)   ; u32 0=dormant, 1=active
+%define ST_EXTERN_CPU_USER  (ST_EXTERN_ENABLED + 4)       ; u64 user CPU time (jiffies)
+%define ST_EXTERN_CPU_SYS   (ST_EXTERN_CPU_USER + 8)      ; u64 system CPU time (jiffies)
+%define ST_EXTERN_RSS       (ST_EXTERN_CPU_SYS + 8)       ; u64 resident set size (pages)
+%define ST_EXTERN_VSIZE     (ST_EXTERN_RSS + 8)           ; u64 virtual memory size
+%define ST_EXTERN_THREADS   (ST_EXTERN_VSIZE + 8)         ; u32 number of threads
+%define ST_EXTERN_LAST_READ (ST_EXTERN_THREADS + 4)       ; u64 step when last sampled
+
+; Motor feedback (dormant until Stage 2)
+%define ST_MOTOR_FEEDBACK   (ST_EXTERN_LAST_READ + 8)     ; u32 0=dormant, 1=active
+%define ST_MOTOR_SUCCESSES  (ST_MOTOR_FEEDBACK + 4)       ; u32 syscalls that succeeded
+%define ST_MOTOR_FAILURES   (ST_MOTOR_SUCCESSES + 4)      ; u32 syscalls that failed
+%define ST_MOTOR_ENERGY_GAIN (ST_MOTOR_FAILURES + 4)      ; f64 energy earned from successful actions
+%define ST_MOTOR_ENERGY_COST (ST_MOTOR_ENERGY_GAIN + 8)   ; f64 energy spent on failed actions
+
+; Maturity thresholds (dynamic — system can self-tune these)
+%define ST_THRESH_ACC       (ST_MOTOR_ENERGY_COST + 8)    ; f64 accuracy threshold (default 0.65)
+%define ST_THRESH_STABILITY (ST_THRESH_ACC + 8)           ; f64 stability threshold (default 0.7)
+%define ST_THRESH_GENE      (ST_THRESH_STABILITY + 8)     ; f64 gene success threshold (default 0.8)
+%define ST_THRESH_COHERENCE (ST_THRESH_GENE + 8)          ; f64 coherence threshold (default 0.5)
+%define ST_THRESH_ADVANCE   (ST_THRESH_COHERENCE + 8)     ; f64 composite score to advance (default 0.7)
+%define ST_MATURITY_WINDOW  (ST_THRESH_ADVANCE + 8)       ; u32 assessment window size (default 1000)
+
+; Default threshold values (used during initialization)
+%define DEFAULT_THRESH_ACC          0x3FE4CCCCCCCCCCCD  ; 0.65 as f64
+%define DEFAULT_THRESH_STABILITY    0x3FE6666666666666  ; 0.7 as f64
+%define DEFAULT_THRESH_GENE         0x3FE999999999999A  ; 0.8 as f64
+%define DEFAULT_THRESH_COHERENCE    0x3FE0000000000000  ; 0.5 as f64
+%define DEFAULT_THRESH_ADVANCE      0x3FE6666666666666  ; 0.7 as f64
+%define DEFAULT_MATURITY_WINDOW     1000
+
+; Awareness state end marker
+%define ST_AWARENESS_END    (ST_MATURITY_WINDOW + 4)
 
 ; Location IDs for tracing - comprehensive coverage
 ; Format: TRACE_<module>_<function> = base, entry=base, exit=base+1

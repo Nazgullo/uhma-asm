@@ -20,6 +20,8 @@ extern fire_hook
 extern wire_new_region
 extern journey_step
 extern sym_observe_mod
+extern verify_modification
+extern region_condemn
 
 ;; ============================================================
 ;; emit_dispatch_pattern(ctx_hash_32, token_id, birth_step)
@@ -137,6 +139,19 @@ emit_dispatch_pattern:
     ; NOP padding to 17
     mov byte [rdi + 16], 0x90
 
+    ; === VERIFY EMITTED CODE (brittleness protection) ===
+    lea rdi, [rbx + RHDR_SIZE]    ; code address
+    mov rsi, 17                    ; code size
+    call verify_modification
+    test eax, eax
+    jnz .verify_passed
+    ; Verification failed - condemn this region
+    mov rdi, rbx
+    call region_condemn
+    xor eax, eax                   ; return NULL
+    jmp .emit_done
+.verify_passed:
+
     ; Print emission info
     push rbx
     lea rdi, [rel emit_msg]
@@ -167,6 +182,7 @@ emit_dispatch_pattern:
     call wire_new_region
 
     mov rax, rbx              ; return header ptr
+.emit_done:
     pop r14
     pop r13
     pop r12

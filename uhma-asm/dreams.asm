@@ -10,6 +10,11 @@ section .data
     dream_count:    db " entries, emitted: ", 0
     dream_nl:       db 10, 0
     schema_msg:     db "[DREAM] Schema extracted (generalized pattern)", 10, 0
+    reinforce_msg:  db "[LTM] Reinforcing proven pattern ctx=0x", 0
+
+    align 8
+    ; Reinforcement strength for proven patterns (counteracts decay)
+    reinforce_strength: dq 2.0
 
 section .text
 
@@ -22,6 +27,7 @@ extern fire_hook
 extern gate_test_modification
 extern journey_step
 extern sym_scan_for_discoveries
+extern holo_store
 
 ;; ============================================================
 ;; dream_cycle
@@ -369,11 +375,57 @@ dream_consolidate:
     jmp .consol_next
 
 .promote_nursery:
-    ; Has hits — graduate to ACTIVE
+    ; Has hits — graduate to ACTIVE (this is now Long-Term Memory)
     and word [rsi + RHDR_FLAGS], ~RFLAG_NURSERY
     or word [rsi + RHDR_FLAGS], RFLAG_ACTIVE
     ; Update table
     and word [rdi + RTE_FLAGS], ~RFLAG_NURSERY
+
+    ; === REINFORCE HOLOGRAPHIC TRACE ===
+    ; Proven patterns must be reinforced to counteract decay (LTM)
+    ; rsi = region header, code starts at rsi + RHDR_SIZE
+    push rdi
+    push rsi
+    push rcx
+
+    lea rax, [rsi + RHDR_SIZE]     ; code body
+
+    ; Check for cmp eax, imm32 (0x3D) to extract ctx_hash
+    cmp byte [rax], 0x3D
+    jne .no_reinforce             ; skip if not standard pattern
+
+    mov edi, [rax + 1]            ; ctx_hash = bytes 1-4
+    push rdi                      ; save ctx_hash
+
+    ; Scan for mov eax, imm32 (0xB8) to extract pred_token
+    movzx ecx, word [rsi + RHDR_CODE_LEN]
+    lea rax, [rsi + RHDR_SIZE + 5] ; skip cmp instruction
+    sub ecx, 5
+.scan_token:
+    cmp ecx, 5
+    jl .no_token
+    cmp byte [rax], 0xB8
+    je .found_token
+    inc rax
+    dec ecx
+    jmp .scan_token
+
+.found_token:
+    mov esi, [rax + 1]            ; pred_token = bytes after 0xB8
+    pop rdi                       ; restore ctx_hash
+
+    ; Call holo_store(ctx_hash, pred_token, reinforce_strength)
+    movsd xmm0, [rel reinforce_strength]
+    call holo_store
+    jmp .reinforce_done
+
+.no_token:
+    pop rdi                       ; clean up saved ctx_hash
+.no_reinforce:
+.reinforce_done:
+    pop rcx
+    pop rsi
+    pop rdi
 
 .consol_next:
     pop rcx

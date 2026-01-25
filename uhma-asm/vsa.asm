@@ -619,8 +619,9 @@ holo_store:
     movsd xmm0, [rsp + HOLO_VEC_BYTES * 3]  ; reload strength
     call holo_scale_f64
 
-    ; 5. trace_idx = ctx_hash & 0xFF
-    movzx eax, r12b
+    ; 5. trace_idx = ctx_hash & 0xFFF (4096 buckets for better fidelity)
+    mov eax, r12d
+    and eax, 0xFFF
     ; trace_ptr = SURFACE_BASE + HOLO_OFFSET + trace_idx * HOLO_VEC_BYTES
     imul rax, rax, HOLO_VEC_BYTES
     mov rbx, SURFACE_BASE + HOLO_OFFSET
@@ -664,8 +665,9 @@ holo_predict:
     lea rsi, [rsp]
     call holo_gen_vec
 
-    ; 2. trace_idx = ctx_hash & 0xFF
-    movzx eax, r12b
+    ; 2. trace_idx = ctx_hash & 0xFFF (4096 buckets for better fidelity)
+    mov eax, r12d
+    and eax, 0xFFF
     imul rax, rax, HOLO_VEC_BYTES
     mov r14, SURFACE_BASE + HOLO_OFFSET
     add r14, rax              ; r14 = trace ptr (f64[1024])
@@ -1131,7 +1133,8 @@ holo_query_valence:
     call holo_gen_vec
 
     ; Get trace pointer
-    movzx eax, bl             ; trace_idx = ctx_hash & 0xFF
+    mov eax, ebx
+    and eax, 0xFFF            ; trace_idx = ctx_hash & 0xFFF (4096 buckets)
     imul rax, rax, HOLO_VEC_BYTES
     mov rdi, SURFACE_BASE + HOLO_OFFSET
     add rdi, rax              ; trace ptr

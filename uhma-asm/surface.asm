@@ -191,7 +191,14 @@ region_alloc:
     mov dword [rcx + RHDR_MISSES], 0
     mov dword [rcx + RHDR_BIRTH], r14d
     mov word [rcx + RHDR_CODE_LEN], r12w
+    ; DISPATCH regions start in NURSERY (must prove themselves), others start ACTIVE
+    cmp r13w, RTYPE_DISPATCH
+    jne .not_dispatch_hdr
+    mov word [rcx + RHDR_FLAGS], RFLAG_NURSERY
+    jmp .hdr_flags_done
+.not_dispatch_hdr:
     mov word [rcx + RHDR_FLAGS], RFLAG_ACTIVE
+.hdr_flags_done:
     ; Connection ptrs, weights, dynamics all zeroed by rep stosb above
 
     ; Save the region in region table
@@ -212,7 +219,14 @@ region_alloc:
     add eax, RHDR_SIZE
     mov [rsi + RTE_LEN], eax
     mov [rsi + RTE_TYPE], r13w
+    ; DISPATCH regions start in NURSERY (must prove themselves), others start ACTIVE
+    cmp r13w, RTYPE_DISPATCH
+    jne .not_dispatch_tbl
+    mov word [rsi + RTE_FLAGS], RFLAG_NURSERY
+    jmp .tbl_flags_done
+.not_dispatch_tbl:
     mov word [rsi + RTE_FLAGS], RFLAG_ACTIVE
+.tbl_flags_done:
     mov dword [rsi + RTE_HITS], 0
     mov dword [rsi + RTE_MISSES], 0
     mov [rsi + RTE_BIRTH], r14d
