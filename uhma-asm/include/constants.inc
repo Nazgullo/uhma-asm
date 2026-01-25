@@ -73,8 +73,12 @@
 %define RTE_HITS            16                ; u32
 %define RTE_MISSES          20                ; u32
 %define RTE_BIRTH           24                ; u32
-%define RTE_PAD             28                ; u32
+%define RTE_CONSEC_ERRORS   28                ; u16 consecutive errors (9 = death)
+%define RTE_ERROR_PATTERN   30                ; u16 semantic pattern that failed
 %define RTE_SIZE            32
+
+; 9-error kill threshold (broken regions die fast)
+%define CONSEC_ERROR_KILL   9
 
 ; Region types
 %define RTYPE_DISPATCH      0
@@ -340,6 +344,59 @@
 %define ST_INHIBIT_LEARNED  (ST_RHYTHM_PERIOD + 4)        ; u32 total inhibitory connections formed
 
 ;; ============================================================
+;; Advanced Cognition (organic extensions, not bolted-on)
+;; ============================================================
+
+; Counterfactual tracking — runner-up from dispatch (what would have happened)
+%define ST_RUNNER_UP_TOKEN  (ST_INHIBIT_LEARNED + 4)      ; u32 second-best prediction
+%define ST_RUNNER_UP_CONF   (ST_RUNNER_UP_TOKEN + 4)      ; f32 runner-up confidence
+%define ST_RUNNER_UP_REGION (ST_RUNNER_UP_CONF + 4)       ; u64 runner-up region ptr
+%define ST_COUNTERFACT_WINS (ST_RUNNER_UP_REGION + 8)     ; u32 times runner-up would have been right
+%define ST_COUNTERFACT_TOTAL (ST_COUNTERFACT_WINS + 4)    ; u32 total counterfactual checks
+
+; Self-knowledge — context-type correlation (which contexts am I good/bad at)
+; Uses top 4 bits of context hash as "context type" (16 types)
+%define ST_CTX_TYPE_HITS    (ST_COUNTERFACT_TOTAL + 4)    ; u32[16] hits by context type
+%define ST_CTX_TYPE_TOTAL   (ST_CTX_TYPE_HITS + 64)       ; u32[16] total by context type
+%define ST_STRENGTH_MASK    (ST_CTX_TYPE_TOTAL + 64)      ; u16 bitmap: types with >70% accuracy
+%define ST_WEAKNESS_MASK    (ST_STRENGTH_MASK + 2)        ; u16 bitmap: types with <30% accuracy
+
+; Specious present — temporal zones (fading past, vivid now, anticipated future)
+%define ST_PRESENT_START    (ST_WEAKNESS_MASK + 2)        ; u64 oldest step in fire ring
+%define ST_PRESENT_END      (ST_PRESENT_START + 8)        ; u64 most recent step
+%define ST_PRESENT_WIDTH    (ST_PRESENT_END + 8)          ; u32 duration of "now"
+%define ST_TEMPORAL_FOCUS   (ST_PRESENT_WIDTH + 4)        ; f64 weighted centroid of recent firings
+
+; Working memory — semantic context slots (noun, verb, modifier binding)
+%define ST_CTX_SLOT_NOUN    (ST_TEMPORAL_FOCUS + 8)       ; u32 last noun-like token
+%define ST_CTX_SLOT_VERB    (ST_CTX_SLOT_NOUN + 4)        ; u32 last verb-like token
+%define ST_CTX_SLOT_MOD     (ST_CTX_SLOT_VERB + 4)        ; u32 last modifier token
+%define ST_SLOT_RECENCY     (ST_CTX_SLOT_MOD + 4)         ; u8[4] steps since each slot updated
+
+; Parameter self-tuning — runtime-adjustable thresholds
+%define ST_PARAM_PRUNE_ACC  (ST_SLOT_RECENCY + 4)         ; f32 prune threshold (default 0.1)
+%define ST_PARAM_PROMOTE_ACC (ST_PARAM_PRUNE_ACC + 4)     ; f32 promote threshold (default 0.8)
+%define ST_PARAM_DREAM_THRESH (ST_PARAM_PROMOTE_ACC + 4)  ; f32 dream pressure threshold
+%define ST_PARAM_OBSERVE_THRESH (ST_PARAM_DREAM_THRESH + 4) ; f32 observe pressure threshold
+%define ST_THRESH_ADJUST_DIR (ST_PARAM_OBSERVE_THRESH + 4) ; i8 last adjustment direction (-1/0/+1)
+
+; Hypothesis tracking — extends miss buffer with confidence of wrong prediction
+%define ST_HYPOTHESIS_CONF  (ST_THRESH_ADJUST_DIR + 4)    ; f32[256] confidence when we were wrong
+%define ST_HYPOTHESIS_COUNT (ST_HYPOTHESIS_CONF + 1024)   ; u32 total hypotheses formed
+
+; Causal chain logging — which connections actually fired
+%define ST_CAUSAL_LOG       (ST_HYPOTHESIS_COUNT + 4)     ; (src:u16, dst:u16, step:u32)[64]
+%define ST_CAUSAL_LOG_CAP   64
+%define ST_CAUSAL_LOG_ENTRY 8
+%define ST_CAUSAL_LOG_POS   (ST_CAUSAL_LOG + ST_CAUSAL_LOG_CAP * ST_CAUSAL_LOG_ENTRY)
+
+; Compound concept propagation — base concept activation from compound
+%define ST_BASE_CONFUSED    (ST_CAUSAL_LOG_POS + 4)       ; f32 accumulated confusion from all sources
+%define ST_BASE_CONFIDENT   (ST_BASE_CONFUSED + 4)        ; f32 accumulated confidence
+%define ST_BASE_LEARNING    (ST_BASE_CONFIDENT + 4)       ; f32 accumulated learning signal
+%define ST_BASE_STUCK       (ST_BASE_LEARNING + 4)        ; f32 accumulated stuck signal
+
+;; ============================================================
 ;; Graph Dynamics Tuning Constants
 ;; ============================================================
 
@@ -377,11 +434,15 @@
 %define SURPRISE_OUTCOME    1   ; low-confidence region missed (expected uncertainty)
 %define SURPRISE_SELF       2   ; high-confidence region missed (self-model violated)
 
-;; Dispatch mode enums
-%define DMODE_FAST          0   ; first match wins
+;; Dispatch mode enums (cognitive controller strategies)
+%define DMODE_FAST          0   ; first match wins (familiar contexts)
 %define DMODE_BEST          1   ; scan all, pick highest-accuracy match
 %define DMODE_EXPLORE       2   ; prefer novel/low-hit regions
 %define DMODE_DELIBERATE    3   ; gate-test top candidates
+%define DMODE_MULTI_EXPERT  4   ; vote across top-N matching regions
+%define DMODE_STRUCTURAL    5   ; use schema patterns and working memory slots
+%define DMODE_CAUSAL        6   ; follow causal chain from recent firings
+%define DMODE_ANALOGICAL    7   ; use similarity to recent episodes
 
 ;; ============================================================
 ;; Hook IDs

@@ -103,12 +103,18 @@ learn_pattern:
     call print_cstr
 
     ; --- Metabolic cost: emitting a new pattern costs energy ---
+    ; Bootstrap exception: first N patterns are free (can't bootstrap without patterns)
+    lea rax, [rbx + STATE_OFFSET + ST_REGION_COUNT]
+    mov ecx, [rax]
+    cmp ecx, 8                 ; bootstrap threshold
+    jl .skip_energy_check      ; first 8 patterns are free
     ; If energy is below starvation level, refuse to emit (conserve)
     movsd xmm0, [rbx + STATE_OFFSET + ST_ENERGY]
     mov rax, ENERGY_STARVATION
     movq xmm1, rax
     ucomisd xmm0, xmm1
     jbe .done                  ; starving — refuse to spend energy on emission
+.skip_energy_check:
     ; Deduct emission cost
     mov rax, ENERGY_EMIT_COST
     movq xmm1, rax

@@ -248,6 +248,99 @@ observe_cycle:
     ; --- Track recent condemnations for presence decay ---
     mov [rbx + STATE_OFFSET + ST_RECENT_CONDEMNS], r15d
 
+    ; --- Parameter self-tuning: adjust thresholds based on outcomes ---
+    ; If condemnation rate > 10%, we're pruning too aggressively → relax
+    ; If condemnation rate < 1% and accuracy stagnant → tighten
+    test r13d, r13d
+    jz .param_tune_done
+    cvtsi2ss xmm0, r15d           ; condemned count
+    cvtsi2ss xmm1, r13d           ; region count
+    divss xmm0, xmm1              ; condemn_rate
+    ; Check high rate (> 0.10)
+    mov eax, 0x3DCCCCCD           ; 0.1f
+    movd xmm1, eax
+    comiss xmm0, xmm1
+    jbe .param_check_low
+    ; High condemnation rate → relax prune threshold (increase it)
+    movss xmm2, [rbx + STATE_OFFSET + ST_PARAM_PRUNE_ACC]
+    mov eax, 0x3C23D70A           ; 0.01f (adjustment step)
+    movd xmm1, eax
+    addss xmm2, xmm1              ; prune_thresh += 0.01
+    mov eax, 0x3E4CCCCD           ; 0.2f (max)
+    movd xmm1, eax
+    minss xmm2, xmm1              ; cap at 0.2
+    movss [rbx + STATE_OFFSET + ST_PARAM_PRUNE_ACC], xmm2
+    mov byte [rbx + STATE_OFFSET + ST_THRESH_ADJUST_DIR], 1  ; relaxed
+    jmp .param_tune_done
+.param_check_low:
+    ; Check low rate (< 0.01) AND accuracy stagnant
+    mov eax, 0x3C23D70A           ; 0.01f
+    movd xmm1, eax
+    comiss xmm0, xmm1
+    jae .param_tune_done
+    ; Low condemn rate — check if accuracy is stagnant (variance < 0.01)
+    movss xmm3, [rbx + STATE_OFFSET + ST_ACCURACY_VARIANCE]
+    comiss xmm3, xmm1             ; variance < 0.01?
+    jae .param_tune_done
+    ; Stagnant → tighten prune threshold (decrease it)
+    movss xmm2, [rbx + STATE_OFFSET + ST_PARAM_PRUNE_ACC]
+    mov eax, 0x3C23D70A           ; 0.01f
+    movd xmm1, eax
+    subss xmm2, xmm1              ; prune_thresh -= 0.01
+    mov eax, 0x3D4CCCCD           ; 0.05f (min)
+    movd xmm1, eax
+    maxss xmm2, xmm1              ; floor at 0.05
+    movss [rbx + STATE_OFFSET + ST_PARAM_PRUNE_ACC], xmm2
+    mov byte [rbx + STATE_OFFSET + ST_THRESH_ADJUST_DIR], -1  ; tightened
+.param_tune_done:
+
+    ; --- Self-knowledge: compute strength/weakness masks ---
+    ; For each context type (0-15), check if accuracy > 70% (strength) or < 30% (weakness)
+    xor r8d, r8d                  ; strength_mask
+    xor r9d, r9d                  ; weakness_mask
+    xor ecx, ecx                  ; ctx_type index
+.selfknow_loop:
+    cmp ecx, 16
+    jge .selfknow_done
+    lea rax, [rbx + STATE_OFFSET + ST_CTX_TYPE_HITS]
+    mov edi, [rax + rcx * 4]      ; hits[ctx_type]
+    lea rax, [rbx + STATE_OFFSET + ST_CTX_TYPE_TOTAL]
+    mov esi, [rax + rcx * 4]      ; total[ctx_type]
+    test esi, esi
+    jz .selfknow_next             ; no data for this type
+    cmp esi, 10                   ; need at least 10 samples
+    jl .selfknow_next
+    ; Compute accuracy = hits / total
+    cvtsi2ss xmm0, edi
+    cvtsi2ss xmm1, esi
+    divss xmm0, xmm1              ; accuracy
+    ; Check > 0.70 (strength)
+    mov eax, 0x3F333333           ; 0.7f
+    movd xmm1, eax
+    comiss xmm0, xmm1
+    jbe .selfknow_check_weak
+    ; Set strength bit
+    mov eax, 1
+    shl eax, cl
+    or r8d, eax
+    jmp .selfknow_next
+.selfknow_check_weak:
+    ; Check < 0.30 (weakness)
+    mov eax, 0x3E99999A           ; 0.3f
+    movd xmm1, eax
+    comiss xmm0, xmm1
+    jae .selfknow_next
+    ; Set weakness bit
+    mov eax, 1
+    shl eax, cl
+    or r9d, eax
+.selfknow_next:
+    inc ecx
+    jmp .selfknow_loop
+.selfknow_done:
+    mov [rbx + STATE_OFFSET + ST_STRENGTH_MASK], r8w
+    mov [rbx + STATE_OFFSET + ST_WEAKNESS_MASK], r9w
+
     ; --- Self-consumption: metabolize condemned regions into energy ---
     ; Dead patterns become fuel. Their knowledge is recycled.
     test r15d, r15d
@@ -759,6 +852,107 @@ update_presence:
     xorps xmm0, xmm0
 .pres_meta_s:
     movss [r12 + PRES_META_AWARENESS * 4], xmm0
+
+    ; --- Specious Present: temporal zones from fire ring ---
+    ; Scan fire ring to find oldest and newest timestamps
+    ; This creates the felt sense of "now" — not a fixed window but emergent
+    mov rcx, [rbx + STATE_OFFSET + ST_FIRE_COUNT]
+    test rcx, rcx
+    jz .specious_zero
+    cmp rcx, ST_FIRE_RING_CAP
+    jle .specious_use_count
+    mov ecx, ST_FIRE_RING_CAP
+.specious_use_count:
+    lea rsi, [rbx + STATE_OFFSET + ST_FIRE_RING]
+    ; Initialize: oldest = MAX, newest = 0, sum = 0, weight_sum = 0
+    mov rax, 0x7FFFFFFFFFFFFFFF   ; MAX u64
+    mov [rbx + STATE_OFFSET + ST_PRESENT_START], rax  ; oldest
+    xor eax, eax
+    mov [rbx + STATE_OFFSET + ST_PRESENT_END], rax    ; newest
+    xorpd xmm3, xmm3              ; temporal focus accumulator
+    xorpd xmm4, xmm4              ; weight accumulator
+    mov rax, 0x3FF0000000000000   ; 1.0 f64
+    movq xmm5, rax                ; decay base
+    xor edx, edx                  ; index
+.specious_scan:
+    cmp edx, ecx
+    jge .specious_done
+    ; Entry: [ptr:u64, timestamp:f64] at offset edx*16
+    imul edi, edx, ST_FIRE_RING_ENTRY
+    mov rax, [rsi + rdi + 8]      ; timestamp (f64 as bits)
+    ; Update oldest/newest
+    cmp rax, [rbx + STATE_OFFSET + ST_PRESENT_START]
+    jae .spec_not_oldest
+    mov [rbx + STATE_OFFSET + ST_PRESENT_START], rax
+.spec_not_oldest:
+    cmp rax, [rbx + STATE_OFFSET + ST_PRESENT_END]
+    jbe .spec_not_newest
+    mov [rbx + STATE_OFFSET + ST_PRESENT_END], rax
+.spec_not_newest:
+    ; Weight = decay^(ring_size - index) — recent entries count more
+    cvtsi2sd xmm0, edx
+    movsd xmm1, [rsi + rdi + 8]   ; timestamp f64
+    mulsd xmm0, xmm1              ; weighted timestamp
+    addsd xmm3, xmm0              ; accumulate
+    addsd xmm4, xmm1              ; accumulate weight
+    inc edx
+    jmp .specious_scan
+.specious_done:
+    ; Compute width = end - start
+    mov rax, [rbx + STATE_OFFSET + ST_PRESENT_END]
+    sub rax, [rbx + STATE_OFFSET + ST_PRESENT_START]
+    mov [rbx + STATE_OFFSET + ST_PRESENT_WIDTH], eax
+    ; Temporal focus = sum / weight_sum
+    xorpd xmm0, xmm0
+    ucomisd xmm4, xmm0
+    jbe .specious_focus_zero
+    divsd xmm3, xmm4
+    movsd [rbx + STATE_OFFSET + ST_TEMPORAL_FOCUS], xmm3
+    jmp .specious_ret
+.specious_focus_zero:
+    movsd [rbx + STATE_OFFSET + ST_TEMPORAL_FOCUS], xmm0
+    jmp .specious_ret
+.specious_zero:
+    xor eax, eax
+    mov [rbx + STATE_OFFSET + ST_PRESENT_START], rax
+    mov [rbx + STATE_OFFSET + ST_PRESENT_END], rax
+    mov [rbx + STATE_OFFSET + ST_PRESENT_WIDTH], eax
+    xorpd xmm0, xmm0
+    movsd [rbx + STATE_OFFSET + ST_TEMPORAL_FOCUS], xmm0
+.specious_ret:
+
+    ; --- Compound concept propagation ---
+    ; Propagate presence states to base concept accumulators
+    ; These accumulate over time, creating emergent "meaning" from derived states
+    ; INTRO_CONFUSED state → accumulate to BASE_CONFUSED
+    mov ecx, [rbx + STATE_OFFSET + ST_INTRO_STATE]
+    cmp ecx, INTRO_CONFUSED
+    jne .prop_check_confident
+    movss xmm0, [r12 + PRES_UNCERTAINTY * 4]
+    addss xmm0, [rbx + STATE_OFFSET + ST_BASE_CONFUSED]
+    movss [rbx + STATE_OFFSET + ST_BASE_CONFUSED], xmm0
+    jmp .prop_done
+.prop_check_confident:
+    cmp ecx, INTRO_CONFIDENT
+    jne .prop_check_learning
+    movss xmm0, [r12 + PRES_VALENCE * 4]         ; valence = accuracy = confidence
+    addss xmm0, [rbx + STATE_OFFSET + ST_BASE_CONFIDENT]
+    movss [rbx + STATE_OFFSET + ST_BASE_CONFIDENT], xmm0
+    jmp .prop_done
+.prop_check_learning:
+    cmp ecx, INTRO_LEARNING
+    jne .prop_check_stuck
+    movss xmm0, [r12 + PRES_MOMENTUM * 4]
+    addss xmm0, [rbx + STATE_OFFSET + ST_BASE_LEARNING]
+    movss [rbx + STATE_OFFSET + ST_BASE_LEARNING], xmm0
+    jmp .prop_done
+.prop_check_stuck:
+    cmp ecx, INTRO_STUCK
+    jne .prop_done
+    movss xmm0, [r12 + PRES_PRESSURE * 4]
+    addss xmm0, [rbx + STATE_OFFSET + ST_BASE_STUCK]
+    movss [rbx + STATE_OFFSET + ST_BASE_STUCK], xmm0
+.prop_done:
 
     pop r13
     pop r12

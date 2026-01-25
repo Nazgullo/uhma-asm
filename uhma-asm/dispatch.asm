@@ -19,9 +19,9 @@ section .data
     half_point_o:   dq 0.5
     activ_thresh:   dq 0.1
 
-    ; Holographic threshold (f64)
+    ; Holographic threshold (f64) - set high to prefer graph dispatch
     align 8
-    holo_thresh:    dq 0.15
+    holo_thresh:    dq 0.95
 
 section .bss
     word_buf:       resb MAX_WORD_LEN
@@ -351,29 +351,79 @@ process_token:
     inc dword [rbx + STATE_OFFSET + ST_NOVELTY_RECENT]
 .token_seen:
 
+    ; --- Context hash = immediate predecessor only (true bigram) ---
+    ; Deterministic: prev_token determines context for predicting current
+    ; This ensures "hello → world" matches every time after learning once
+    lea rsi, [rbx + STATE_OFFSET + ST_TOKEN_BUF]
+    mov ecx, [rbx + STATE_OFFSET + ST_TOKEN_POS]
+    mov r9, 0x9E3779B97F4A7C15  ; golden ratio prime
+
+    ; Get previous token (position - 1)
+    dec ecx
+    and ecx, (ST_TOKEN_BUF_CAP - 1)
+    mov r10d, [rsi + rcx * 4]  ; previous token
+
+    ; Context = just prev_token * prime (simple, deterministic)
+    mov rax, r10
+    imul rax, r9
+    mov r13, rax
+    ; Store context
+    mov [rbx + STATE_OFFSET + ST_CTX_HASH], r13
+
     ; --- Update token ring buffer ---
     lea rax, [rbx + STATE_OFFSET + ST_TOKEN_POS]
-    mov ecx, [rax]            ; current pos
+    mov ecx, [rax]
     lea rdx, [rbx + STATE_OFFSET + ST_TOKEN_BUF]
-    mov [rdx + rcx * 4], r12d ; store token
+    mov [rdx + rcx * 4], r12d
     inc ecx
-    and ecx, (ST_TOKEN_BUF_CAP - 1)  ; wrap
-    mov [rax], ecx            ; update pos
+    and ecx, (ST_TOKEN_BUF_CAP - 1)
+    mov [rax], ecx
 
     ; Increment token count
-    lea rax, [rbx + STATE_OFFSET + ST_TOKEN_COUNT]
-    inc dword [rax]
+    inc dword [rbx + STATE_OFFSET + ST_TOKEN_COUNT]
 
-    ; --- Update rolling context hash ---
-    ; ctx_hash = ctx_hash XOR (token_id * FNV64_PRIME)
-    lea rax, [rbx + STATE_OFFSET + ST_CTX_HASH]
-    mov rcx, [rax]            ; current hash
-    mov rdx, r12              ; token_id (zero extended)
-    mov r8, FNV64_PRIME       ; use r8 so we don't clobber rcx
-    imul rdx, r8
-    xor rcx, rdx
-    mov [rax], rcx            ; store updated hash
-    mov r13, rcx              ; r13 = context hash
+    ; --- Working memory: semantic slots (noun/verb/modifier) ---
+    ; Classify token by low 2 bits: 0=noun, 1=verb, 2=modifier, 3=other
+    ; This creates implicit binding structure from token statistics
+    mov eax, r12d
+    and eax, 0x3
+    cmp eax, 0
+    jne .slot_check_verb
+    ; Noun slot
+    mov [rbx + STATE_OFFSET + ST_CTX_SLOT_NOUN], r12d
+    mov byte [rbx + STATE_OFFSET + ST_SLOT_RECENCY], 0      ; noun recency = 0
+    jmp .slot_done
+.slot_check_verb:
+    cmp eax, 1
+    jne .slot_check_mod
+    ; Verb slot
+    mov [rbx + STATE_OFFSET + ST_CTX_SLOT_VERB], r12d
+    mov byte [rbx + STATE_OFFSET + ST_SLOT_RECENCY + 1], 0  ; verb recency = 0
+    jmp .slot_done
+.slot_check_mod:
+    cmp eax, 2
+    jne .slot_done
+    ; Modifier slot
+    mov [rbx + STATE_OFFSET + ST_CTX_SLOT_MOD], r12d
+    mov byte [rbx + STATE_OFFSET + ST_SLOT_RECENCY + 2], 0  ; mod recency = 0
+.slot_done:
+    ; Age all recencies (saturate at 255)
+    lea rax, [rbx + STATE_OFFSET + ST_SLOT_RECENCY]
+    movzx ecx, byte [rax]
+    cmp ecx, 255
+    jge .slot_age1_done
+    inc byte [rax]
+.slot_age1_done:
+    movzx ecx, byte [rax + 1]
+    cmp ecx, 255
+    jge .slot_age2_done
+    inc byte [rax + 1]
+.slot_age2_done:
+    movzx ecx, byte [rax + 2]
+    cmp ecx, 255
+    jge .slot_age3_done
+    inc byte [rax + 2]
+.slot_age3_done:
 
     ; --- Check last prediction ---
     lea rax, [rbx + STATE_OFFSET + ST_LAST_PREDICT]
@@ -406,6 +456,17 @@ process_token:
     movq xmm5, rax
     addsd xmm5, [rbx + STATE_OFFSET + ST_ENERGY_INCOME]
     movsd [rbx + STATE_OFFSET + ST_ENERGY_INCOME], xmm5
+
+    ; --- Self-knowledge: track context-type accuracy ---
+    ; Extract ctx_type from hash (top 4 bits → 16 types)
+    mov rax, [rbx + STATE_OFFSET + ST_CTX_HASH]
+    shr rax, 60               ; top 4 bits → 0-15
+    and eax, 0xF              ; mask to 4 bits
+    ; Increment both hits and total for this context type
+    lea rcx, [rbx + STATE_OFFSET + ST_CTX_TYPE_HITS]
+    inc dword [rcx + rax * 4]       ; hits[ctx_type]++
+    lea rcx, [rbx + STATE_OFFSET + ST_CTX_TYPE_TOTAL]
+    inc dword [rcx + rax * 4]       ; total[ctx_type]++
 
     ; Increment hit counter on the predicting region
     lea rax, [rbx + STATE_OFFSET + ST_PREDICT_REGION]
@@ -542,6 +603,13 @@ process_token:
     mov dword [rax], SURPRISE_OUTCOME
 
 .do_miss_counter:
+    ; --- Self-knowledge: track context-type (miss → total only) ---
+    mov rax, [rbx + STATE_OFFSET + ST_CTX_HASH]
+    shr rax, 60               ; top 4 bits → 0-15
+    and eax, 0xF
+    lea rcx, [rbx + STATE_OFFSET + ST_CTX_TYPE_TOTAL]
+    inc dword [rcx + rax * 4]       ; total[ctx_type]++ (no hit increment)
+
     ; Increment miss counter on the predicting region
     lea rax, [rbx + STATE_OFFSET + ST_PREDICT_REGION]
     mov rcx, [rax]
@@ -579,6 +647,15 @@ process_token:
     mov rsi, [rax]
     mov [rdi], rsi            ; context hash
     mov [rdi + 8], r12d       ; actual token
+
+    ; --- Hypothesis confidence: how sure were we when wrong? ---
+    ; Store prediction confidence at same index as miss buffer entry
+    ; This turns misses into testable hypotheses
+    lea rdi, [rbx + STATE_OFFSET + ST_HYPOTHESIS_CONF]
+    movss xmm0, [rbx + STATE_OFFSET + ST_EXPECT_CONF]
+    movss [rdi + rcx * 4], xmm0      ; hypothesis_conf[miss_pos] = expect_conf
+    inc dword [rbx + STATE_OFFSET + ST_HYPOTHESIS_COUNT]
+
     ; Advance miss pos
     lea rax, [rbx + STATE_OFFSET + ST_MISS_POS]
     mov ecx, [rax]
@@ -588,6 +665,17 @@ process_token:
     xor ecx, ecx
 .no_miss_wrap:
     mov [rax], ecx
+
+    ; --- Counterfactual check: would runner-up have been right? ---
+    mov eax, [rbx + STATE_OFFSET + ST_RUNNER_UP_TOKEN]
+    test eax, eax
+    jz .counterfact_done               ; no runner-up
+    inc dword [rbx + STATE_OFFSET + ST_COUNTERFACT_TOTAL]
+    cmp eax, r12d                      ; runner-up == actual token?
+    jne .counterfact_done
+    ; Runner-up would have been correct (counterfactual win)
+    inc dword [rbx + STATE_OFFSET + ST_COUNTERFACT_WINS]
+.counterfact_done:
 
     ; Fire miss hook
     mov edi, HOOK_ON_MISS
@@ -603,9 +691,8 @@ process_token:
     call print_cstr
 
     ; --- Learn from the miss ---
-    ; Context that preceded this token → should predict this token
-    lea rax, [rbx + STATE_OFFSET + ST_LAST_CTX]
-    mov rdi, [rax]            ; context hash
+    ; Current context (hash of prev token) → should predict this token
+    mov rdi, r13              ; current context = hash(prev_token)
     mov esi, r12d             ; token to predict
     call learn_pattern
 
@@ -617,8 +704,7 @@ process_token:
     test rcx, rcx
     jz .after_counter          ; no predicting region to inhibit
     ; Find the region that correctly predicts this token in this context
-    lea rax, [rbx + STATE_OFFSET + ST_LAST_CTX]
-    mov rdi, [rax]
+    mov rdi, r13              ; current context
     mov esi, r12d
     push rcx                   ; save wrong-predictor
     call find_existing_pattern ; → rax = correct region (or 0)
@@ -655,11 +741,10 @@ process_token:
     lea rdi, [rel no_predict_msg]
     call print_cstr
 
-    ; Learn: previous context → this token
-    lea rax, [rbx + STATE_OFFSET + ST_LAST_CTX]
-    mov rdi, [rax]            ; previous context
+    ; Learn: current context (hash of prev token) → this token
+    mov rdi, r13              ; current context = hash(prev_token)
     test rdi, rdi
-    jz .after_counter         ; no previous context yet
+    jz .after_counter         ; no context yet
     mov esi, r12d
     call learn_pattern
 
@@ -668,16 +753,21 @@ process_token:
     call update_organic_pressure
 
     ; --- Make next prediction ---
-    ; Dispatch: use current context hash to predict next token
-    mov rdi, r13              ; current context hash
+    ; Dispatch: predict what comes AFTER current token
+    ; Context for prediction = hash(current_token) so we can find patterns that predict successors
+    mov rax, r12              ; current token
+    imul rax, 0x9E3779B97F4A7C15  ; golden ratio prime (same hash as context computation)
+    mov rdi, rax              ; context = hash(current_token)
+    push rax                  ; save for ST_LAST_CTX
     call dispatch_predict     ; → eax = predicted token (0 if none)
 
     ; Store prediction for next step
     lea rcx, [rbx + STATE_OFFSET + ST_LAST_PREDICT]
     mov [rcx], eax
-    ; Store current context for miss recording
+    ; Store prediction context (hash of current token, for matching on next step)
+    pop rax
     lea rcx, [rbx + STATE_OFFSET + ST_LAST_CTX]
-    mov [rcx], r13
+    mov [rcx], rax
 
     ; Fire input hook
     mov edi, HOOK_ON_INPUT
@@ -703,7 +793,7 @@ dispatch_predict:
     push r13
     push r14
     push r15
-    sub rsp, 48               ; locals:
+    sub rsp, 80               ; locals:
                               ; [rsp+0]  = best_token (u32)
                               ; [rsp+8]  = best_weight (f64)
                               ; [rsp+16] = best_region_ptr (u64)
@@ -711,6 +801,12 @@ dispatch_predict:
                               ; [rsp+28] = visited (u32)
                               ; [rsp+32] = entry_slot (u32)
                               ; [rsp+36] = ctx_hash_copy (u32)
+                              ; --- Counterfactual: runner-up tracking ---
+                              ; [rsp+40] = runner_up_token (u32)
+                              ; [rsp+48] = runner_up_weight (f64)
+                              ; [rsp+56] = runner_up_region (u64)
+                              ; [rsp+64] = runner_up_conf (f32)
+                              ; [rsp+68] = ctx_type (u32) for self-knowledge
 
     mov r12d, edi             ; context hash (lower 32 bits)
     mov [rsp + 36], edi       ; save copy
@@ -739,6 +835,15 @@ dispatch_predict:
     mov qword [rsp + 16], 0   ; best_region_ptr
     mov dword [rsp + 24], 0   ; depth
     mov dword [rsp + 28], 0   ; visited
+    ; Initialize runner-up (counterfactual)
+    mov dword [rsp + 40], 0   ; runner_up_token
+    mov [rsp + 48], rax       ; runner_up_weight = -1.0
+    mov qword [rsp + 56], 0   ; runner_up_region
+    mov dword [rsp + 64], 0   ; runner_up_conf
+    ; Extract context type (top 4 bits → 16 types for self-knowledge)
+    mov eax, r12d
+    shr eax, 28               ; top 4 bits
+    mov [rsp + 68], eax       ; ctx_type
 
     ; --- TRY HOLOGRAPHIC PREDICTION FIRST ---
     mov edi, r12d             ; ctx_hash
@@ -798,6 +903,63 @@ dispatch_predict:
     ; If entry_ptr is 0, skip to linear fallback
     test r13, r13
     jz .graph_fallback
+
+    ; --- Check dispatch mode for strategy selection ---
+    mov eax, [rbx + STATE_OFFSET + ST_DISPATCH_MODE]
+    cmp eax, DMODE_CAUSAL
+    je .mode_causal
+    cmp eax, DMODE_STRUCTURAL
+    je .mode_structural
+    jmp .graph_traverse           ; default: use standard graph traversal
+
+.mode_causal:
+    ; CAUSAL mode: consult causal log for recently-fired connections
+    ; Look for chains that led to success
+    lea rdi, [rbx + STATE_OFFSET + ST_CAUSAL_LOG]
+    mov ecx, [rbx + STATE_OFFSET + ST_CAUSAL_LOG_POS]
+    test ecx, ecx
+    jz .graph_traverse            ; no causal log, fall back
+    dec ecx
+    imul edx, ecx, ST_CAUSAL_LOG_ENTRY
+    ; Get most recent dst from causal log
+    movzx eax, word [rdi + rdx + 2]
+    ; Try to find a region with matching low-16 bits
+    ; This biases toward recently-causally-connected regions
+    ; Just boost prime on regions with matching low bits
+    lea rsi, [rbx + REGION_TABLE_OFFSET]
+    xor ecx, ecx
+.causal_boost_loop:
+    cmp ecx, 16                   ; check first 16 regions
+    jge .graph_traverse
+    push rcx
+    imul rdi, rcx, RTE_SIZE
+    add rdi, rsi
+    mov r8, [rdi + RTE_ADDR]
+    test r8, r8
+    jz .causal_boost_next
+    mov edx, r8d
+    and edx, 0xFFFF
+    cmp edx, eax
+    jne .causal_boost_next
+    ; Boost this region's prime (causal connection recently fired)
+    mov rax, 0x3FB999999999999A   ; 0.1 f64
+    movq xmm0, rax
+    addsd xmm0, [r8 + RHDR_PRIME]
+    movsd [r8 + RHDR_PRIME], xmm0
+.causal_boost_next:
+    pop rcx
+    inc ecx
+    jmp .causal_boost_loop
+
+.mode_structural:
+    ; STRUCTURAL mode: weight by working memory slot binding
+    ; If token matches a bound slot, boost matching schema regions
+    mov eax, [rbx + STATE_OFFSET + ST_CTX_SLOT_NOUN]
+    xor eax, r12d                 ; XOR with current context hash
+    and eax, 0xF0                 ; mask to top nibble pattern
+    ; Just sets a structural bias flag — traversal will use this
+    mov [rsp + 72], eax           ; store structural bias pattern
+    jmp .graph_traverse
 
     ; --- Graph Traversal Loop ---
 .graph_traverse:
@@ -868,13 +1030,32 @@ dispatch_predict:
 
     ; Compare with best
     ucomisd xmm0, [rsp + 8]
-    jbe .graph_not_best
+    jbe .graph_check_runner_up
 
-    ; New best match
-    mov eax, [r13 + RHDR_SIZE + 8]   ; predicted token (B8 imm32)
-    mov [rsp + 0], eax        ; best_token
-    movsd [rsp + 8], xmm0    ; best_weight
-    mov [rsp + 16], r13       ; best_region_ptr
+    ; New best match — demote old best to runner-up (counterfactual)
+    mov eax, [rsp + 0]
+    mov [rsp + 40], eax               ; runner_up_token = old best_token
+    movsd xmm1, [rsp + 8]
+    movsd [rsp + 48], xmm1            ; runner_up_weight = old best_weight
+    mov rax, [rsp + 16]
+    mov [rsp + 56], rax               ; runner_up_region = old best_region
+
+    ; Store new best
+    mov eax, [r13 + RHDR_SIZE + 8]    ; predicted token (B8 imm32)
+    mov [rsp + 0], eax                ; best_token
+    movsd [rsp + 8], xmm0             ; best_weight
+    mov [rsp + 16], r13               ; best_region_ptr
+    jmp .graph_not_best
+
+.graph_check_runner_up:
+    ; Not best, but better than runner-up?
+    ucomisd xmm0, [rsp + 48]
+    jbe .graph_not_best
+    ; New runner-up (counterfactual alternative)
+    mov eax, [r13 + RHDR_SIZE + 8]
+    mov [rsp + 40], eax               ; runner_up_token
+    movsd [rsp + 48], xmm0            ; runner_up_weight
+    mov [rsp + 56], r13               ; runner_up_region
 
 .graph_not_best:
     ; --- Spread activation to excite targets ---
@@ -918,7 +1099,7 @@ dispatch_predict:
     lea r13, [rbx + REGION_TABLE_OFFSET]
     lea rax, [rbx + STATE_OFFSET + ST_REGION_COUNT]
     mov ecx, [rax]            ; region count
-    mov edx, 1                ; start from index 1
+    xor edx, edx              ; start from index 0
 
 .fallback_scan:
     cmp edx, ecx
@@ -937,19 +1118,12 @@ dispatch_predict:
 
     mov rsi, [rdi + RTE_ADDR]
 
-    ; Check if primed (activation > threshold) or no graph match yet
-    movsd xmm0, [rsi + RHDR_PRIME]
-    addsd xmm0, [rsi + RHDR_ACTIVATION]
-    movsd xmm1, [rel activ_thresh]
-    ucomisd xmm0, xmm1
-    jb .fallback_skip          ; not primed enough
+    ; Check context match FIRST (even if not primed, context match matters)
+    cmp byte [rsi + RHDR_SIZE], 0x3D
+    jne .fallback_skip
 
     ; Trace: candidate
     inc dword [rbx + STATE_OFFSET + ST_TRACE_CANDIDATES]
-
-    ; Check context match
-    cmp byte [rsi + RHDR_SIZE], 0x3D
-    jne .fallback_skip
     mov eax, [rsi + RHDR_SIZE + 1]
     test eax, 0x0F
     jnz .fallback_exact
@@ -1008,7 +1182,7 @@ dispatch_predict:
     lea r13, [rbx + REGION_TABLE_OFFSET]
     lea rax, [rbx + STATE_OFFSET + ST_REGION_COUNT]
     mov ecx, [rax]
-    mov edx, 1
+    xor edx, edx              ; start from index 0
 
 .linear_scan:
     cmp edx, ecx
@@ -1156,7 +1330,21 @@ dispatch_predict:
     mov [rbx + STATE_OFFSET + ST_EXPECT_TOKEN], eax
 
 .predict_return:
-    add rsp, 48
+    ; Save return value (predicted token)
+    push rax
+
+    ; Store runner-up for counterfactual analysis
+    mov eax, [rsp + 8 + 40]           ; adjust for push
+    mov [rbx + STATE_OFFSET + ST_RUNNER_UP_TOKEN], eax
+    cvtsd2ss xmm0, qword [rsp + 8 + 48]
+    movss [rbx + STATE_OFFSET + ST_RUNNER_UP_CONF], xmm0
+    mov rax, [rsp + 8 + 56]
+    mov [rbx + STATE_OFFSET + ST_RUNNER_UP_REGION], rax
+
+    ; Restore return value
+    pop rax
+
+    add rsp, 80
     pop r15
     pop r14
     pop r13
@@ -1188,6 +1376,34 @@ spread_activation:
     mulsd xmm2, xmm1          ; source.activation * w_excite_a
     addsd xmm2, [rax + RHDR_PRIME]
     movsd [rax + RHDR_PRIME], xmm2
+
+    ; --- Causal chain logging: record this connection fired ---
+    push rax
+    push rcx
+    mov rbx, SURFACE_BASE
+    mov ecx, [rbx + STATE_OFFSET + ST_CAUSAL_LOG_POS]
+    lea rdi, [rbx + STATE_OFFSET + ST_CAUSAL_LOG]
+    imul edx, ecx, ST_CAUSAL_LOG_ENTRY
+    ; Entry: (src:u16, dst:u16, step:u32)
+    mov eax, r12d
+    mov [rdi + rdx], ax           ; src (low 16 bits of ptr)
+    pop rcx
+    pop rax
+    push rax
+    push rcx
+    mov [rdi + rdx + 2], ax       ; dst (low 16 bits of target ptr)
+    mov eax, [rbx + STATE_OFFSET + ST_GLOBAL_STEP]
+    mov [rdi + rdx + 4], eax      ; step
+    ; Advance log position (wrap at cap)
+    inc ecx
+    cmp ecx, ST_CAUSAL_LOG_CAP
+    jl .causal_log_no_wrap_a
+    xor ecx, ecx
+.causal_log_no_wrap_a:
+    mov [rbx + STATE_OFFSET + ST_CAUSAL_LOG_POS], ecx
+    pop rcx
+    pop rax
+
     ; target_a.activation += source.prime * w_excite_a * 0.5
     movsd xmm2, [r12 + RHDR_PRIME]
     mulsd xmm2, xmm1
@@ -1210,6 +1426,32 @@ spread_activation:
     mulsd xmm2, xmm1
     addsd xmm2, [rax + RHDR_PRIME]
     movsd [rax + RHDR_PRIME], xmm2
+
+    ; --- Causal chain logging for excite_b ---
+    push rax
+    push rcx
+    mov rbx, SURFACE_BASE
+    mov ecx, [rbx + STATE_OFFSET + ST_CAUSAL_LOG_POS]
+    lea rdi, [rbx + STATE_OFFSET + ST_CAUSAL_LOG]
+    imul edx, ecx, ST_CAUSAL_LOG_ENTRY
+    mov eax, r12d
+    mov [rdi + rdx], ax           ; src
+    pop rcx
+    pop rax
+    push rax
+    push rcx
+    mov [rdi + rdx + 2], ax       ; dst
+    mov eax, [rbx + STATE_OFFSET + ST_GLOBAL_STEP]
+    mov [rdi + rdx + 4], eax      ; step
+    inc ecx
+    cmp ecx, ST_CAUSAL_LOG_CAP
+    jl .causal_log_no_wrap_b
+    xor ecx, ecx
+.causal_log_no_wrap_b:
+    mov [rbx + STATE_OFFSET + ST_CAUSAL_LOG_POS], ecx
+    pop rcx
+    pop rax
+
     ; target_b.activation += source.prime * w_excite_b * 0.5
     movsd xmm2, [r12 + RHDR_PRIME]
     mulsd xmm2, xmm1
@@ -1382,6 +1624,8 @@ update_region_table_hits:
     ; Found — copy hits from header
     mov ebx, [rdi + RHDR_HITS]
     mov [rax + RTE_HITS], ebx
+    ; Reset consecutive errors on hit (region is healthy)
+    mov word [rax + RTE_CONSEC_ERRORS], 0
     jmp .done
 .next:
     inc edx
@@ -1392,10 +1636,13 @@ update_region_table_hits:
 
 ;; ============================================================
 ;; update_region_table_misses(header_ptr)
+;; Increments consecutive error count; condemns at 9 errors (broken region death)
 ;; ============================================================
 update_region_table_misses:
     push rbx
+    push r12
     mov rbx, SURFACE_BASE
+    mov r12, rdi                    ; save header ptr
     lea rsi, [rbx + REGION_TABLE_OFFSET]
     lea rax, [rbx + STATE_OFFSET + ST_REGION_COUNT]
     mov ecx, [rax]
@@ -1405,15 +1652,32 @@ update_region_table_misses:
     jge .done
     imul rax, rdx, RTE_SIZE
     add rax, rsi
-    cmp [rax + RTE_ADDR], rdi
+    cmp [rax + RTE_ADDR], r12
     jne .next
-    mov ebx, [rdi + RHDR_MISSES]
+    ; Found — copy misses from header
+    mov ebx, [r12 + RHDR_MISSES]
     mov [rax + RTE_MISSES], ebx
+    ; Increment consecutive errors (9-error kill rule)
+    movzx ebx, word [rax + RTE_CONSEC_ERRORS]
+    inc ebx
+    mov [rax + RTE_CONSEC_ERRORS], bx
+    ; Check if region should die (9 consecutive errors = broken)
+    cmp ebx, CONSEC_ERROR_KILL
+    jl .done
+    ; 9-error death: condemn immediately (code is genuinely broken)
+    movzx ebx, word [rax + RTE_FLAGS]
+    or ebx, RFLAG_CONDEMNED
+    mov [rax + RTE_FLAGS], bx
+    ; Also mark header
+    movzx ebx, word [r12 + RHDR_FLAGS]
+    or ebx, RFLAG_CONDEMNED
+    mov [r12 + RHDR_FLAGS], bx
     jmp .done
 .next:
     inc edx
     jmp .loop
 .done:
+    pop r12
     pop rbx
     ret
 
