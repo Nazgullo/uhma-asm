@@ -11,10 +11,11 @@ OBJS = $(SRCS:.asm=.o)
 
 # Link with main UHMA objects (except boot.o which has _start)
 UHMA_OBJS = ../io.o ../format.o ../signal.o ../surface.o ../repl.o \
-            ../vsa.o ../dispatch.o ../emit.o ../learn.o ../hooks.o \
+            ../vsa.o ../vsa_ops.o ../dispatch.o ../emit.o ../learn.o ../hooks.o \
             ../observe.o ../modify.o ../gate.o ../decode.o ../drives.o \
             ../evolve.o ../dreams.o ../persist.o ../introspect.o \
-            ../trace.o ../symbolic.o
+            ../trace.o ../symbolic.o ../genes.o ../factor.o ../verify.o \
+            ../presence.o
 
 .PHONY: all clean
 

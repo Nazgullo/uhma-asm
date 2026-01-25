@@ -93,6 +93,14 @@ section .data
     colony_solo:    db "SOLO", 0
     colony_hive:    db "HIVE MIND", 0
 
+    ; Pheromone bar scale (60 pixels = 1.0)
+    bar_scale_60:   dq 60.0
+
+    ; Pheromone bar labels
+    lbl_d:          db "D", 0
+    lbl_o:          db "O", 0
+    lbl_e:          db "E", 0
+
     ; Node labels for new features
     node_rosetta:   db "ROSETTA", 0
     node_hive:      db "HIVE", 0
@@ -189,6 +197,9 @@ section .data
     msg_file_err:   db "Load failed", 0
     msg_trace_on:   db "Trace ON", 0
     msg_trace_off:  db "Trace OFF", 0
+    msg_geom_abs:   db "Verify: ABSTRACT", 0
+    msg_geom_vec:   db "Verify: GEOMETRIC", 0
+    msg_geom_both:  db "Verify: BOTH", 0
 
     ; Number format
     hex_prefix:     db "0x", 0
@@ -232,9 +243,10 @@ section .data
     ACT_FILE        equ 8
     ACT_DIR         equ 9
     ACT_TRACE       equ 10
-    ACT_SEND        equ 11
-    ACT_CLEAR       equ 12
-    ACT_QUIT        equ 13
+    ACT_GEOM        equ 11
+    ACT_SEND        equ 12
+    ACT_CLEAR       equ 13
+    ACT_QUIT        equ 14
 
     ; Layout constants
     WIN_W           equ 1280
@@ -381,6 +393,13 @@ extern journey_start
 extern journey_stop
 extern journey_dump
 
+; Rosetta Stone / Geometric Verification
+extern verify_get_mode
+extern verify_set_mode
+
+; Colony / Mycorrhiza
+extern is_shared_mode
+
 ;; ============================================================
 ;; vis_init — Initialize visualizer
 ;; rdi = surface base pointer
@@ -491,27 +510,34 @@ vis_init:
     mov dword [rdi+12], 30
     add rdi, 16
 
-    ; SEND (10) - near input
+    ; GEOM (10) - toggle verification mode
+    mov dword [rdi], 635
+    mov dword [rdi+4], 8
+    mov dword [rdi+8], 50
+    mov dword [rdi+12], 30
+    add rdi, 16
+
+    ; SEND (11) - near input
     mov dword [rdi], 1100
     mov dword [rdi+4], WIN_H - INPUT_H - STATUS_H + 10
     mov dword [rdi+8], 55
     mov dword [rdi+12], 30
     add rdi, 16
 
-    ; CLEAR (11)
+    ; CLEAR (12)
     mov dword [rdi], 1165
     mov dword [rdi+4], WIN_H - INPUT_H - STATUS_H + 10
     mov dword [rdi+8], 55
     mov dword [rdi+12], 30
     add rdi, 16
 
-    ; QUIT (12)
+    ; QUIT (13)
     mov dword [rdi], 1210
     mov dword [rdi+4], 8
     mov dword [rdi+8], 50
     mov dword [rdi+12], 30
 
-    mov dword [rel num_buttons], 13
+    mov dword [rel num_buttons], 14
 
     ; Initialize state
     mov dword [rel vis_running], 1
@@ -1029,6 +1055,8 @@ do_action:
     je .do_dir
     cmp ebx, ACT_TRACE
     je .do_trace
+    cmp ebx, ACT_GEOM
+    je .do_geom
     cmp ebx, ACT_SEND
     je .do_send
     cmp ebx, ACT_CLEAR
@@ -1122,6 +1150,34 @@ do_action:
     call journey_dump
     lea rax, [rel msg_trace_off]
 .trace_msg:
+    mov [rel feedback_msg], rax
+    mov dword [rel feedback_timer], 60
+    jmp .continue
+
+.do_geom:
+    ; Cycle verification mode: 0→1→2→0
+    call verify_get_mode
+    inc eax
+    cmp eax, 3
+    jl .geom_set
+    xor eax, eax
+.geom_set:
+    mov edi, eax
+    call verify_set_mode
+    ; Show feedback
+    call verify_get_mode
+    cmp eax, 0
+    jne .geom_not_abs
+    lea rax, [rel msg_geom_abs]
+    jmp .geom_msg
+.geom_not_abs:
+    cmp eax, 1
+    jne .geom_not_vec
+    lea rax, [rel msg_geom_vec]
+    jmp .geom_msg
+.geom_not_vec:
+    lea rax, [rel msg_geom_both]
+.geom_msg:
     mov [rel feedback_msg], rax
     mov dword [rel feedback_timer], 60
     jmp .continue
@@ -1315,13 +1371,17 @@ draw_buttons:
     mov ecx, 5
     cmp eax, 9
     je .draw_lbl
-    lea rdx, [rel btn_send]
+    lea rdx, [rel btn_geom]
     mov ecx, 4
     cmp eax, 10
     je .draw_lbl
+    lea rdx, [rel btn_send]
+    mov ecx, 4
+    cmp eax, 11
+    je .draw_lbl
     lea rdx, [rel btn_clear]
     mov ecx, 5
-    cmp eax, 11
+    cmp eax, 12
     je .draw_lbl
     lea rdx, [rel btn_quit]
     mov ecx, 4
@@ -1789,6 +1849,286 @@ draw_mindmap:
     mov r8d, [rel col_text_dim]
     call gfx_text
 .acc_done:
+
+    ; === NEW FEATURE NODES ===
+
+    ; Node 7: HIVE (pheromone-driven swarm intelligence) - far bottom left
+    lea r14d, [r12d - 350]
+    lea r15d, [r13d + 60]
+
+    ; Connection line from UHMA bottom-left
+    lea edi, [r12d - 60]
+    lea esi, [r13d + 20]
+    lea edx, [r14d + 110]
+    mov ecx, r15d
+    mov r8d, [rel col_yellow]
+    call gfx_line
+
+    ; Node box - yellow/gold for hive
+    mov edi, r14d
+    mov esi, r15d
+    mov edx, 110
+    mov ecx, 70
+    mov r8d, 0x00554422
+    call gfx_fill_rect
+
+    mov edi, r14d
+    mov esi, r15d
+    mov edx, 110
+    mov ecx, 70
+    mov r8d, [rel col_yellow]
+    call gfx_rect
+
+    ; Label
+    lea edi, [r14d + 20]
+    lea esi, [r15d + 15]
+    lea rdx, [rel node_hive]
+    mov ecx, 4
+    mov r8d, [rel col_white]
+    call gfx_text
+
+    ; Draw pheromone level bars
+    ; Dream pheromone bar
+    movsd xmm0, [rbx + STATE_OFFSET + ST_DREAM_PRESSURE]
+    mulsd xmm0, qword [rel bar_scale_60]
+    cvttsd2si eax, xmm0
+    cmp eax, 60
+    jle .hive_d_ok
+    mov eax, 60
+.hive_d_ok:
+    test eax, eax
+    js .hive_d_zero
+    jmp .hive_d_draw
+.hive_d_zero:
+    xor eax, eax
+.hive_d_draw:
+    push rax
+    lea edi, [r14d + 8]
+    lea esi, [r15d + 28]
+    mov edx, eax
+    mov ecx, 8
+    mov r8d, [rel col_magenta]
+    call gfx_fill_rect
+    pop rax
+
+    ; Observe pheromone bar
+    movsd xmm0, [rbx + STATE_OFFSET + ST_OBSERVE_PRESSURE]
+    mulsd xmm0, qword [rel bar_scale_60]
+    cvttsd2si eax, xmm0
+    cmp eax, 60
+    jle .hive_o_ok
+    mov eax, 60
+.hive_o_ok:
+    test eax, eax
+    js .hive_o_zero
+    jmp .hive_o_draw
+.hive_o_zero:
+    xor eax, eax
+.hive_o_draw:
+    push rax
+    lea edi, [r14d + 8]
+    lea esi, [r15d + 40]
+    mov edx, eax
+    mov ecx, 8
+    mov r8d, [rel col_green]
+    call gfx_fill_rect
+    pop rax
+
+    ; Evolve pheromone bar
+    movsd xmm0, [rbx + STATE_OFFSET + ST_EVOLVE_PRESSURE]
+    mulsd xmm0, qword [rel bar_scale_60]
+    cvttsd2si eax, xmm0
+    cmp eax, 60
+    jle .hive_e_ok
+    mov eax, 60
+.hive_e_ok:
+    test eax, eax
+    js .hive_e_zero
+    jmp .hive_e_draw
+.hive_e_zero:
+    xor eax, eax
+.hive_e_draw:
+    lea edi, [r14d + 8]
+    lea esi, [r15d + 52]
+    mov edx, eax
+    mov ecx, 8
+    mov r8d, [rel col_orange]
+    call gfx_fill_rect
+
+    ; Bar labels (D/O/E)
+    lea edi, [r14d + 75]
+    lea esi, [r15d + 35]
+    lea rdx, [rel lbl_d]
+    mov ecx, 1
+    mov r8d, [rel col_magenta]
+    call gfx_text
+
+    lea edi, [r14d + 75]
+    lea esi, [r15d + 47]
+    lea rdx, [rel lbl_o]
+    mov ecx, 1
+    mov r8d, [rel col_green]
+    call gfx_text
+
+    lea edi, [r14d + 75]
+    lea esi, [r15d + 59]
+    lea rdx, [rel lbl_e]
+    mov ecx, 1
+    mov r8d, [rel col_orange]
+    call gfx_text
+
+    ; Node 8: ROSETTA (geometric verification) - far bottom right
+    lea r14d, [r12d + 240]
+    lea r15d, [r13d + 60]
+
+    ; Connection line from UHMA bottom-right
+    lea edi, [r12d + 60]
+    lea esi, [r13d + 20]
+    mov edx, r14d
+    mov ecx, r15d
+    mov r8d, [rel col_cyan]
+    call gfx_line
+
+    ; Node box - cyan for rosetta
+    mov edi, r14d
+    mov esi, r15d
+    mov edx, 100
+    mov ecx, 50
+    mov r8d, 0x00224455
+    call gfx_fill_rect
+
+    mov edi, r14d
+    mov esi, r15d
+    mov edx, 100
+    mov ecx, 50
+    mov r8d, [rel col_cyan]
+    call gfx_rect
+
+    ; Label
+    lea edi, [r14d + 10]
+    lea esi, [r15d + 15]
+    lea rdx, [rel node_rosetta]
+    mov ecx, 7
+    mov r8d, [rel col_white]
+    call gfx_text
+
+    ; Get verify mode and display
+    call verify_get_mode
+    cmp eax, 0
+    jne .ros_not_abs
+    lea rdx, [rel geom_mode_abstract]
+    mov ecx, 8
+    jmp .ros_show
+.ros_not_abs:
+    cmp eax, 1
+    jne .ros_not_geom
+    lea rdx, [rel geom_mode_geometric]
+    mov ecx, 9
+    jmp .ros_show
+.ros_not_geom:
+    lea rdx, [rel geom_mode_both]
+    mov ecx, 4
+.ros_show:
+    lea edi, [r14d + 10]
+    lea esi, [r15d + 35]
+    mov r8d, [rel col_cyan]
+    call gfx_text
+
+    ; Node 9: MYCO (mycorrhiza colony) - far left middle
+    lea r14d, [r12d - 370]
+    lea r15d, [r13d - 80]
+
+    ; Connection line from UHMA left
+    mov edi, r12d
+    sub edi, 60
+    lea esi, [r13d - 10]
+    lea edx, [r14d + 90]
+    lea ecx, [r15d + 25]
+    mov r8d, [rel col_green]
+    call gfx_line
+
+    ; Node box - green for myco
+    mov edi, r14d
+    mov esi, r15d
+    mov edx, 90
+    mov ecx, 50
+    mov r8d, 0x00224422
+    call gfx_fill_rect
+
+    mov edi, r14d
+    mov esi, r15d
+    mov edx, 90
+    mov ecx, 50
+    mov r8d, [rel col_green]
+    call gfx_rect
+
+    ; Label
+    lea edi, [r14d + 15]
+    lea esi, [r15d + 15]
+    lea rdx, [rel node_myco]
+    mov ecx, 4
+    mov r8d, [rel col_white]
+    call gfx_text
+
+    ; Get colony status
+    mov eax, [rbx + STATE_OFFSET + ST_SHARED_MODE]
+    test eax, eax
+    jz .myco_solo
+    lea rdx, [rel colony_hive]
+    mov ecx, 9
+    jmp .myco_show
+.myco_solo:
+    lea rdx, [rel colony_solo]
+    mov ecx, 4
+.myco_show:
+    lea edi, [r14d + 10]
+    lea esi, [r15d + 35]
+    mov r8d, [rel col_green]
+    call gfx_text
+
+    ; Node 10: SPORE (gene export/import) - far right middle
+    lea r14d, [r12d + 280]
+    lea r15d, [r13d - 80]
+
+    ; Connection line from UHMA right
+    mov edi, r12d
+    add edi, 60
+    lea esi, [r13d - 10]
+    mov edx, r14d
+    lea ecx, [r15d + 25]
+    mov r8d, [rel col_orange]
+    call gfx_line
+
+    ; Node box - orange for spore
+    mov edi, r14d
+    mov esi, r15d
+    mov edx, 90
+    mov ecx, 50
+    mov r8d, 0x00443322
+    call gfx_fill_rect
+
+    mov edi, r14d
+    mov esi, r15d
+    mov edx, 90
+    mov ecx, 50
+    mov r8d, [rel col_orange]
+    call gfx_rect
+
+    ; Label
+    lea edi, [r14d + 15]
+    lea esi, [r15d + 15]
+    lea rdx, [rel node_spore]
+    mov ecx, 5
+    mov r8d, [rel col_white]
+    call gfx_text
+
+    ; Show gene status
+    lea edi, [r14d + 10]
+    lea esi, [r15d + 35]
+    lea rdx, [rel lbl_genes]
+    mov ecx, 7
+    mov r8d, [rel col_orange]
+    call gfx_text
 
     ; Instructions at bottom
     mov edi, CANVAS_X + 20
