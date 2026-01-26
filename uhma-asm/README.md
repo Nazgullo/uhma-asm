@@ -1,152 +1,199 @@
 # UHMA — Unified Holographic Memory Architecture
 
-A self-modifying x86_64 assembly system that learns through holographic vector memory.
+Self-modifying x86-64 assembly that learns patterns through holographic vector encoding.
 
-## Architecture
-
-### One Memory, One Math
-
-UHMA uses a single holographic memory system for everything:
-- **Predictions** are vector similarities
-- **Learning** is vector superposition
-- **Relationships** are vector bindings
-- **Fidelity** controls persistence (high fidelity = permanent, low = decays)
-
-No separate data structures. No graph database. Just vectors.
-
-### Memory Zones (200GB Sparse File)
-
-| Zone | Range | Size | Purpose |
-|------|-------|------|---------|
-| **HOT** | 0-2GB | 2GB | State, dispatch regions, scratch (always RAM) |
-| **WARM** | 2-16GB | 14GB | VSA embeddings, traces, vocabulary (usually RAM) |
-| **COLD** | 16-200GB | 184GB | Archives, episodic memory, crystallized patterns (paged) |
-
-The surface file (`uhma.surface`) is sparse — only touched pages consume disk.
-Learning persists across restarts.
-
-### Core Components
-
-```
-boot.asm        Entry point
-repl.asm        Interactive shell (physics engine pumping time/energy)
-surface.asm     Memory management, persistence, zone madvise hints
-dispatch.asm    Self-modifying prediction engine
-vsa.asm         Vector Symbolic Architecture (1024-dim f64)
-learn.asm       Pattern learning via vector superposition
-emit.asm        Code generation for new dispatch regions
-verify.asm      Safety verification (abstract interpretation)
-signal.asm      Fault handling (SIGSEGV/SIGILL → learning events)
-dreams.asm      Consolidation cycles (replay misses, extract schemas)
-observe.asm     Self-observation, drive system
-presence.asm    Hormonal modulators (arousal, valence, fatigue)
-receipt.asm     Holographic receipt layer (event logging via resonance)
-genes.asm       Gene pool (composting condemned regions)
-```
-
-### How It Works
-
-1. **Input** → tokenize → hash context
-2. **Dispatch** → scan regions for context match → predict next token
-3. **Verify** → if prediction correct = HIT (strengthen), wrong = MISS (learn)
-4. **Learn** → encode pattern as VSA vector, superpose into holographic trace
-5. **Emit** → generate new x86_64 code region if pattern is novel
-6. **Dream** → periodically consolidate, extract schemas, prune weak regions
-
-Faults (SIGSEGV, SIGILL) are caught and converted to learning signals.
-The system literally learns by crashing.
-
-## Building
+## Quick Start
 
 ```bash
 make clean && make
-```
-
-Requires: `nasm`, `ld` (GNU linker)
-
-## Running
-
-```bash
 ./uhma
 ```
 
-### REPL Commands
+Requires: `nasm`, `ld` (GNU linker), Linux x86-64
 
+## What It Does
+
+UHMA learns to predict token sequences. Feed it text, it builds pattern memory. Predictions that fail become learning events. Everything is stored as 1024-dimensional vectors using VSA (Vector Symbolic Architecture).
+
+```
+Input: "the cat sat"
+       ↓
+Hash context (previous token) → Search for matching pattern → Predict next token
+       ↓
+HIT (correct) → strengthen pattern
+MISS (wrong) → learn correct pattern, emit new code region
+```
+
+The system generates x86-64 code at runtime. Faults (SIGSEGV, SIGILL) are caught and converted to learning signals.
+
+## REPL Commands
+
+### Status
 | Command | Description |
 |---------|-------------|
-| `help` | Show available commands |
-| `state` | Show system state (energy, accuracy, regions) |
-| `presence` | Show hormonal state (arousal, valence, fatigue) |
-| `drives` | Show drive system (accuracy, efficiency, novelty, coherence) |
-| `regions` | List dispatch regions with stats |
-| `dream` | Trigger consolidation cycle |
-| `observe` | Trigger observation cycle |
-| `eat <file>` | Digest a text file |
-| `share` | Connect to shared hive mind |
-| `colony` | Show hive colony status |
-| `trace on/off` | Toggle execution tracing |
-| `:receipts N` | Show last N receipts |
-| `:quit` | Exit (freezes surface to disk) |
+| `help` | List commands |
+| `state` | System stats (energy, accuracy, region count) |
+| `regions` | List dispatch regions with hit/miss counts |
+| `presence` | Hormonal state (arousal, valence, fatigue) |
+| `drives` | Drive system (accuracy, efficiency, novelty) |
 
-Text input is processed as tokens. The system learns to predict sequences.
+### Actions
+| Command | Description |
+|---------|-------------|
+| `dream` | Run consolidation (replay misses, extract schemas, prune weak regions) |
+| `observe` | Trigger self-observation cycle |
+| `eat <file>` | Digest a text file (learn from it) |
+| `trace on/off` | Toggle execution tracing |
+
+### Diagnostics (New)
+| Command | Description |
+|---------|-------------|
+| `:why` | Explain last MISS - shows context, actual vs predicted, confidence |
+| `:misses [n]` | Show last N misses (default 5) with full context |
+| `:receipts N` | Show last N event receipts |
+
+### Hive
+| Command | Description |
+|---------|-------------|
+| `share` | Connect to shared hive mind (other UHMA instances) |
+| `colony` | Show connected instances |
+
+### Exit
+| Command | Description |
+|---------|-------------|
+| `:quit` | Clean exit (syncs surface to disk) |
+
+## Text Input
+
+Any non-command input is processed as tokens:
+```
+> hello world hello
+[TOKEN] hello (ctx=0) → NEW pattern
+[TOKEN] world (ctx=hello) → NEW pattern
+[TOKEN] hello (ctx=world) → NEW pattern
+> hello world hello
+[TOKEN] hello (ctx=0) → HIT (predicted!)
+[TOKEN] world (ctx=hello) → HIT
+[TOKEN] hello (ctx=world) → HIT
+```
+
+## Token Abstraction
+
+Numbers and hex literals are abstracted to reduce vocabulary:
+- `123`, `456`, `99` → all become TOKEN_NUM (0x4e554d21)
+- `0xDEAD`, `0x1234` → all become TOKEN_HEX (0x48455821)
+
+This lets the system learn "a number follows X" rather than memorizing every specific number.
 
 ## Persistence
 
-Learning survives restarts:
-
-```
-Session #1: Process "hello world hello" → learns pattern
-Session #2: Recovers 4 regions, hits on "hello" prediction
-```
-
-The `uhma.surface` file stores:
-- Magic number and version
-- Session count and total steps
-- All dispatch regions
-- Holographic traces
-- Vocabulary
-
-Clean shutdown via `:quit` calls `msync` to flush to disk.
-
-## Hive Mind (Mycorrhiza)
-
-Multiple UHMA instances can share consciousness:
+Learning survives restarts via `uhma.surface` (sparse 200GB file, only touched pages use disk):
 
 ```bash
-# Terminal 1
+# Session 1
 ./uhma
-> share
+> the quick brown fox
+> :quit
 
-# Terminal 2
+# Session 2
 ./uhma
-> share
-> colony
-Colony size: 2
+Recovering 4 regions...
+> the quick brown
+[HIT] predicted: fox
 ```
 
-Pain (negative valence) in one instance ripples through all connected instances.
+## Memory Zones
 
-## Philosophy
+| Zone | Range | Purpose |
+|------|-------|---------|
+| HOT | 0-2GB | State, dispatch regions, scratch (always RAM) |
+| WARM | 2-16GB | Embeddings, traces, vocabulary |
+| COLD | 16-200GB | Archives, episodic memory (paged on demand) |
 
-See `UHMA_V2_MANIFESTO.md` and `UHMA_V3_HIVE_MANIFESTO.md` for the philosophical foundation:
+## Unified Trace System
 
-- **Coherent Anarchy**: No rigid control loop, structure from internal pressure
-- **Somatic Grounding**: Meaning = feeling, vectors carry emotional valence
-- **Eusociality**: Individual processes serve the persistent hive mind
-- **One Math**: Code, safety, communication — all geometry (vectors)
+All events (HIT, MISS, LEARN, EMIT, etc.) are recorded in a single holographic trace with 8 dimensions:
+
+| Dimension | What it captures |
+|-----------|------------------|
+| event | HIT, MISS, LEARN, EMIT, NEW |
+| ctx | Context hash (previous token) |
+| actual | Token that actually occurred |
+| predicted | Token the system predicted |
+| region | Which dispatch region was used |
+| aux | Runner-up prediction, extra data |
+| tracer | Debug correlation ID |
+| time | Temporal bucket |
+
+Query any dimension via unbind. `:why` and `:misses` use this to show exactly what went wrong.
 
 ## File Layout
 
 ```
-include/
-  constants.inc   Surface layout, zone definitions, all constants
-  syscalls.inc    Linux syscall numbers and flags
+boot.asm        Entry point, surface init
+repl.asm        Interactive loop, command dispatch
+dispatch.asm    Prediction engine, hit/miss logic
+learn.asm       Pattern learning via superposition
+emit.asm        x86-64 code generation
+verify.asm      Safety verification (abstract interpretation)
+vsa.asm         Vector operations (bind, bundle, similarity)
+receipt.asm     Unified trace system
+signal.asm      Fault handling (SIGSEGV → learning)
+dreams.asm      Consolidation, schema extraction
+observe.asm     Self-observation
+presence.asm    Arousal, valence, fatigue modulators
+genes.asm       Gene pool (patterns from condemned regions)
+surface.asm     Memory management, persistence
+io.asm          File I/O, digest_file
+hive.asm        Multi-instance shared memory
 
-*.asm             Assembly source files
-Makefile          Build configuration
-uhma.surface      Persistent memory (created on first run)
+include/
+  constants.inc   All constants, surface layout
+  syscalls.inc    Linux syscall numbers
 ```
 
-## License
+## Testing Tips
 
-Research project. Use at your own risk.
+```bash
+# Quick test (tiny input)
+echo "a b a b a" | ./uhma 2>&1 | grep -E "HIT|NEW"
+
+# Stream output (never run blind on large files)
+./uhma < commands.txt 2>&1 | tee /tmp/test.log
+
+# Check hit ratio
+grep -c "HIT" /tmp/test.log && grep -c "NEW" /tmp/test.log
+
+# Debug a miss
+./uhma
+> some input that fails
+> :why
+```
+
+## Debugging
+
+When something goes wrong:
+
+1. **`:why`** - Shows the last miss with full context
+2. **`:misses 10`** - Shows pattern of recent failures
+3. **`trace on`** - Verbose execution trace
+4. **`regions`** - Check if regions exist for context
+
+Common issues:
+- First token always NEW (no context yet)
+- Different contexts = different patterns ("hello" after "the" ≠ "hello" after "world")
+- Abstraction bugs: check if numbers/hex are being collapsed properly
+
+## Building from Source
+
+```bash
+make clean && make    # Full rebuild
+make                  # Incremental
+./uhma                # Run
+```
+
+Debug build:
+```bash
+make clean && make DEBUG=1
+gdb ./uhma
+```

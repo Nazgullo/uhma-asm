@@ -52,6 +52,7 @@ This is O(1) per item. The holographic memory IS the index. Don't build separate
 ### Token Abstraction
 - Hex literals (0x...) → TOKEN_HEX (0x48455821)
 - Numbers (digits only) → TOKEN_NUM (0x4e554d21)
+- Single-digit numbers ARE abstracted (removed length>1 check)
 - This abstraction MUST happen in both process_input AND digest_file
 
 ### Schema System
@@ -59,14 +60,22 @@ This is O(1) per item. The holographic memory IS the index. Don't build separate
 - They mask low bits of context hash to match broader patterns
 - Dreams extract schemas from miss buffer
 
+### Unified Trace System
+- One trace (UNIFIED_TRACE_IDX=240) replaces 6 separate traces
+- 8 dimensions: event, ctx, actual, predicted, region, aux, tracer, time
+- emit_receipt_full() captures full diagnostic context
+- `:why` and `:misses` commands query the trace for debugging
+- See DESIGN_unified_trace.md for details
+
 ## Key Files
 - `dispatch.asm` - token processing, prediction, hit/miss logic
 - `io.asm` - digest_file for eating files
 - `dreams.asm` - consolidation, schema extraction
-- `receipt.asm` - event logging system
+- `receipt.asm` - unified trace system, `:why`/`:misses` queries
 - `signal.asm` - fault handling, recovery to REPL
 - `learn.asm` - pattern learning
 - `vsa.asm` - holographic vector operations
+- `repl.asm` - command dispatch, REPL loop
 
 ## Common Commands
 ```bash
@@ -78,4 +87,10 @@ rm -f uhma.surface && ./uhma < /tmp/tiny_cmd.txt 2>&1 | grep -E "HIT|NEW"
 
 # Check HIT ratio
 grep -c "HIT" /tmp/test.log && grep -c "NEW" /tmp/test.log
+
+# Debug a miss
+./uhma
+> some failing input
+> :why
+> :misses 5
 ```
