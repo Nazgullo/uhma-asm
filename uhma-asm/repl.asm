@@ -1,29 +1,31 @@
 ; repl.asm — Interactive command loop
 ;
-; ENTRY POINT: repl_run() - main loop, never returns (exits via quit/EOF)
+; @entry repl_run() -> never returns (exits via quit/EOF)
+; @calls dispatch.asm:process_input
+; @calls io.asm:digest_file
+; @calls receipt.asm:receipt_why_miss, receipt_show_misses, receipt_dump
+; @calls observe.asm:observe_cycle
+; @calls dreams.asm:dream_cycle
+; @calls surface.asm:surface_freeze
+; @calledby boot.asm:_start
 ;
-; COMMAND DISPATCH (lines ~220-580):
-;   Commands matched by literal string compare: cmp dword [rbx], 'quit'
-;   NO colon prefix - commands are plain words: help, quit, why, misses
-;   Pattern: .not_X label after each failed match, .cmd_X for handler
+; COMMAND DISPATCH (~line 220-580):
+;   Match by literal: cmp dword [rbx], 'quit'
+;   Pattern: .not_X after fail, .cmd_X for handler
+;   NO colon prefix - plain words: help, quit, why, misses
 ;
 ; COMMANDS:
 ;   Status:  help, status, regions, presence, drives, self, metacog
 ;   Actions: dream, observe, compact, eat <file>, trace on/off
-;   Hive:    share, colony, hive
 ;   Debug:   why, misses [n], receipts [n], listen, debugger, genes
-;   Exit:    quit (syncs surface first)
+;   Exit:    quit (syncs surface)
 ;
-; TEXT INPUT: Non-command lines → process_input() → tokenize → process_token
+; TEXT: non-command → process_input() → tokenize → process_token
 ;
-; CALLS OUT TO:
-;   dispatch.asm: process_input(buf, len)
-;   io.asm:       digest_file(filename)
-;   receipt.asm:  receipt_why_miss(), receipt_show_misses(n), receipt_dump(n)
-;   observe.asm:  observe_cycle()
-;   dreams.asm:   dream_cycle()
-;   surface.asm:  surface_freeze()
-;
+; GOTCHAS:
+;   - Commands are plain words, NOT :prefixed
+;   - New command = add string match + .not_X + .cmd_X handler
+;   - quit must call surface_freeze before exit
 %include "syscalls.inc"
 %include "constants.inc"
 

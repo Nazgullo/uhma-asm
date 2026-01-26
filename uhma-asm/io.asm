@@ -1,31 +1,25 @@
-; io.asm — Syscall wrappers for I/O, mmap, signals (maturity-gated)
+; io.asm — Syscall wrappers, file digestion, motor system
 ;
-; ENTRY POINTS:
-;   sys_write(fd, buf, len)           → bytes written or -1 if gated
-;   sys_read(fd, buf, len)            → bytes read or -1 if gated
-;   sys_mmap, sys_mprotect, sys_open, sys_close, sys_exit
-;   sys_sigaction, sys_clock_gettime, sys_getrandom
-;   write_stdout(buf, len), write_stderr(buf, len), read_stdin(buf, len)
-;   digest_file(path)                 - read file, process each token
-;   motor_file_read(path, buf, max)   → bytes read (Stage 1+ only)
-;   motor_file_write_sandboxed(path, buf, len) → bytes written (Stage 2+ only)
-;   motor_get_file_size(path)         → size in bytes
-;   motor_submit_request(type, arg)   → request_id
-;   motor_process_queue()             - process pending motor requests
-;   motor_get_status/result/clear()   - motor queue management
+; @entry digest_file(rdi=path) -> void ; read file, tokenize, process
+; @entry sys_write/read/mmap/open/close/exit ; syscall wrappers
+; @entry motor_file_read/write_sandboxed ; staged file access
+; @calls dispatch.asm:process_token
+; @calls maturity.asm:gate_fd_write, gate_fd_read
+; @calledby repl.asm:cmd_eat
+;
+; FLOW (digest_file): open → mmap → tokenize → process_token each → unmap
+; TOKEN ABSTRACTION: 0x... → TOKEN_HEX, digits → TOKEN_NUM
 ;
 ; MATURITY GATING:
-;   Stage 0 (Infant): stdout/stderr/stdin only (REPL I/O)
-;   Stage 1 (Aware):  + read external files
-;   Stage 2 (Active): + write external files
-;   gate_fd_write/read called before each syscall to check maturity
+;   Stage 0: stdout/stderr/stdin only
+;   Stage 1: + read files
+;   Stage 2: + write files
 ;
-; digest_file FLOW:
-;   open → mmap → scan for whitespace-delimited tokens → process_token each → unmap
-;   Token abstraction: 0x... → TOKEN_HEX, digits → TOKEN_NUM
-;   Fault-safe: saves/restores fault_safe_rsp/rip around process_token calls
-;
-; CALLED BY: repl.asm (eat command), boot.asm (syscall wrappers)
+; GOTCHAS:
+;   - Token abstraction MUST match dispatch.asm:process_input exactly
+;   - Fault handler longjmps to REPL - save fault_safe_rsp/rip before process_token
+;   - rcx clobbered by calls, use r10-r15 in digest loop
+;   - Restore r14 (SURFACE_BASE) after fault recovery in continue_loop
 ;
 %include "syscalls.inc"
 %include "constants.inc"

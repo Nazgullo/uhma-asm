@@ -67,15 +67,86 @@ This is O(1) per item. The holographic memory IS the index. Don't build separate
 - `why` and `misses` commands query the trace for debugging
 - See DESIGN_unified_trace.md for details
 
-## Key Files
-- `dispatch.asm` - token processing, prediction, hit/miss logic
-- `io.asm` - digest_file for eating files
-- `dreams.asm` - consolidation, schema extraction
-- `receipt.asm` - unified trace system, `why`/`misses` queries
-- `signal.asm` - fault handling, recovery to REPL
-- `learn.asm` - pattern learning
-- `vsa.asm` - holographic vector operations
-- `repl.asm` - command dispatch, REPL loop
+## File Index
+
+### Core Loop
+| File | Purpose | Calls | Called By |
+|------|---------|-------|-----------|
+| boot.asm | Entry point, surface init | surface_init, repl_run | OS |
+| repl.asm | Command loop, text dispatch | process_input, dream_cycle, observe_cycle | boot |
+| dispatch.asm | Token processing, prediction | learn_pattern, holo_predict, emit_receipt | repl, io |
+
+### Learning & Memory
+| File | Purpose | Calls | Called By |
+|------|---------|-------|-----------|
+| learn.asm | Pattern learning | emit_dispatch_pattern, holo_store | dispatch |
+| emit.asm | x86 code generation | region_alloc, verify_code | learn, dreams |
+| vsa.asm | Holographic operations | (pure math) | dispatch, learn, receipt |
+| receipt.asm | Unified trace system | holo_bind, holo_superpose | dispatch, learn, observe |
+
+### Consolidation
+| File | Purpose | Calls | Called By |
+|------|---------|-------|-----------|
+| dreams.asm | Offline consolidation | emit_dispatch_pattern, holo_store | repl (dream cmd) |
+| observe.asm | Self-observation, metrics | receipt_resonate, gene_extract | repl (observe cmd) |
+| genes.asm | Gene pool for condemned regions | (storage) | observe, dreams |
+
+### Safety & Verification
+| File | Purpose | Calls | Called By |
+|------|---------|-------|-----------|
+| verify.asm | Abstract interpretation | decode_instruction | emit, modify |
+| gate.asm | Modification gating | verify_* | emit, modify |
+| signal.asm | Fault handling | (longjmp to repl) | kernel |
+
+### I/O & Persistence
+| File | Purpose | Calls | Called By |
+|------|---------|-------|-----------|
+| io.asm | File I/O, digest_file | process_token | repl (eat cmd) |
+| surface.asm | Memory management | mmap, madvise | boot |
+| persist.asm | Save/load state | (file I/O) | repl |
+
+### Support
+| File | Purpose |
+|------|---------|
+| format.asm | Print functions (print_str, print_hex, etc.) |
+| decode.asm | x86 instruction decoder |
+| presence.asm | Hormonal modulators (arousal, valence, etc.) |
+| drives.asm | Drive system (accuracy, efficiency, novelty) |
+| introspect.asm | Self-inspection, worker threads |
+| hooks.asm | Event hooks system |
+| trace.asm | Journey tracing (token path tracking) |
+| factor.asm | Subroutine extraction |
+| modify.asm | Region modification (prune, promote, specialize) |
+| evolve.asm | Genetic evolution of patterns |
+| symbolic.asm | Symbolic execution |
+| maturity.asm | Syscall maturity gating |
+
+### Data Flow
+```
+Input → repl.asm → dispatch.asm → [predict] → HIT/MISS
+                                      ↓
+                              learn.asm → emit.asm → new region
+                                      ↓
+                              receipt.asm → trace (8 dimensions)
+                                      ↓
+                              dreams.asm → consolidate/prune
+```
+
+## Header Template
+Every .asm file should have this at top:
+```asm
+; filename.asm — One-line description
+;
+; @entry func_name(args) -> return   ; exported functions
+; @calls file.asm:func              ; outgoing dependencies
+; @calledby file.asm:func           ; incoming dependencies
+;
+; FLOW: brief data flow description
+; STATE: key ST_* fields used
+;
+; GOTCHAS:
+;   - specific pitfalls for this file
+```
 
 ## Common Commands
 ```bash

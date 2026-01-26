@@ -1,31 +1,24 @@
 ; signal.asm — Fault handling: SIGSEGV/SIGFPE/SIGBUS recovery to REPL
 ;
-; ENTRY POINTS:
-;   install_fault_handlers()          - register signal handlers
-;   fault_return_stub()               - internal: longjmp back to REPL
-;   get_fault_count()                 → rax=total faults caught
-;   bp_init()                         - init breakpoint system
-;   bp_find_by_addr(addr)             → rax=bp_entry or 0
-;   bp_inject(addr, handler)          - install INT3 breakpoint
-;   bp_remove(addr)                   - remove breakpoint, restore byte
-;   bp_inject_struggling(region_ptr)  - add bp to struggling region
-;   bp_has_breakpoints()              → eax=1 if any active breakpoints
+; @entry install_fault_handlers() -> void
+; @entry get_fault_count() -> rax=count
+; @entry bp_inject(rdi=addr, rsi=handler) -> void
+; @entry bp_remove(rdi=addr) -> void
+; @calledby boot.asm:_start (install)
+; @calledby io.asm:digest_file (safe point setup)
 ;
-; FAULT RECOVERY:
-;   Handler saves fault info, increments fault_count
-;   If fault_safe_rsp/rip set, longjmp back to REPL loop
-;   Max 3 consecutive faults before forced return (prevents infinite loop)
+; FLOW: fault → handler → check fault_safe_rsp → longjmp to REPL
+; STATE: fault_safe_rsp, fault_safe_rip, fault_count, bp_table
 ;
 ; BREAKPOINT SYSTEM:
-;   Replaces byte with INT3 (0xCC), saves original
-;   On SIGTRAP: lookup bp_entry, call handler, restore, single-step, re-inject
-;   Used for learning from struggling regions
+;   INT3 injection for learning from struggling regions
+;   On trap: call handler, restore byte, single-step, re-inject
 ;
-; CRITICAL STATE:
-;   fault_safe_rsp, fault_safe_rip - saved before calling untrusted code
-;   Must be saved in digest_file loop, restored after fault
-;
-; CALLED BY: boot.asm (install), dispatch.asm/io.asm (set safe points)
+; GOTCHAS:
+;   - MUST save fault_safe_rsp/rip BEFORE calling code that might fault
+;   - After fault recovery, r14 (SURFACE_BASE) may be clobbered - reload it
+;   - Max 3 consecutive faults before forced return (anti-loop)
+;   - Breakpoint handler must preserve all regs except rax
 ;
 %include "syscalls.inc"
 %include "constants.inc"

@@ -1,33 +1,27 @@
 ; learn.asm — Learning: emit new patterns, strengthen/weaken existing
 ;
-; ENTRY POINTS:
-;   learn_pattern(ctx, token, energy_delta) - main learning entry
-;   find_existing_pattern(ctx, token) → region_ptr or 0
-;   strengthen_region(header_ptr) - boost hits (+2)
-;   weaken_region(header_ptr) - boost misses (+1)
-;   wire_new_region(region_ptr) - connect to entry table
-;   learn_connections(region_ptr) - STDP: wire recently-fired → this region
+; @entry learn_pattern(edi=ctx, esi=token, xmm0=energy_delta) -> void
+; @entry find_existing_pattern(edi=ctx, esi=token) -> rax=region_ptr|0
+; @entry strengthen_region(rdi=header_ptr) -> void ; +2 hits
+; @entry weaken_region(rdi=header_ptr) -> void ; +1 misses
+; @entry wire_new_region(rdi=region_ptr) -> void
+; @entry learn_connections(rdi=region_ptr) -> void ; STDP wiring
+; @calls emit.asm:emit_dispatch_pattern
+; @calls receipt.asm:receipt_resonate, emit_receipt_simple
+; @calls vsa.asm:holo_store
+; @calledby dispatch.asm:process_token (on MISS)
 ;
-; LEARNING FLOW:
-;   1. holo_store(ctx, token, strength) - always (holographic)
-;   2. receipt_resonate(LEARN, ctx, token) - skip if recently learned
-;   3. find_existing_pattern() - skip if region exists
-;   4. emit_dispatch_pattern() - create new x86 code region
-;   5. wire_new_region() - connect to dispatch entry table
-;   6. learn_connections() - STDP wiring
+; FLOW: holo_store → check redundant → find_existing → emit → wire → STDP
+; STATE: miss buffer via dispatch, region table
 ;
-; TRACE INTEGRATION (line ~120):
-;   Queries EVENT_LEARN via receipt_resonate() to avoid redundant learning
-;   If similarity > 0.8, skip (already learned recently)
+; TRACE QUERY (~line 120):
+;   receipt_resonate(LEARN, ctx, token) > 0.8 → skip redundant
 ;
-; SOMATIC GROUNDING:
-;   energy_delta → valence → superposed onto trace
-;   Patterns learned during reward have positive valence
+; SOMATIC: energy_delta → valence → superposed (reward = positive)
 ;
-; CALLS OUT TO:
-;   emit.asm:     emit_dispatch_pattern(ctx, token)
-;   receipt.asm:  receipt_resonate(), emit_receipt_simple()
-;   vsa.asm:      holo_store()
+; GOTCHAS:
+;   - Always holo_store first (never fails, just gets denser)
+;   - Check receipt trace BEFORE emitting (avoid redundant patterns)
 ;
 %include "syscalls.inc"
 %include "constants.inc"

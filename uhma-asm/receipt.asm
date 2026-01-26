@@ -1,25 +1,23 @@
 ; receipt.asm — Unified Holographic Receipt Layer
 ;
-; ENTRY POINTS:
-;   emit_receipt_full(event,ctx,actual,predicted,region,aux,conf,valence) - full 8D
-;   emit_receipt_simple(event,ctx,token,conf) - backward compat wrapper
-;   receipt_resonate(event,ctx,token) → similarity - query trace
-;   receipt_why_miss() - REPL "why" command: explain last miss
-;   receipt_show_misses(n) - REPL "misses N" command
+; @entry emit_receipt_full(edi=event,esi=ctx,edx=actual,ecx=pred,r8d=region,r9d=aux,xmm0=conf,xmm1=val)
+; @entry emit_receipt_simple(edi=event,esi=ctx,edx=token,xmm0=conf) -> void
+; @entry receipt_resonate(edi=event,esi=ctx,edx=token) -> xmm0=similarity
+; @entry receipt_why_miss() -> void ; REPL "why" command
+; @entry receipt_show_misses(edi=n) -> void ; REPL "misses N"
+; @entry trace_region_performance(edi=region) -> xmm0=ratio
+; @entry trace_context_confidence(edi=ctx) -> xmm0=ratio
+; @entry trace_hit_miss_ratio() -> xmm0=ratio
+; @calls vsa.asm:holo_gen_vec, holo_bind_f64, holo_superpose_f64
+; @calledby dispatch.asm, learn.asm, emit.asm, observe.asm, dreams.asm
 ;
-; COGNITIVE ACCESS (query trace for self-improvement):
-;   trace_region_performance(region) → HIT/(HIT+MISS) ratio
-;   trace_context_confidence(ctx) → historical accuracy in context
-;   trace_hit_miss_ratio() → system-wide performance
+; STORAGE: UNIFIED_TRACE_IDX=240, 8KB | Working buffer: 16×64 bytes
+; 8 DIMENSIONS: time→tracer→aux→region→predicted→actual→ctx→event
 ;
-; STORAGE: UNIFIED_TRACE_IDX (zone 240), 8KB holographic vector
-; WORKING BUFFER: 16 entries × 64 bytes for recent receipts (human readable)
-;
-; 8 DIMENSIONS (inner→outer binding):
-;   time → tracer → aux → region → predicted → actual → ctx → event
-;
-; CALLED FROM: dispatch.asm, learn.asm, emit.asm, observe.asm, dreams.asm
-; CALLS OUT TO: vsa.asm (holo_gen_vec, holo_bind_f64, holo_superpose_f64)
+; GOTCHAS:
+;   - emit_receipt_full for MISS must include predicted token (diagnostic key)
+;   - receipt_resonate returns f64 similarity, not bool
+;   - Working buffer is ring, wraps at 16 entries
 
 %include "syscalls.inc"
 %include "constants.inc"

@@ -1,32 +1,27 @@
 ; vsa.asm — Vector Symbolic Architecture: 1024-dim f64 holographic operations
 ;
-; CORE OPERATIONS (f64[1024] vectors):
-;   holo_bind_f64(a, b, out)      - element-wise XOR-like binding
-;   holo_unbind_f64(a, b, out)    - same as bind (self-inverse in HRR)
-;   holo_superpose_f64(dst, src)  - element-wise add (memory accumulation)
-;   holo_dot_f64(a, b) → f64      - dot product (similarity)
-;   holo_gen_vec(seed, out)       - deterministic vector from hash
-;   holo_scale_f64(vec, scalar)   - multiply by scalar
-;   holo_magnitude_f64(vec) → f64 - L2 norm
+; @entry holo_bind_f64(rdi=a, rsi=b, rdx=out) -> void ; XOR-like binding
+; @entry holo_unbind_f64(rdi=a, rsi=b, rdx=out) -> void ; = bind (HRR self-inverse)
+; @entry holo_superpose_f64(rdi=dst, rsi=src) -> void ; element-wise add
+; @entry holo_dot_f64(rdi=a, rsi=b) -> xmm0=similarity
+; @entry holo_gen_vec(edi=seed, rsi=out) -> void ; deterministic from hash
+; @entry holo_store(edi=ctx, esi=token, xmm0=strength) -> void
+; @entry holo_predict(edi=ctx) -> eax=token, xmm0=conf
+; @entry holo_decay_all() -> void
+; @entry vocab_register(edi=token) -> void
+; @entry confidence_update(edi=ctx, esi=is_hit) -> void
+; @entry confidence_query(edi=ctx) -> xmm0=conf
+; @calledby dispatch.asm, learn.asm, receipt.asm, dreams.asm
 ;
-; HOLOGRAPHIC MEMORY:
-;   holo_store(ctx, token, strength) - bind(ctx_vec, token_vec), superpose to trace
-;   holo_predict(ctx) → token, conf  - query trace, find best match
-;   holo_decay_all()                 - decay all traces toward zero
+; STORAGE: HOLO_OFFSET, 256 zones × 8KB (f64[1024] each)
 ;
-; VOCABULARY:
-;   vocab_register(token)   - add token to vocabulary if new
-;   vocab_count() → count   - number of registered tokens
+; KEY INSIGHT: unbind = bind in HRR (Holographic Reduced Representation)
+;   Query: unbind(probe, trace) → resonates with bound content
 ;
-; CONFIDENCE (topological metacognition):
-;   confidence_update(ctx, is_hit) - update confidence vector for context
-;   confidence_query(ctx) → f64    - get confidence score
-;   confidence_decay_all()         - decay toward neutral
-;
-; LEGACY f32 OPS (vsa_*): vsa_bind, vsa_dot, vsa_superpose, vsa_normalize
-;
-; STORAGE: HOLO_OFFSET in surface, 256 zones × 8KB each
-;
+; GOTCHAS:
+;   - All holo_* funcs use f64[1024], legacy vsa_* use f32[1024]
+;   - holo_gen_vec is deterministic: same seed = same vector
+;   - Superposition accumulates - trace gets denser, needs decay
 %include "syscalls.inc"
 %include "constants.inc"
 %include "vsa_ops.inc"

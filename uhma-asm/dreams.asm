@@ -1,32 +1,24 @@
 ; dreams.asm — Offline consolidation: replay misses, speculate, commit
 ;
-; ENTRY POINTS:
-;   dream_cycle() - main consolidation: replay miss buffer, emit speculative patterns
-;   dream_consolidate() - review NURSERY regions: promote survivors, condemn failures
+; @entry dream_cycle() -> void ; replay miss buffer, emit speculative
+; @entry dream_consolidate() -> void ; review NURSERY, promote/condemn
+; @calls emit.asm:emit_dispatch_pattern
+; @calls vsa.asm:holo_store
+; @calls receipt.asm:receipt_resonate, emit_receipt_simple
+; @calledby repl.asm:cmd_dream
 ;
-; DREAM CYCLE FLOW:
-;   1. Iterate miss buffer (ST_MISS_BUF)
-;   2. For each (ctx, token): check if pattern exists
-;   3. If not, emit speculative pattern with RFLAG_NURSERY
-;   4. Schema extraction: find same token in different contexts → generalize
+; FLOW (dream_cycle):
+;   miss_buffer → check exists → emit NURSERY pattern → schema extract
+; FLOW (consolidate):
+;   NURSERY aged>50 → no hits=condemn, hits=promote+reinforce
 ;
-; CONSOLIDATION (called periodically):
-;   1. Scan NURSERY regions aged > 50 steps
-;   2. No hits → condemn (RFLAG_CONDEMNED)
-;   3. Any hits → promote to ACTIVE, reinforce holographic trace
+; SCHEMA (~dream_extract_schemas):
+;   Same token, different ctx → emit masked (ctx & 0xFFFFFFF0)
 ;
-; SCHEMA EXTRACTION (dream_extract_schemas):
-;   Find entries with same token, different ctx → emit masked pattern
-;   Mask: ctx & 0xFFFFFFF0 (generalize low 4 bits)
-;
-; TRACE INTEGRATION:
-;   Uses receipt_resonate() for prune/promote decisions
-;   Emits EVENT_DREAM, EVENT_PROMOTE receipts
-;
-; CALLS OUT TO:
-;   emit.asm: emit_dispatch_pattern()
-;   vsa.asm:  holo_store() for reinforcement
-;
+; GOTCHAS:
+;   - NURSERY patterns need 50+ steps before judgment
+;   - Schema masks low 4 bits of ctx (generalizes 16 contexts)
+;   - Promoted patterns must be reinforced via holo_store
 %include "syscalls.inc"
 %include "constants.inc"
 
