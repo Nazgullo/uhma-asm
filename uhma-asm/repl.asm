@@ -1,4 +1,29 @@
 ; repl.asm — Interactive command loop
+;
+; ENTRY POINT: repl_run() - main loop, never returns (exits via quit/EOF)
+;
+; COMMAND DISPATCH (lines ~220-580):
+;   Commands matched by literal string compare: cmp dword [rbx], 'quit'
+;   NO colon prefix - commands are plain words: help, quit, why, misses
+;   Pattern: .not_X label after each failed match, .cmd_X for handler
+;
+; COMMANDS:
+;   Status:  help, status, regions, presence, drives, self, metacog
+;   Actions: dream, observe, compact, eat <file>, trace on/off
+;   Hive:    share, colony, hive
+;   Debug:   why, misses [n], receipts [n], listen, debugger, genes
+;   Exit:    quit (syncs surface first)
+;
+; TEXT INPUT: Non-command lines → process_input() → tokenize → process_token
+;
+; CALLS OUT TO:
+;   dispatch.asm: process_input(buf, len)
+;   io.asm:       digest_file(filename)
+;   receipt.asm:  receipt_why_miss(), receipt_show_misses(n), receipt_dump(n)
+;   observe.asm:  observe_cycle()
+;   dreams.asm:   dream_cycle()
+;   surface.asm:  surface_freeze()
+;
 %include "syscalls.inc"
 %include "constants.inc"
 

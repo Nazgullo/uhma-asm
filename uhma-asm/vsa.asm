@@ -1,4 +1,32 @@
-; vsa.asm — Pure AVX2 SIMD operations on flat float64[1024] arrays
+; vsa.asm — Vector Symbolic Architecture: 1024-dim f64 holographic operations
+;
+; CORE OPERATIONS (f64[1024] vectors):
+;   holo_bind_f64(a, b, out)      - element-wise XOR-like binding
+;   holo_unbind_f64(a, b, out)    - same as bind (self-inverse in HRR)
+;   holo_superpose_f64(dst, src)  - element-wise add (memory accumulation)
+;   holo_dot_f64(a, b) → f64      - dot product (similarity)
+;   holo_gen_vec(seed, out)       - deterministic vector from hash
+;   holo_scale_f64(vec, scalar)   - multiply by scalar
+;   holo_magnitude_f64(vec) → f64 - L2 norm
+;
+; HOLOGRAPHIC MEMORY:
+;   holo_store(ctx, token, strength) - bind(ctx_vec, token_vec), superpose to trace
+;   holo_predict(ctx) → token, conf  - query trace, find best match
+;   holo_decay_all()                 - decay all traces toward zero
+;
+; VOCABULARY:
+;   vocab_register(token)   - add token to vocabulary if new
+;   vocab_count() → count   - number of registered tokens
+;
+; CONFIDENCE (topological metacognition):
+;   confidence_update(ctx, is_hit) - update confidence vector for context
+;   confidence_query(ctx) → f64    - get confidence score
+;   confidence_decay_all()         - decay toward neutral
+;
+; LEGACY f32 OPS (vsa_*): vsa_bind, vsa_dot, vsa_superpose, vsa_normalize
+;
+; STORAGE: HOLO_OFFSET in surface, 256 zones × 8KB each
+;
 %include "syscalls.inc"
 %include "constants.inc"
 %include "vsa_ops.inc"

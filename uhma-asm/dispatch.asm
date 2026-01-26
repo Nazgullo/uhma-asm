@@ -1,4 +1,35 @@
-; dispatch.asm — Dispatch tree: tokenize, route through branches, predict
+; dispatch.asm — Token processing, prediction, hit/miss handling
+;
+; ENTRY POINTS:
+;   process_input(buf, len)     - tokenize line, call process_token per word
+;   process_token(token_id)     - main flow: ctx → predict → HIT/MISS → learn
+;   dispatch_predict(ctx_hash)  - holographic first, then region scan
+;
+; DATA FLOW:
+;   token → ctx_hash=hash(predecessor) → predict → compare actual → HIT/MISS
+;   MISS triggers learn_pattern() and emit_dispatch_pattern()
+;
+; KEY STATE (in ST_* offsets):
+;   ST_CTX_HASH        - current context (predecessor hash)
+;   ST_EXPECT_TOKEN    - predicted token (0 if none)
+;   ST_EXPECT_CONF     - prediction confidence (f32)
+;   ST_PREDICT_REGION  - region that made prediction
+;   ST_RUNNER_UP_TOKEN - second-best prediction (for diagnostics)
+;
+; CALLS OUT TO:
+;   learn.asm:    learn_pattern(ctx, token, energy_delta)
+;   receipt.asm:  emit_receipt_full(), receipt_resonate() for trace queries
+;   vsa.asm:      holo_predict(), holo_query_valence()
+;   emit.asm:     emit_dispatch_pattern() on MISS
+;
+; TRACE INTEGRATION (lines ~1020):
+;   Queries HIT/MISS history via receipt_resonate() to modulate confidence
+;   confidence = conf * (1 + 0.2 * (hit_sim - miss_sim))
+;
+; TOKEN ABSTRACTION (lines ~240):
+;   All-digit strings → TOKEN_NUM (0x4e554d21)
+;   0x... strings → TOKEN_HEX (0x48455821)
+;
 %include "syscalls.inc"
 %include "constants.inc"
 

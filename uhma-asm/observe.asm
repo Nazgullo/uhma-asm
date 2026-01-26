@@ -1,4 +1,34 @@
 ; observe.asm — Self-observation: scan regions, compute metrics, update presence
+;
+; ENTRY POINTS:
+;   observe_cycle() - main observation pass
+;   presence_show() - REPL "presence" command: print hormonal state
+;   decay_connection_weights() - STDP decay
+;   repair_routing() - fix broken region table links
+;
+; OBSERVE CYCLE:
+;   1. Walk all regions, compute accuracy = hits/(hits+misses)
+;   2. Prune: accuracy < 0.1 AND age > PRUNE_MIN_AGE → condemn
+;   3. Promote: accuracy > 0.8 → high_accuracy_count++
+;   4. Update presence fields from aggregate stats
+;   5. Update drive levels (accuracy, efficiency, novelty, coherence)
+;
+; TRACE INTEGRATION (lines ~160, ~240):
+;   receipt_resonate(PRUNE, ctx) - avoid regretted prunes
+;   receipt_resonate(PROMOTE, ctx) - boost promising patterns
+;   receipt_resonate(HIT/MISS, ctx) - historical performance
+;
+; PRESENCE FIELDS (32 dimensions):
+;   PRES_AROUSAL, PRES_VALENCE, PRES_FATIGUE, PRES_COHERENCE, etc.
+;   Updated from region stats, drives, oscillation
+;
+; SELF-KNOWLEDGE:
+;   strength_mask, weakness_mask: per context-type (16 types) accuracy
+;
+; CALLS OUT TO:
+;   receipt.asm: receipt_resonate(), emit_receipt_simple()
+;   genes.asm:   gene_extract() for condemned regions
+;
 %include "syscalls.inc"
 %include "constants.inc"
 

@@ -1,23 +1,25 @@
 ; receipt.asm — Unified Holographic Receipt Layer
 ;
-; One trace. N dimensions. Query by unbind.
+; ENTRY POINTS:
+;   emit_receipt_full(event,ctx,actual,predicted,region,aux,conf,valence) - full 8D
+;   emit_receipt_simple(event,ctx,token,conf) - backward compat wrapper
+;   receipt_resonate(event,ctx,token) → similarity - query trace
+;   receipt_why_miss() - REPL "why" command: explain last miss
+;   receipt_show_misses(n) - REPL "misses N" command
 ;
-; Full encoding (8 dimensions):
-;   bind(event, bind(ctx, bind(actual, bind(predicted, bind(region, bind(aux, bind(tracer, time)))))))
+; COGNITIVE ACCESS (query trace for self-improvement):
+;   trace_region_performance(region) → HIT/(HIT+MISS) ratio
+;   trace_context_confidence(ctx) → historical accuracy in context
+;   trace_hit_miss_ratio() → system-wide performance
 ;
-; Dimensions captured:
-;   - event:     EVENT_HIT, EVENT_MISS, EVENT_LEARN, etc.
-;   - ctx:       Context hash (previous token)
-;   - actual:    Actual token that occurred
-;   - predicted: What was predicted (0 if none) - CRITICAL for MISS debugging
-;   - region:    Pattern/region pointer hash (which code fired)
-;   - aux:       Auxiliary data (hits, misses, schema level, etc.)
-;   - tracer:    Tracer ID for journey correlation
-;   - time:      Time bucket for temporal queries
+; STORAGE: UNIFIED_TRACE_IDX (zone 240), 8KB holographic vector
+; WORKING BUFFER: 16 entries × 64 bytes for recent receipts (human readable)
 ;
-; Query any dimension via unbind. The answer is IN the trace.
+; 8 DIMENSIONS (inner→outer binding):
+;   time → tracer → aux → region → predicted → actual → ctx → event
 ;
-; Backward compatible: emit_receipt_simple passes 0 for extended dimensions.
+; CALLED FROM: dispatch.asm, learn.asm, emit.asm, observe.asm, dreams.asm
+; CALLS OUT TO: vsa.asm (holo_gen_vec, holo_bind_f64, holo_superpose_f64)
 
 %include "syscalls.inc"
 %include "constants.inc"

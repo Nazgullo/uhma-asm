@@ -1,4 +1,34 @@
 ; learn.asm — Learning: emit new patterns, strengthen/weaken existing
+;
+; ENTRY POINTS:
+;   learn_pattern(ctx, token, energy_delta) - main learning entry
+;   find_existing_pattern(ctx, token) → region_ptr or 0
+;   strengthen_region(header_ptr) - boost hits (+2)
+;   weaken_region(header_ptr) - boost misses (+1)
+;   wire_new_region(region_ptr) - connect to entry table
+;   learn_connections(region_ptr) - STDP: wire recently-fired → this region
+;
+; LEARNING FLOW:
+;   1. holo_store(ctx, token, strength) - always (holographic)
+;   2. receipt_resonate(LEARN, ctx, token) - skip if recently learned
+;   3. find_existing_pattern() - skip if region exists
+;   4. emit_dispatch_pattern() - create new x86 code region
+;   5. wire_new_region() - connect to dispatch entry table
+;   6. learn_connections() - STDP wiring
+;
+; TRACE INTEGRATION (line ~120):
+;   Queries EVENT_LEARN via receipt_resonate() to avoid redundant learning
+;   If similarity > 0.8, skip (already learned recently)
+;
+; SOMATIC GROUNDING:
+;   energy_delta → valence → superposed onto trace
+;   Patterns learned during reward have positive valence
+;
+; CALLS OUT TO:
+;   emit.asm:     emit_dispatch_pattern(ctx, token)
+;   receipt.asm:  receipt_resonate(), emit_receipt_simple()
+;   vsa.asm:      holo_store()
+;
 %include "syscalls.inc"
 %include "constants.inc"
 
