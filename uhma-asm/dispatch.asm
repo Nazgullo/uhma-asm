@@ -874,7 +874,8 @@ process_token:
     ; Dispatch: predict what comes AFTER current token
     ; Context for prediction = hash(current_token) so we can find patterns that predict successors
     mov rax, r12              ; current token
-    imul rax, 0x9E3779B97F4A7C15  ; golden ratio prime (same hash as context computation)
+    mov rcx, 0x9E3779B97F4A7C15  ; golden ratio prime (64-bit - can't use imul imm64)
+    imul rax, rcx             ; hash(current_token)
     mov rdi, rax              ; context = hash(current_token)
     push rax                  ; save for ST_LAST_CTX
     call dispatch_predict     ; → eax = predicted token (0 if none)

@@ -313,8 +313,11 @@ surface_init:
 
     ; WARM zone (2GB - 16GB): MADV_NORMAL (default, but explicit)
     ; OS uses default prefetching behavior
+    ; NOTE: ZONE_WARM_START = 0x80000000 sign-extends to negative in add/lea!
+    ; Must use register arithmetic to avoid sign-extension.
     mov rdi, rbx
-    add rdi, ZONE_WARM_START
+    mov rax, ZONE_WARM_START
+    add rdi, rax
     mov rsi, ZONE_WARM_SIZE           ; len = 14GB
     mov rdx, MADV_NORMAL              ; advice = 0
     mov rax, SYS_MADVISE
@@ -323,8 +326,10 @@ surface_init:
     ; COLD zone (16GB - 200GB): MADV_RANDOM
     ; Don't prefetch - we expect scattered access to archived data
     ; This prevents OS from reading ahead into potentially unused pages
+    ; NOTE: ZONE_COLD_START = 0x400000000 (34-bit) - use register arithmetic
     mov rdi, rbx
-    add rdi, ZONE_COLD_START
+    mov rax, ZONE_COLD_START
+    add rdi, rax
     mov rsi, ZONE_COLD_SIZE           ; len = 184GB
     mov rdx, MADV_RANDOM              ; advice = 1
     mov rax, SYS_MADVISE

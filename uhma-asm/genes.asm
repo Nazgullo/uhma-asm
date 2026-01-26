@@ -59,7 +59,8 @@ gene_pool_init:
     mov rbx, SURFACE_BASE
 
     ; Zero the gene pool area
-    lea rdi, [rbx + GENE_POOL_OFFSET]
+    ; NOTE: GENE_POOL_OFFSET > 32-bit, lea would sign-extend. Use single 64-bit immediate.
+    mov rdi, SURFACE_BASE + GENE_POOL_OFFSET
     xor eax, eax
     mov ecx, GENE_POOL_SIZE / 8
 .zero_loop:
@@ -233,7 +234,7 @@ gene_pool_add:
 
     ; Pool has space - add at next available slot
     ; Find first empty slot (flags == 0)
-    lea rsi, [rbx + GENE_POOL_OFFSET]
+    mov rsi, SURFACE_BASE + GENE_POOL_OFFSET
     xor ecx, ecx
 .find_empty:
     cmp ecx, GENE_MAX
@@ -254,7 +255,7 @@ gene_pool_add:
     ; Replace lowest-fitness gene
     mov ecx, [rbx + STATE_OFFSET + ST_GENE_LOWEST_IDX]
     mov [rsp + 8], ecx                ; slot to replace
-    lea rsi, [rbx + GENE_POOL_OFFSET]
+    mov rsi, SURFACE_BASE + GENE_POOL_OFFSET
     imul edi, ecx, GENE_ENTRY_SIZE
     lea rdi, [rsi + rdi]
     ; Don't increment gene count (replacing, not adding)
@@ -309,7 +310,7 @@ gene_pool_update_lowest:
     movd xmm0, eax                    ; lowest fitness seen
     xor r12d, r12d                    ; lowest index
 
-    lea rsi, [rbx + GENE_POOL_OFFSET]
+    mov rsi, SURFACE_BASE + GENE_POOL_OFFSET
     xor ecx, ecx
 .scan:
     cmp ecx, GENE_MAX
@@ -372,7 +373,7 @@ gene_pool_sample:
     syscall
 
     ; Compute total fitness for weighted sampling
-    lea rsi, [rbx + GENE_POOL_OFFSET]
+    mov rsi, SURFACE_BASE + GENE_POOL_OFFSET
     xorps xmm2, xmm2                  ; total fitness
     xor ecx, ecx
 .sum_fitness:
@@ -519,7 +520,7 @@ gene_pool_show:
     lea rdi, [rel gene_list_hdr]
     call print_cstr
 
-    lea rsi, [rbx + GENE_POOL_OFFSET]
+    mov rsi, SURFACE_BASE + GENE_POOL_OFFSET
     xor ecx, ecx                      ; index
     xor r13d, r13d                    ; printed count
 .list_loop:

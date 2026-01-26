@@ -129,8 +129,11 @@ persist_save:
 
 .skip_dispatch:
     ; --- Write VSA basis vectors (2MB) ---
+    ; NOTE: VSA_OFFSET = 0x80000000 sign-extends in lea. Use register arithmetic.
     mov rdi, r13
-    lea rsi, [rbx + VSA_OFFSET]
+    mov rsi, rbx
+    mov rcx, VSA_OFFSET
+    add rsi, rcx                  ; 64-bit offset via register
     mov rdx, VSA_VEC_BYTES * 256  ; 256 basis vectors
     mov rax, SYS_WRITE
     syscall
@@ -153,7 +156,10 @@ persist_save:
     jz .skip_vocab
     imul rcx, rcx, VOCAB_ENTRY_SIZE
     mov rdi, r13
-    lea rsi, [rbx + VOCAB_OFFSET]
+    ; NOTE: VOCAB_OFFSET = 0xC0000000 sign-extends in lea. Use register arithmetic.
+    mov rsi, rbx
+    mov r8, VOCAB_OFFSET
+    add rsi, r8
     mov rdx, rcx
     mov rax, SYS_WRITE
     syscall
@@ -281,8 +287,11 @@ persist_load:
 
 .skip_dispatch_read:
     ; --- Read VSA basis vectors (2MB) ---
+    ; NOTE: VSA_OFFSET = 0x80000000 sign-extends in lea. Use register arithmetic.
     mov rdi, r13
-    lea rsi, [rbx + VSA_OFFSET]
+    mov rsi, rbx
+    mov rcx, VSA_OFFSET
+    add rsi, rcx                  ; 64-bit offset via register
     mov rdx, VSA_VEC_BYTES * 256
     mov rax, SYS_READ
     syscall
@@ -305,7 +314,10 @@ persist_load:
     jz .read_done
     imul rcx, rcx, VOCAB_ENTRY_SIZE
     mov rdi, r13
-    lea rsi, [rbx + VOCAB_OFFSET]
+    ; NOTE: VOCAB_OFFSET = 0xC0000000 sign-extends in lea. Use register arithmetic.
+    mov rsi, rbx
+    mov r8, VOCAB_OFFSET
+    add rsi, r8
     mov rdx, rcx
     mov rax, SYS_READ
     syscall

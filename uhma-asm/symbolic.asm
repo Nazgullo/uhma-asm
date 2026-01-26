@@ -84,8 +84,7 @@ sym_check_write:
     cmp rdi, rax
     jb .check_text          ; Below surface, check if .text
 
-    mov rax, SURFACE_BASE
-    add rax, SURFACE_SIZE
+    mov rax, SURFACE_BASE + SURFACE_SIZE  ; single 64-bit immediate (avoids sign-extension)
     cmp rdi, rax
     jb .allow               ; In surface - always allow
 

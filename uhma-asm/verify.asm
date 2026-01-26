@@ -1094,9 +1094,12 @@ verify_abstract:
     jl .call_ok
 .call_check_region:
     ; Check if in current region or surface
-    cmp rcx, 0x100000000
+    ; NOTE: 0x100000000 and 0x200000000 are 33-bit, sign-extend if used as imm32
+    mov rax, SURFACE_BASE          ; 0x100000000
+    cmp rcx, rax
     jl .bad_call
-    cmp rcx, 0x200000000
+    mov rax, SURFACE_BASE * 2      ; 0x200000000
+    cmp rcx, rax
     jl .call_ok
 .bad_call:
     or word [r14 + VCS_FLAGS], VCSF_INVALID_JUMP

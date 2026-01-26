@@ -191,7 +191,7 @@ fault_handler:
     mov rcx, SURFACE_BASE
     cmp rax, rcx
     jb .outside_surface
-    add rcx, SURFACE_SIZE
+    mov rcx, SURFACE_BASE + SURFACE_SIZE  ; single 64-bit immediate (avoids sign-extension)
     cmp rax, rcx
     ja .outside_surface
 
