@@ -1,16 +1,25 @@
-; viz_main.asm — Main entry point for UHMA Visualizer
-; Links with libc for X11 support
+; viz_main.asm — Main entry point for UHMA GUI (MCP wrapper)
+; Visual interface that communicates with UHMA via MCP server
 ;
-%include "constants.inc"
+; @entry main() -> exit code
+; @calls mcp_client.asm:mcp_init, mcp_shutdown
+; @calls visualizer.asm:vis_init, vis_update, vis_shutdown
+;
+; FLOW: main → mcp_init → vis_init → loop(vis_update, usleep) → vis_shutdown → mcp_shutdown
+;
+; GOTCHAS:
+;   - Link with: gcc -lX11 -lc -no-pie (NOT ld directly)
+;   - MCP server spawned as subprocess (python3 tools/rag/server.py)
+;   - vis_update returns 0 to quit, 1 to continue
+;   - 16ms usleep ≈ 60fps frame rate
+;
 
 section .data
-    banner: db "UHMA Visualizer - Real-time system transparency", 10
-            db "Press any key to exit", 10, 0
+    banner: db "UHMA GUI - MCP Interface", 10, 0
     init_fail: db "Failed to initialize graphics", 10, 0
-    surface_fail: db "Failed to initialize surface", 10, 0
+    mcp_fail: db "Failed to start MCP server", 10, 0
 
 section .bss
-    surface_base: resq 1
 
 section .text
 
@@ -19,9 +28,9 @@ extern printf
 extern usleep
 extern exit
 
-; UHMA
-extern surface_init
-extern dispatch_init
+; MCP client
+extern mcp_init
+extern mcp_shutdown
 
 ; Visualizer
 extern vis_init
@@ -32,33 +41,27 @@ global main
 main:
     push rbx
     push r12
-    sub rsp, 8              ; 2 pushes + 8 = 24, rsp % 16 == 0
+    sub rsp, 8
 
     ; Print banner
     lea rdi, [rel banner]
     xor eax, eax
     call printf
 
-    ; Initialize surface
-    call surface_init
-    test rax, rax
-    jz .surface_fail
-    mov [rel surface_base], rax
-    mov r12, rax
-
-    ; Initialize dispatch
-    call dispatch_init
+    ; Initialize MCP connection (spawns server + UHMA)
+    call mcp_init
+    test eax, eax
+    jz .mcp_fail
 
     ; Initialize visualizer (includes gfx_init)
-    mov rdi, r12            ; pass surface base
+    xor edi, edi            ; no surface pointer needed
     call vis_init
     test eax, eax
     jz .gfx_fail
 
     ; Main loop
 .loop:
-    ; Update visualization
-    mov rdi, r12
+    xor edi, edi
     call vis_update
     test eax, eax
     jz .done
@@ -71,6 +74,7 @@ main:
 
 .done:
     call vis_shutdown
+    call mcp_shutdown
     xor edi, edi
     call exit
 
@@ -78,11 +82,12 @@ main:
     lea rdi, [rel init_fail]
     xor eax, eax
     call printf
+    call mcp_shutdown
     mov edi, 1
     call exit
 
-.surface_fail:
-    lea rdi, [rel surface_fail]
+.mcp_fail:
+    lea rdi, [rel mcp_fail]
     xor eax, eax
     call printf
     mov edi, 1

@@ -213,6 +213,15 @@ section .data
     msg_geom_vec:   db "Verify: GEOMETRIC", 0
     msg_geom_both:  db "Verify: BOTH", 0
 
+    ; MCP command strings
+    raw_tool:       db "raw", 0
+    step_text:      db " ", 0
+    run_cmd_arg:    db '"command":"run 100"', 0
+    trace_on_arg:   db '"command":"listen"', 0
+    trace_off_arg:  db '"command":"trace"', 0
+    geom_cmd_arg:   db '"command":"geom"', 0
+    eat_cmd_pre:    db '"command":"eat ', 0
+
     ; Number format
     hex_prefix:     db "0x", 0
     pct_sign:       db "%", 0
@@ -321,9 +330,13 @@ section .bss
     ; File loading
     file_path_buf:  resb 512
     file_read_buf:  resb 4096
+    eat_cmd_buf:    resb 1024
+    ; Dummy surface for state reads (GUI doesn't access real surface via MCP)
+    dummy_surface:  resb 131072
 
     ; Trace state
     trace_active:   resd 1
+    geom_mode:      resd 1
 
     ; Token journey buffer (last traced path)
     ; Each entry: region_id(u32), action(u32) - 0=enter, 1=hit, 2=miss, 3=exit
@@ -392,25 +405,24 @@ extern fclose
 extern opendir
 extern readdir
 extern closedir
-extern dream_cycle
-extern observe_cycle
-extern evolve_cycle
-extern process_token
-extern process_input
-extern dispatch_predict
-extern sym_get_stats
-extern persist_save
-extern persist_load
-extern journey_start
-extern journey_stop
-extern journey_dump
+extern strcpy
+extern strcat
+extern strlen
+; MCP client functions (replaces direct UHMA calls)
+extern mcp_dream
+extern mcp_observe
+extern mcp_evolve
+extern mcp_send_text
+extern mcp_save
+extern mcp_load
+extern mcp_get_status
+extern mcp_call
 
 ; Rosetta Stone / Geometric Verification
-extern verify_get_mode
-extern verify_set_mode
+; Verify mode handled via MCP raw commands
 
 ; Colony / Mycorrhiza
-extern is_shared_mode
+; Shared mode queried via MCP
 
 ;; ============================================================
 ;; vis_init — Initialize visualizer
@@ -427,7 +439,9 @@ vis_init:
     push r15
     sub rsp, 24                 ; Align to 16 bytes: 6 pushes (48) + 24 = 72, + 8 (ret) = 80
 
-    mov [rel surface_ptr], rdi
+    ; Use dummy surface for state reads (real data comes via MCP)
+    lea rax, [rel dummy_surface]
+    mov [rel surface_ptr], rax
 
     ; Initialize graphics
     mov edi, WIN_W
@@ -1076,62 +1090,54 @@ do_action:
     jmp .continue
 
 .do_dream:
-    call dream_cycle
+    call mcp_dream
     lea rax, [rel msg_dream]
     mov [rel feedback_msg], rax
     mov dword [rel feedback_timer], 60
     jmp .continue
 
 .do_observe:
-    call observe_cycle
+    call mcp_observe
     lea rax, [rel msg_observe]
     mov [rel feedback_msg], rax
     mov dword [rel feedback_timer], 60
     jmp .continue
 
 .do_evolve:
-    call evolve_cycle
+    call mcp_evolve
     lea rax, [rel msg_evolve]
     mov [rel feedback_msg], rax
     mov dword [rel feedback_timer], 60
     jmp .continue
 
 .do_step:
-    mov edi, ' '
-    call process_token
+    ; Send a space character via MCP
+    lea rdi, [rel step_text]
+    call mcp_send_text
     lea rax, [rel msg_step]
     mov [rel feedback_msg], rax
     mov dword [rel feedback_timer], 60
     jmp .continue
 
 .do_run:
-    mov r12d, 100
-.run_loop:
-    test r12d, r12d
-    jz .run_done
-    mov edi, ' '
-    push r12
-    call process_token
-    pop r12
-    dec r12d
-    jmp .run_loop
-.run_done:
+    ; Send run100 via MCP raw command
+    lea rdi, [rel raw_tool]
+    lea rsi, [rel run_cmd_arg]
+    call mcp_call
     lea rax, [rel msg_run]
     mov [rel feedback_msg], rax
     mov dword [rel feedback_timer], 60
     jmp .continue
 
 .do_save:
-    mov rdi, [rel surface_ptr]
-    call persist_save
+    call mcp_save
     lea rax, [rel msg_save]
     mov [rel feedback_msg], rax
     mov dword [rel feedback_timer], 60
     jmp .continue
 
 .do_load:
-    mov rdi, [rel surface_ptr]
-    call persist_load
+    call mcp_load
     lea rax, [rel msg_load]
     mov [rel feedback_msg], rax
     mov dword [rel feedback_timer], 60
@@ -1146,20 +1152,21 @@ do_action:
     jmp .continue
 
 .do_trace:
-    ; Toggle trace
+    ; Toggle trace via MCP
     mov eax, [rel trace_active]
     test eax, eax
     jnz .trace_off
-    ; Turn on - trace next token
     mov dword [rel trace_active], 1
-    mov edi, 0              ; will trace any token
-    call journey_start
+    lea rdi, [rel raw_tool]
+    lea rsi, [rel trace_on_arg]
+    call mcp_call
     lea rax, [rel msg_trace_on]
     jmp .trace_msg
 .trace_off:
     mov dword [rel trace_active], 0
-    call journey_stop
-    call journey_dump
+    lea rdi, [rel raw_tool]
+    lea rsi, [rel trace_off_arg]
+    call mcp_call
     lea rax, [rel msg_trace_off]
 .trace_msg:
     mov [rel feedback_msg], rax
@@ -1167,17 +1174,21 @@ do_action:
     jmp .continue
 
 .do_geom:
-    ; Cycle verification mode: 0→1→2→0
-    call verify_get_mode
+    ; Cycle geom mode (0→1→2→0)
+    mov eax, [rel geom_mode]
     inc eax
     cmp eax, 3
     jl .geom_set
     xor eax, eax
 .geom_set:
-    mov edi, eax
-    call verify_set_mode
-    ; Show feedback
-    call verify_get_mode
+    mov [rel geom_mode], eax
+    ; Send to MCP
+    push rax
+    lea rdi, [rel raw_tool]
+    lea rsi, [rel geom_cmd_arg]
+    call mcp_call
+    pop rax
+    ; Feedback based on mode
     cmp eax, 0
     jne .geom_not_abs
     lea rax, [rel msg_geom_abs]
@@ -1230,9 +1241,13 @@ do_send_input:
     test r12d, r12d
     jz .done
 
+    ; Null-terminate input buffer
     lea rdi, [rel input_buf]
-    mov esi, r12d
-    call process_input
+    mov byte [rdi + r12], 0
+
+    ; Send via MCP
+    lea rdi, [rel input_buf]
+    call mcp_send_text
 
     mov dword [rel input_len], 0
     lea rax, [rel msg_sent]
@@ -2023,8 +2038,8 @@ draw_mindmap:
     mov r8d, [rel col_white]
     call gfx_text
 
-    ; Get verify mode and display
-    call verify_get_mode
+    ; Get cached verify mode and display
+    mov eax, [rel geom_mode]
     cmp eax, 0
     jne .ros_not_abs
     lea rdx, [rel geom_mode_abstract]
@@ -2641,16 +2656,15 @@ format_num:
 load_file:
     push rbx
     push r12
-    push r13
-    push r14
-    push r15
     sub rsp, 8
 
+    ; Use zenity to pick file
     lea rdi, [rel zenity_file]
     call system
     test eax, eax
     jnz .error
 
+    ; Read selected path from temp file
     lea rdi, [rel tmp_pick_path]
     lea rsi, [rel read_mode]
     call fopen
@@ -2690,31 +2704,24 @@ load_file:
     cmp byte [rdi], 0
     je .error
 
-    ; Open file
-    lea rdi, [rel file_path_buf]
-    lea rsi, [rel read_mode]
-    call fopen
-    test rax, rax
-    jz .error
-    mov r12, rax
+    ; Build "eat /path" command and send via MCP
+    lea rdi, [rel eat_cmd_buf]
+    lea rsi, [rel eat_cmd_pre]
+    call strcpy
+    lea rdi, [rel eat_cmd_buf]
+    lea rsi, [rel file_path_buf]
+    call strcat
+    ; Close the quote
+    lea rdi, [rel eat_cmd_buf]
+    call strlen
+    lea rdi, [rel eat_cmd_buf + rax]
+    mov byte [rdi], '"'
+    mov byte [rdi + 1], 0
 
-.read:
-    lea rdi, [rel file_read_buf]
-    mov esi, 1
-    mov edx, 1
-    mov rcx, r12
-    call fread
-    test rax, rax
-    jz .eof
-
-    movzx edi, byte [rel file_read_buf]
-    call process_token
-    jmp .read
-
-.eof:
-    mov rdi, r12
-    call fclose
-    call dream_cycle
+    ; Send via MCP raw command
+    lea rdi, [rel raw_tool]
+    lea rsi, [rel eat_cmd_buf]
+    call mcp_call
 
     lea rax, [rel msg_file_ok]
     mov [rel feedback_msg], rax
@@ -2728,9 +2735,6 @@ load_file:
 
 .done:
     add rsp, 8
-    pop r15
-    pop r14
-    pop r13
     pop r12
     pop rbx
     ret
@@ -2842,35 +2846,35 @@ load_dir:
     jmp .cp_name
 
 .open:
-    lea rdi, [rsp]
-    lea rsi, [rel read_mode]
-    call fopen
-    test rax, rax
-    jz .next
-    mov r15, rax
+    ; Build "eat /path" command and send via MCP
+    lea rdi, [rel eat_cmd_buf]
+    lea rsi, [rel eat_cmd_pre]
+    call strcpy
+    lea rdi, [rel eat_cmd_buf]
+    lea rsi, [rsp]              ; full file path
+    call strcat
+    ; Close the quote
+    lea rdi, [rel eat_cmd_buf]
+    call strlen
+    lea rdi, [rel eat_cmd_buf + rax]
+    mov byte [rdi], '"'
+    mov byte [rdi + 1], 0
 
-.read:
-    lea rdi, [rel file_read_buf]
-    mov esi, 1
-    mov edx, 1
-    mov rcx, r15
-    call fread
-    test rax, rax
-    jz .close
-
-    movzx edi, byte [rel file_read_buf]
-    call process_token
-    jmp .read
-
-.close:
-    mov rdi, r15
-    call fclose
+    ; Send via MCP
+    push r12
+    push r13
+    lea rdi, [rel raw_tool]
+    lea rsi, [rel eat_cmd_buf]
+    call mcp_call
+    pop r13
+    pop r12
     jmp .next
 
 .dir_done:
     mov rdi, r12
     call closedir
-    call dream_cycle
+    ; Dream already happens inside eat via MCP
+    call mcp_dream
 
     lea rax, [rel msg_dir_ok]
     mov [rel feedback_msg], rax
