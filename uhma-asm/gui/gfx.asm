@@ -16,7 +16,7 @@
 ; GOTCHAS:
 ;   - XFillRectangle/XDrawRectangle/XDrawLine take 7 args: 7th (height) goes on stack at [rsp]
 ;   - XDrawString takes 7 args: 7th (length) goes on stack
-;   - All gfx_* functions do 5 pushes + sub rsp,8 for 16-byte alignment before X11 calls
+;   - Stack alignment: odd pushes (3,5) need sub rsp,16; even pushes (2) need sub rsp,8
 ;   - display/gc/window are module-local BSS; must call gfx_init first
 ;   - Colors are 0x00RRGGBB format
 ;
@@ -256,7 +256,7 @@ gfx_pixel:
     push rbx
     push r12
     push r13
-    sub rsp, 8
+    sub rsp, 16
 
     mov r12d, edi           ; x
     mov r13d, esi           ; y
@@ -276,7 +276,7 @@ gfx_pixel:
     mov r8d, r13d
     call XDrawPoint
 
-    add rsp, 8
+    add rsp, 16
     pop r13
     pop r12
     pop rbx
@@ -293,7 +293,7 @@ gfx_line:
     push r13
     push r14
     push r15
-    sub rsp, 8
+    sub rsp, 16
 
     mov r12d, edi           ; x0
     mov r13d, esi           ; y0
@@ -318,7 +318,7 @@ gfx_line:
     mov [rsp], rax
     call XDrawLine
 
-    add rsp, 8
+    add rsp, 16
     pop r15
     pop r14
     pop r13
@@ -337,7 +337,7 @@ gfx_rect:
     push r13
     push r14
     push r15
-    sub rsp, 8
+    sub rsp, 16
 
     mov r12d, edi           ; x
     mov r13d, esi           ; y
@@ -362,7 +362,7 @@ gfx_rect:
     mov [rsp], rax
     call XDrawRectangle
 
-    add rsp, 8
+    add rsp, 16
     pop r15
     pop r14
     pop r13
@@ -381,7 +381,7 @@ gfx_fill_rect:
     push r13
     push r14
     push r15
-    sub rsp, 8
+    sub rsp, 16
 
     mov r12d, edi           ; x
     mov r13d, esi           ; y
@@ -406,7 +406,7 @@ gfx_fill_rect:
     mov [rsp], rax
     call XFillRectangle
 
-    add rsp, 8
+    add rsp, 16
     pop r15
     pop r14
     pop r13
@@ -520,7 +520,7 @@ gfx_text:
     push r13
     push r14
     push r15
-    sub rsp, 8
+    sub rsp, 16
 
     mov r12d, edi           ; x
     mov r13d, esi           ; y
@@ -545,7 +545,7 @@ gfx_text:
     mov [rsp], rax          ; length
     call XDrawString
 
-    add rsp, 8
+    add rsp, 16
     pop r15
     pop r14
     pop r13

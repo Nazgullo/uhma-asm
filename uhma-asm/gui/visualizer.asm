@@ -8,7 +8,7 @@
 ; @calledby viz_main.asm:main
 ;
 ; GOTCHAS:
-;   - X11 calls need 16-byte aligned stack: count pushes + sub rsp carefully
+;   - Stack alignment: ODD pushes (1,3,5) need sub rsp,16; EVEN pushes (2,4) need sub rsp,8
 ;   - gfx_fill_rect takes 5 args: edi=x, esi=y, edx=w, ecx=h, r8d=color
 ;   - Callee-saved regs (rbx, r12-r15) must be preserved across gfx_* calls
 ;   - ecx is caller-saved: reload h from memory before each gfx call, don't push/pop
@@ -1312,7 +1312,7 @@ draw_buttons:
     push r13
     push r14
     push r15
-    sub rsp, 8
+    sub rsp, 16
 
     lea rbx, [rel buttons]
     xor r12d, r12d
@@ -1420,7 +1420,7 @@ draw_buttons:
     jmp .btn_loop
 
 .done:
-    add rsp, 8
+    add rsp, 16
     pop r15
     pop r14
     pop r13
@@ -1433,7 +1433,7 @@ draw_buttons:
 ;; ============================================================
 draw_canvas:
     push rbx
-    sub rsp, 8
+    sub rsp, 16
 
     ; Canvas background
     mov edi, CANVAS_X
@@ -1451,7 +1451,7 @@ draw_canvas:
     mov r8d, [rel col_border]
     call gfx_rect
 
-    add rsp, 8
+    add rsp, 16
     pop rbx
     ret
 
@@ -2454,7 +2454,7 @@ draw_input:
     push rbx
     push r12
     push r13
-    sub rsp, 8
+    sub rsp, 16
 
     mov r12d, 10
     mov r13d, WIN_H - INPUT_H - STATUS_H
@@ -2520,7 +2520,7 @@ draw_input:
     call gfx_fill_rect
 
 .no_cursor:
-    add rsp, 8
+    add rsp, 16
     pop r13
     pop r12
     pop rbx

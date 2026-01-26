@@ -45,6 +45,14 @@ This is O(1) per item. The holographic memory IS the index. Don't build separate
 - **rcx is caller-saved** - don't use ecx/rcx in digest loop, it gets clobbered; use r10-r15 instead
 - **Restore r14 after fault recovery** - process_token may clobber r14, must reload SURFACE_BASE after .continue_loop
 
+### Stack Alignment (x86-64 System V ABI)
+- **RSP must be 16-byte aligned BEFORE call instruction**
+- Entry to function: rsp = 16n - 8 (return address was pushed)
+- **ODD pushes (1,3,5)** → stack becomes 16-aligned → need `sub rsp, 16`
+- **EVEN pushes (0,2,4)** → stack is NOT aligned → need `sub rsp, 8`
+- Misalignment causes segfaults in libc/X11 calls (XSetForeground, printf, etc.)
+- GUI files (gfx.asm, visualizer.asm, mcp_client.asm) had this bug fixed 2026-01-26
+
 ### Emitted Patterns
 - Emitted patterns work for text processing - they're valid x86 (cmp/jne/mov/ret stubs)
 - The emitted code compares context hash and returns predicted token or 0

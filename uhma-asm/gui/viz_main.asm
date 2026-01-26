@@ -12,6 +12,7 @@
 ;   - MCP server spawned as subprocess (python3 tools/rag/server.py)
 ;   - vis_update returns 0 to quit, 1 to continue
 ;   - 16ms usleep ≈ 60fps frame rate
+;   - Stack alignment: ODD pushes need sub rsp,16; EVEN pushes need sub rsp,8
 ;
 
 section .data

@@ -15,6 +15,7 @@
 ;   - Response buffer is static, overwritten each call
 ;   - JSON-RPC uses Content-Length header framing
 ;   - MCP server spawns UHMA internally
+;   - Stack alignment: ODD pushes need sub rsp,16; EVEN pushes need sub rsp,8
 
 section .data
     ; MCP server command
@@ -94,7 +95,7 @@ mcp_init:
     push rbx
     push r12
     push r13
-    sub rsp, 8
+    sub rsp, 16
 
     ; Create pipes
     lea rdi, [rel pipe_to_mcp]
@@ -200,7 +201,7 @@ mcp_init:
     jmp .done
 
 .done:
-    add rsp, 8
+    add rsp, 16
     pop r13
     pop r12
     pop rbx
@@ -209,7 +210,7 @@ mcp_init:
 ;; Send initialize JSON-RPC
 .send_init:
     push rbx
-    sub rsp, 8
+    sub rsp, 16
 
     ; Build request with Content-Length header
     lea rdi, [rel json_init]
@@ -251,14 +252,14 @@ mcp_init:
     mov edx, 65535
     call read
 
-    add rsp, 8
+    add rsp, 16
     pop rbx
     ret
 
 ;; mcp_shutdown — Kill MCP server
 mcp_shutdown:
     push rbx
-    sub rsp, 8
+    sub rsp, 16
 
     cmp dword [rel mcp_running], 0
     je .done
@@ -288,7 +289,7 @@ mcp_shutdown:
     mov dword [rel mcp_running], 0
 
 .done:
-    add rsp, 8
+    add rsp, 16
     pop rbx
     ret
 
