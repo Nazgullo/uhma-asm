@@ -1065,3 +1065,299 @@ receipt_show_misses:
     pop r12
     pop rbx
     ret
+
+;; ============================================================
+;; COGNITIVE ACCESS - System queries its own trace for self-improvement
+;; ============================================================
+
+section .data
+    perf_low_thresh: dq 0.3   ; below this = bad region
+
+section .text
+
+;; ============================================================
+;; trace_region_performance(region_hash) → xmm0 (performance 0.0-1.0)
+;; Query unified trace for HIT vs MISS ratio for given region.
+;; Returns hit_resonance / (hit_resonance + miss_resonance + epsilon)
+;; Used by pruning logic to identify underperforming regions.
+;; edi = region_hash
+;; ============================================================
+global trace_region_performance
+trace_region_performance:
+    push rbx
+    push r12
+    sub rsp, 24           ; [0]=region_hash, [8]=hit_score, [16]=miss_score
+
+    mov rbx, SURFACE_BASE
+    mov [rsp], edi        ; save region_hash
+
+    ; === Query HIT + region ===
+    ; Generate event vector for HIT
+    mov edi, EVENT_HIT
+    add edi, TRACE_EVENT_SEED
+    lea rsi, [rel scratch_event_vec]
+    call holo_gen_vec
+
+    ; Generate region vector
+    mov edi, [rsp]
+    add edi, TRACE_REGION_SEED
+    lea rsi, [rel scratch_region_vec]
+    call holo_gen_vec
+
+    ; Bind event ⊗ region → probe
+    lea rdi, [rel scratch_event_vec]
+    lea rsi, [rel scratch_region_vec]
+    lea rdx, [rel scratch_result_vec]
+    call holo_bind_f64
+
+    ; Dot with unified trace
+    mov eax, UNIFIED_TRACE_IDX
+    imul rax, rax, HOLO_VEC_BYTES
+    mov rdi, rbx
+    mov rcx, HOLO_OFFSET
+    add rdi, rcx
+    add rdi, rax
+    lea rsi, [rel scratch_result_vec]
+    call holo_dot_f64
+    ; Clamp negative to zero
+    xorpd xmm1, xmm1
+    maxsd xmm0, xmm1
+    movsd [rsp + 8], xmm0     ; hit_score
+
+    ; === Query MISS + region ===
+    mov edi, EVENT_MISS
+    add edi, TRACE_EVENT_SEED
+    lea rsi, [rel scratch_event_vec]
+    call holo_gen_vec
+
+    ; Region already generated, bind again
+    lea rdi, [rel scratch_event_vec]
+    lea rsi, [rel scratch_region_vec]
+    lea rdx, [rel scratch_result_vec]
+    call holo_bind_f64
+
+    ; Dot with unified trace
+    mov eax, UNIFIED_TRACE_IDX
+    imul rax, rax, HOLO_VEC_BYTES
+    mov rdi, rbx
+    mov rcx, HOLO_OFFSET
+    add rdi, rcx
+    add rdi, rax
+    lea rsi, [rel scratch_result_vec]
+    call holo_dot_f64
+    xorpd xmm1, xmm1
+    maxsd xmm0, xmm1
+    movsd [rsp + 16], xmm0    ; miss_score
+
+    ; === Compute performance = hit / (hit + miss + epsilon) ===
+    movsd xmm0, [rsp + 8]     ; hit
+    movsd xmm1, [rsp + 16]    ; miss
+    addsd xmm1, xmm0          ; hit + miss
+    mov rax, 0x3EB0C6F7A0B5ED8D  ; epsilon = 1e-6
+    movq xmm2, rax
+    addsd xmm1, xmm2          ; hit + miss + epsilon
+    divsd xmm0, xmm1          ; performance = hit / total
+
+    add rsp, 24
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; trace_context_confidence(ctx_hash) → xmm0 (confidence 0.0-1.0)
+;; Query trace for historical HIT rate in given context.
+;; High = system has been accurate here, low = unreliable context.
+;; edi = ctx_hash
+;; ============================================================
+global trace_context_confidence
+trace_context_confidence:
+    push rbx
+    sub rsp, 24           ; [0]=ctx_hash, [8]=hit_score, [16]=miss_score
+
+    mov rbx, SURFACE_BASE
+    mov [rsp], edi
+
+    ; === Query HIT + ctx ===
+    mov edi, EVENT_HIT
+    add edi, TRACE_EVENT_SEED
+    lea rsi, [rel scratch_event_vec]
+    call holo_gen_vec
+
+    mov edi, [rsp]        ; ctx_hash (raw, no seed for ctx)
+    lea rsi, [rel scratch_ctx_vec]
+    call holo_gen_vec
+
+    lea rdi, [rel scratch_event_vec]
+    lea rsi, [rel scratch_ctx_vec]
+    lea rdx, [rel scratch_result_vec]
+    call holo_bind_f64
+
+    mov eax, UNIFIED_TRACE_IDX
+    imul rax, rax, HOLO_VEC_BYTES
+    mov rdi, rbx
+    mov rcx, HOLO_OFFSET
+    add rdi, rcx
+    add rdi, rax
+    lea rsi, [rel scratch_result_vec]
+    call holo_dot_f64
+    xorpd xmm1, xmm1
+    maxsd xmm0, xmm1
+    movsd [rsp + 8], xmm0
+
+    ; === Query MISS + ctx ===
+    mov edi, EVENT_MISS
+    add edi, TRACE_EVENT_SEED
+    lea rsi, [rel scratch_event_vec]
+    call holo_gen_vec
+
+    lea rdi, [rel scratch_event_vec]
+    lea rsi, [rel scratch_ctx_vec]
+    lea rdx, [rel scratch_result_vec]
+    call holo_bind_f64
+
+    mov eax, UNIFIED_TRACE_IDX
+    imul rax, rax, HOLO_VEC_BYTES
+    mov rdi, rbx
+    mov rcx, HOLO_OFFSET
+    add rdi, rcx
+    add rdi, rax
+    lea rsi, [rel scratch_result_vec]
+    call holo_dot_f64
+    xorpd xmm1, xmm1
+    maxsd xmm0, xmm1
+    movsd [rsp + 16], xmm0
+
+    ; performance = hit / (hit + miss + epsilon)
+    movsd xmm0, [rsp + 8]
+    movsd xmm1, [rsp + 16]
+    addsd xmm1, xmm0
+    mov rax, 0x3EB0C6F7A0B5ED8D
+    movq xmm2, rax
+    addsd xmm1, xmm2
+    divsd xmm0, xmm1
+
+    add rsp, 24
+    pop rbx
+    ret
+
+;; ============================================================
+;; trace_token_learnability(token) → xmm0 (learnability score)
+;; Query trace for how often this token appears in LEARN events.
+;; High = token gets learned frequently (maybe problematic pattern).
+;; edi = token_hash
+;; ============================================================
+global trace_token_learnability
+trace_token_learnability:
+    push rbx
+    push r12
+    sub rsp, 8
+
+    mov rbx, SURFACE_BASE
+    mov r12d, edi         ; save token
+
+    ; Generate LEARN event probe
+    mov edi, EVENT_LEARN
+    add edi, TRACE_EVENT_SEED
+    lea rsi, [rel scratch_event_vec]
+    call holo_gen_vec
+
+    ; Generate token probe
+    mov edi, r12d
+    lea rsi, [rel scratch_actual_vec]
+    call holo_gen_vec
+
+    ; Bind event ⊗ token → probe
+    lea rdi, [rel scratch_event_vec]
+    lea rsi, [rel scratch_actual_vec]
+    lea rdx, [rel scratch_result_vec]
+    call holo_bind_f64
+
+    ; Dot with unified trace
+    mov eax, UNIFIED_TRACE_IDX
+    imul rax, rax, HOLO_VEC_BYTES
+    mov rdi, rbx
+    mov rcx, HOLO_OFFSET
+    add rdi, rcx
+    add rdi, rax
+    lea rsi, [rel scratch_result_vec]
+    call holo_dot_f64
+    ; Clamp negative
+    xorpd xmm1, xmm1
+    maxsd xmm0, xmm1
+
+    add rsp, 8
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; trace_event_count(event_type) → xmm0 (resonance magnitude)
+;; Query trace for total resonance with given event type.
+;; Proxy for "how many of this event have occurred".
+;; edi = event_type
+;; ============================================================
+global trace_event_count
+trace_event_count:
+    push rbx
+    sub rsp, 8
+
+    mov rbx, SURFACE_BASE
+
+    ; Generate event probe
+    add edi, TRACE_EVENT_SEED
+    lea rsi, [rel scratch_event_vec]
+    call holo_gen_vec
+
+    ; Unbind from trace to isolate this event type
+    mov eax, UNIFIED_TRACE_IDX
+    imul rax, rax, HOLO_VEC_BYTES
+    mov rdi, rbx
+    mov rcx, HOLO_OFFSET
+    add rdi, rcx
+    add rdi, rax
+    lea rsi, [rel scratch_event_vec]
+    lea rdx, [rel scratch_result_vec]
+    call holo_unbind_f64
+
+    ; Magnitude = proxy for count
+    lea rdi, [rel scratch_result_vec]
+    call holo_magnitude_f64
+
+    add rsp, 8
+    pop rbx
+    ret
+
+;; ============================================================
+;; trace_hit_miss_ratio() → xmm0 (overall hit ratio 0.0-1.0)
+;; Query trace for system-wide HIT vs MISS ratio.
+;; Used for self-model: "how well am I doing overall?"
+;; ============================================================
+global trace_hit_miss_ratio
+trace_hit_miss_ratio:
+    push rbx
+    sub rsp, 16           ; [0]=hit_mag, [8]=miss_mag
+
+    mov rbx, SURFACE_BASE
+
+    ; Get HIT magnitude
+    mov edi, EVENT_HIT
+    call trace_event_count
+    movsd [rsp], xmm0
+
+    ; Get MISS magnitude
+    mov edi, EVENT_MISS
+    call trace_event_count
+    movsd [rsp + 8], xmm0
+
+    ; ratio = hit / (hit + miss + epsilon)
+    movsd xmm0, [rsp]
+    movsd xmm1, [rsp + 8]
+    addsd xmm1, xmm0
+    mov rax, 0x3EB0C6F7A0B5ED8D
+    movq xmm2, rax
+    addsd xmm1, xmm2
+    divsd xmm0, xmm1
+
+    add rsp, 16
+    pop rbx
+    ret

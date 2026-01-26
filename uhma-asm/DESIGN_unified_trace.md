@@ -111,11 +111,42 @@ combined = bind(event_probe, ctx_probe)
 result = unbind(combined, unified_trace)
 ```
 
-## Future: Cognitive Access
+## Cognitive Access Functions (Implemented)
 
-The trace can feed back into learning:
+The system queries its own trace for self-improvement:
 
-1. **Region performance**: Query trace for MISS rate per region → prune bad regions
-2. **Learning effectiveness**: Compare pre/post MISS rates → tune learning rate
-3. **Pattern analysis**: Find contexts with high MISS → candidates for schema extraction
-4. **Self-model**: System queries its own history to understand behavior
+### trace_region_performance(region_hash) → f64
+Query HIT/MISS ratio for a specific region.
+```
+performance = hit_resonance / (hit_resonance + miss_resonance + epsilon)
+```
+Use: Pruning identifies regions with performance < 0.3 as candidates for removal.
+
+### trace_context_confidence(ctx_hash) → f64
+Query historical HIT rate in given context.
+```
+confidence = hit_resonance / (hit_resonance + miss_resonance + epsilon)
+```
+Use: Adjust prediction confidence based on past accuracy in this context.
+
+### trace_token_learnability(token) → f64
+Query how often token appears in LEARN events.
+Use: Identify problematic patterns that keep getting re-learned.
+
+### trace_event_count(event_type) → f64
+Get resonance magnitude for event type (proxy for count).
+Use: Monitor system activity levels.
+
+### trace_hit_miss_ratio() → f64
+System-wide HIT vs MISS ratio.
+Use: Self-model - "how well am I doing overall?"
+
+## Integration Points
+
+| Subsystem | Query | Action |
+|-----------|-------|--------|
+| Pruning (dreams.asm) | trace_region_performance | Remove regions < 0.3 |
+| Prediction (dispatch.asm) | trace_context_confidence | Scale confidence |
+| Learning (learn.asm) | trace_token_learnability | Adjust learning rate |
+| Self-model (observe.asm) | trace_hit_miss_ratio | Update drive system |
+| Schema extraction | trace_context_confidence | Target unreliable contexts |
