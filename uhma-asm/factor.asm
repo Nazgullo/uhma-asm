@@ -165,6 +165,8 @@ find_common_suffix:
 
     ; Get region header pointer
     mov rsi, [rdi + RTE_ADDR]
+    test rsi, rsi             ; null check - skip if RTE_ADDR is 0
+    jz .collect_next
     movzx eax, word [rsi + RHDR_CODE_LEN]
     cmp eax, SUFFIX_MIN_LEN + 5     ; need enough code to factor
     jl .collect_next
@@ -460,12 +462,14 @@ rewrite_to_call:
     add eax, 6
     mov word [rbx + RHDR_CODE_LEN], ax
 
-    ; NOP out remaining bytes (if any)
-    movzx ecx, word [rbx + RHDR_CODE_LEN]
+    ; NOP out remaining bytes (if any) - only if new_len < old_len
+    movzx ecx, word [rbx + RHDR_CODE_LEN]   ; new code length
+    cmp r14d, ecx                            ; old_len >= new_len?
+    jbe .nop_done                            ; skip if no bytes to NOP
     lea rsi, [rbx + RHDR_SIZE]
-    add rsi, rcx
+    add rsi, rcx                             ; point past new code
     mov edx, r14d
-    sub edx, ecx                ; bytes to NOP
+    sub edx, ecx                             ; bytes to NOP (old - new)
 .nop_loop:
     test edx, edx
     jz .nop_done

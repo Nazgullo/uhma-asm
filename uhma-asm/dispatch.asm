@@ -2176,6 +2176,8 @@ decay_all_regions:
     jnz .decay_next
 
     mov rsi, [rdi + RTE_ADDR]
+    test rsi, rsi              ; null check - skip if RTE_ADDR is 0
+    jz .decay_next
 
     ; prime *= PRIME_DECAY
     movsd xmm0, [rsi + RHDR_PRIME]

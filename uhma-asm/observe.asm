@@ -109,6 +109,8 @@ observe_cycle:
 
     ; Get hits/misses from the actual region header (authoritative)
     mov rsi, [rdi + RTE_ADDR]
+    test rsi, rsi             ; null check - skip if RTE_ADDR is 0
+    jz .count_active
     mov eax, [rsi + RHDR_HITS]
     mov edx, [rsi + RHDR_MISSES]
 
@@ -1467,6 +1469,8 @@ compute_accuracy_variance:
     jnz .vnext
 
     mov rsi, [rdi + RTE_ADDR]
+    test rsi, rsi             ; null check
+    jz .vnext
     mov eax, [rsi + RHDR_HITS]
     mov edx, [rsi + RHDR_MISSES]
     add edx, eax
@@ -1561,6 +1565,8 @@ decay_connection_weights:
     jnz .wdecay_next
 
     mov rsi, [rdi + RTE_ADDR]
+    test rsi, rsi             ; null check
+    jz .wdecay_next
 
     ; --- w_excite_a ---
     movsd xmm0, [rsi + RHDR_W_EXCITE_A]
@@ -1655,6 +1661,8 @@ repair_routing:
     jnz .repair_next
 
     mov r14, [rdi + RTE_ADDR]  ; region header
+    test r14, r14             ; null check
+    jz .repair_next
 
     ; Check if isolated (next_a == 0 AND next_b == 0)
     cmp qword [r14 + RHDR_NEXT_A], 0
@@ -1689,6 +1697,8 @@ repair_routing:
     jnz .repair_inner_skip
 
     mov rsi, [rdi + RTE_ADDR]
+    test rsi, rsi             ; null check
+    jz .repair_inner_skip
     cmp rsi, r14
     je .repair_inner_skip      ; same region
 

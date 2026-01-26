@@ -970,7 +970,7 @@
 
 ;; Holographic Suffix Factoring — detect similar suffixes via resonance
 %define SUFFIX_TRACE_IDX    246   ; trace index for suffix resonance
-%define SUFFIX_HASH_LEN     8     ; bytes of suffix to hash for encoding
+%define SUFFIX_HASH_LEN     5     ; bytes of suffix to hash (5 = skip token_id in dispatch patterns)
 %define SUFFIX_MATCH_THRESH 0.7   ; dot product threshold for "same suffix"
 
 ;; ============================================================
