@@ -20,6 +20,11 @@
 ; PRESENCE: 32 dimensions (arousal, valence, fatigue, coherence, etc.)
 ; SELF-KNOWLEDGE: strength_mask/weakness_mask per context-type (16 types)
 ;
+; SELF/OTHER BOUNDARY IN PRESENCE:
+;   CONTINUITY: SELF=0.1 (identity disrupted), OUTCOME=0.5 (world unknown), NONE=1.0
+;   DISSONANCE: SELF=1.0 (internal conflict), OUTCOME=0.5 (external), NONE=0.0
+;   SURPRISE:   SELF=1.0 (jarring), OUTCOME=0.5 (expected uncertainty), NONE=0.0
+;
 ; GOTCHAS:
 ;   - Prune threshold (0.1) and age (PRUNE_MIN_AGE) are tunable
 ;   - receipt_resonate can veto prune if we've regretted before
@@ -693,15 +698,24 @@ update_presence:
     divss xmm0, xmm1
     movss [r12 + PRES_TEXTURE * 4], xmm0
 
-    ; [1] CONTINUITY: low surprise = high continuity
+    ; [1] CONTINUITY: SELF/OTHER BOUNDARY
+    ; SURPRISE_NONE → 1.0 (full continuity, self intact)
+    ; SURPRISE_OUTCOME → 0.5 (world surprised me, but I'm still me)
+    ; SURPRISE_SELF → 0.1 (I was wrong about myself, identity disrupted)
     mov ecx, [rbx + STATE_OFFSET + ST_SURPRISE_TYPE]
     test ecx, ecx
-    jnz .pres_cont_low
+    jnz .pres_cont_check_self
     mov ecx, 0x3F800000       ; 1.0f (no surprise = full continuity)
     movd xmm0, ecx
     jmp .pres_cont_s
-.pres_cont_low:
-    mov ecx, 0x3E800000       ; 0.25f (surprise = low continuity)
+.pres_cont_check_self:
+    cmp ecx, SURPRISE_SELF
+    je .pres_cont_self
+    mov ecx, 0x3F000000       ; 0.5f (outcome surprise = moderate continuity)
+    movd xmm0, ecx
+    jmp .pres_cont_s
+.pres_cont_self:
+    mov ecx, 0x3DCCCCCD       ; 0.1f (self surprise = low continuity, identity disrupted)
     movd xmm0, ecx
 .pres_cont_s:
     movss [r12 + PRES_CONTINUITY * 4], xmm0
@@ -927,7 +941,10 @@ update_presence:
     minss xmm0, xmm1
     movss [r12 + PRES_RESONANCE * 4], xmm0
 
-    ; [21] DISSONANCE: surprise_type / 2.0
+    ; [21] DISSONANCE: SELF/OTHER BOUNDARY
+    ; SURPRISE_SELF (2) → 1.0 dissonance (self-model violated = high internal conflict)
+    ; SURPRISE_OUTCOME (1) → 0.5 dissonance (world unknown = moderate external conflict)
+    ; SURPRISE_NONE (0) → 0.0 dissonance (prediction correct = coherent)
     mov ecx, [rbx + STATE_OFFSET + ST_SURPRISE_TYPE]
     cvtsi2ss xmm0, ecx
     mov ecx, 2
@@ -990,11 +1007,20 @@ update_presence:
     movss [r12 + PRES_SYMMETRY * 4], xmm0
     pop rax
 
-    ; [25] SURPRISE: surprise_type > 0 → 1.0, else 0.0
+    ; [25] SURPRISE: SELF/OTHER BOUNDARY magnitude
+    ; SURPRISE_NONE → 0.0 (no surprise)
+    ; SURPRISE_OUTCOME → 0.5 (world is unknown, external surprise)
+    ; SURPRISE_SELF → 1.0 (self-model violated, jarring internal surprise)
     mov ecx, [rbx + STATE_OFFSET + ST_SURPRISE_TYPE]
     test ecx, ecx
     jz .pres_surp_z
-    mov ecx, 0x3F800000
+    cmp ecx, SURPRISE_SELF
+    je .pres_surp_self
+    mov ecx, 0x3F000000       ; 0.5f (outcome surprise)
+    movd xmm0, ecx
+    jmp .pres_surp_s
+.pres_surp_self:
+    mov ecx, 0x3F800000       ; 1.0f (self surprise - most jarring)
     movd xmm0, ecx
     jmp .pres_surp_s
 .pres_surp_z:

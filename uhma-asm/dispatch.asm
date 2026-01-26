@@ -27,6 +27,14 @@
 ;   On MISS: superpose ST_STRUCT_CTX_VEC into ST_SCHEMA_TRACE_VEC
 ;   Accumulates structural patterns for holographic schema learning
 ;
+; SELF/OTHER BOUNDARY (~line 724):
+;   SURPRISE_SELF: high-confidence region was wrong → flags RFLAG_NEEDS_REPAIR
+;     - Boosts ST_INTROSPECT_PRESSURE for self-repair cycle
+;     - This is ME being wrong about myself
+;   SURPRISE_OUTCOME: low-confidence miss → standard learning
+;     - Boosts dream pressure for world-model consolidation
+;     - This is the WORLD being unknown
+;
 ; GOTCHAS:
 ;   - ctx = hash(prev_token) ONLY, no somatic XOR (breaks pattern identity)
 ;   - rcx is caller-saved, use r10-r15 in loops that call functions
@@ -721,14 +729,32 @@ process_token:
     movd xmm1, eax
     comiss xmm0, xmm1
     jbe .surprise_outcome
-    ; SURPRISE_SELF: high-confidence region missed
+    ; SURPRISE_SELF: high-confidence region missed — self-model violated
     lea rax, [rbx + STATE_OFFSET + ST_SURPRISE_TYPE]
     mov dword [rax], SURPRISE_SELF
+
+    ; === SELF/OTHER BOUNDARY: This is ME being wrong, not the world being unknown ===
+    ; Flag the predicting region for introspective repair
+    lea rax, [rbx + STATE_OFFSET + ST_PREDICT_REGION]
+    mov rcx, [rax]
+    test rcx, rcx
+    jz .self_surprise_pressure
+    or word [rcx + RHDR_FLAGS], RFLAG_NEEDS_REPAIR  ; mark for self-repair
+
+.self_surprise_pressure:
+    ; Boost introspect pressure (self-model needs examination)
+    movsd xmm0, [rbx + STATE_OFFSET + ST_INTROSPECT_PRESSURE]
+    mov rax, 0x3FD0000000000000    ; 0.25 boost per self-surprise
+    movq xmm1, rax
+    addsd xmm0, xmm1
+    movsd [rbx + STATE_OFFSET + ST_INTROSPECT_PRESSURE], xmm0
     jmp .do_miss_counter
+
 .surprise_outcome:
-    ; SURPRISE_OUTCOME: low-confidence miss (expected uncertainty)
+    ; SURPRISE_OUTCOME: low-confidence miss (expected uncertainty) — the WORLD is unknown
     lea rax, [rbx + STATE_OFFSET + ST_SURPRISE_TYPE]
     mov dword [rax], SURPRISE_OUTCOME
+    ; Standard dream pressure handles this (consolidation learns about world)
 
 .do_miss_counter:
     ; --- Self-knowledge: track context-type (miss → total only) ---

@@ -5,13 +5,14 @@
 ;   introspect_scan_regions()         - scan all regions, update statistics
 ;   update_anticipatory(token, conf)  - build anticipation for upcoming tokens
 ;   decay_anticipatory()              - fade anticipation each step
-;   update_organic_pressure()         - manage dream/observe/evolve triggers
+;   update_organic_pressure()         - manage dream/observe/evolve/introspect triggers
 ;   update_oscillation()              - detect flatness, perturb if needed
 ;   update_presence_dispatch()        - run presence regions for hormonal control
 ;   metacog_report()                  - detailed metacognitive status dump
 ;   absorb_code(ptr, len)             - learn from arbitrary code bytes
 ;   tick_workers()                    - main per-step regulation entry point
 ;   release_pheromone(type, val)      - signal state to collective (if shared)
+;   introspect_repair_cycle()         - process regions with RFLAG_NEEDS_REPAIR (self-surprise)
 ;
 ; SEMANTIC SIGNATURES:
 ;   SEM_CMP_JE    - simple cmp-je-ret pattern
@@ -20,9 +21,15 @@
 ;   SEM_RELAY     - call to subroutine
 ;
 ; ORGANIC PRESSURE SYSTEM:
-;   dream_pressure:  misses accumulate → dream_cycle() when > 1.0
-;   observe_pressure: accuracy variance → observe_cycle() when > 1.0
-;   evolve_pressure: stagnation → evolve_cycle() when > 1.0
+;   dream_pressure:     misses accumulate → dream_cycle() when > 1.1
+;   observe_pressure:   accuracy variance → observe_cycle() when > 1.0
+;   evolve_pressure:    stagnation → evolve_cycle() when > 2.0
+;   introspect_pressure: SURPRISE_SELF events → introspect_repair_cycle() when > 0.75
+;
+; SELF/OTHER BOUNDARY:
+;   SURPRISE_SELF triggers introspect_pressure (self-model violated)
+;   SURPRISE_OUTCOME triggers dream_pressure (world unknown)
+;   introspect_repair_cycle processes regions with RFLAG_NEEDS_REPAIR
 ;
 ; CALLED BY: dispatch.asm (after each token), repl.asm (tick command)
 ;
@@ -41,6 +48,8 @@ section .data
     intro_dream_trig:   db "Dream fired (miss pressure)", 10, 0
     intro_observe_trig: db "Observe fired (accuracy drift)", 10, 0
     intro_evolve_trig:  db "Evolve fired (stagnation)", 10, 0
+    intro_introspect_trig: db "Introspect fired (self-surprise)", 10, 0
+    intro_repair_msg:   db "[SELF-REPAIR] Examining region that violated self-model", 10, 0
     intro_flatness_msg: db "[OSCILLATION] Flatness detected — perturbing", 10, 0
     intro_nl:           db 10, 0
 
@@ -74,6 +83,8 @@ extern evolve_cycle
 extern fire_hook
 extern drives_check
 extern journey_step
+extern modify_generalize
+extern modify_specialize
 
 ;; ============================================================
 ;; introspect_region(region_ptr) → fills cache entry
@@ -667,6 +678,36 @@ update_organic_pressure:
 
     ; Fire evolution
     call evolve_cycle
+
+.check_introspect:
+    ; --- SELF-SURPRISE HANDLING: Introspect pressure from self-model violations ---
+    ; This is the self/other boundary: when the system's confident predictions about
+    ; ITSELF are wrong, it triggers introspection rather than world-learning.
+    ; Introspect pressure is boosted in dispatch.asm on SURPRISE_SELF events.
+    movsd xmm1, [r12 + ST_INTROSPECT_PRESSURE]
+    mulsd xmm1, [rel pressure_decay]    ; decay toward zero
+    movsd [r12 + ST_INTROSPECT_PRESSURE], xmm1
+
+    ; Check introspect pressure threshold
+    mov rax, INTROSPECT_PRESSURE_THRESH
+    movq xmm2, rax
+    ucomisd xmm1, xmm2
+    jbe .pressure_done
+
+    ; ORGANIC INTROSPECT: self-model is broken, examine regions that violated it
+    push rdi
+    lea rdi, [rel intro_organic_msg]
+    call print_cstr
+    lea rdi, [rel intro_introspect_trig]
+    call print_cstr
+    pop rdi
+
+    ; Reset introspect pressure (action taken)
+    movsd xmm0, [rel zero_f64]
+    movsd [r12 + ST_INTROSPECT_PRESSURE], xmm0
+
+    ; Fire self-repair cycle
+    call introspect_repair_cycle
 
 .pressure_done:
     add rsp, 8
@@ -1300,4 +1341,109 @@ accrue_pressure:
     movq xmm1, rcx
     minsd xmm0, xmm1
     movsd [rax + STATE_OFFSET + ST_EVOLVE_PRESSURE], xmm0
+    ret
+
+;; ============================================================
+;; introspect_repair_cycle()
+;; SELF/OTHER BOUNDARY: Process regions that violated self-model.
+;;
+;; When SURPRISE_SELF occurs, it means a high-confidence region was wrong.
+;; This is qualitatively different from SURPRISE_OUTCOME (world unknown).
+;; Self-surprise demands introspection and self-repair, not just learning.
+;;
+;; Actions for regions with RFLAG_NEEDS_REPAIR:
+;;   1. If hits > misses: specialize (make more specific)
+;;   2. If misses > hits: generalize (make broader)
+;;   3. Clear RFLAG_NEEDS_REPAIR after processing
+;; ============================================================
+global introspect_repair_cycle
+introspect_repair_cycle:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 8                      ; align stack (5 pushes = odd → aligned)
+
+    mov rbx, SURFACE_BASE
+    lea r12, [rbx + REGION_TABLE_OFFSET]
+    mov r13d, [rbx + STATE_OFFSET + ST_REGION_COUNT]
+    xor r14d, r14d                  ; loop index
+    xor r15d, r15d                  ; repaired count
+
+.repair_loop:
+    cmp r14d, r13d
+    jge .repair_done
+
+    ; Get region table entry
+    imul rdi, r14, RTE_SIZE
+    add rdi, r12
+
+    ; Check if RFLAG_NEEDS_REPAIR is set
+    movzx eax, word [rdi + RTE_FLAGS]
+    test eax, RFLAG_NEEDS_REPAIR
+    jz .repair_next
+
+    ; Found region that violated self-model
+    push rdi
+    lea rdi, [rel intro_repair_msg]
+    call print_cstr
+    pop rdi
+
+    ; Get region header
+    mov rsi, [rdi + RTE_ADDR]
+    test rsi, rsi
+    jz .clear_flag
+
+    ; Analyze performance: hits vs misses
+    mov eax, [rsi + RHDR_HITS]
+    mov ecx, [rsi + RHDR_MISSES]
+    cmp eax, ecx
+    jg .try_specialize
+    ; misses >= hits: try generalizing (too specific?)
+    push r14
+    mov edi, r14d
+    call modify_generalize
+    pop r14
+    jmp .clear_flag
+
+.try_specialize:
+    ; hits > misses but still violated: try specializing (conflating contexts?)
+    push r14
+    mov edi, r14d
+    call modify_specialize
+    pop r14
+
+.clear_flag:
+    ; Clear RFLAG_NEEDS_REPAIR
+    imul rdi, r14, RTE_SIZE
+    add rdi, r12
+    movzx eax, word [rdi + RTE_FLAGS]
+    and eax, ~RFLAG_NEEDS_REPAIR
+    mov word [rdi + RTE_FLAGS], ax
+
+    ; Also clear in header if present
+    mov rsi, [rdi + RTE_ADDR]
+    test rsi, rsi
+    jz .repair_count
+    movzx eax, word [rsi + RHDR_FLAGS]
+    and eax, ~RFLAG_NEEDS_REPAIR
+    mov word [rsi + RHDR_FLAGS], ax
+
+.repair_count:
+    inc r15d
+
+.repair_next:
+    inc r14d
+    jmp .repair_loop
+
+.repair_done:
+    ; r15d = number of regions repaired
+    mov eax, r15d
+    add rsp, 8
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
     ret

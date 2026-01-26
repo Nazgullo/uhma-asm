@@ -84,6 +84,21 @@ This is O(1) per item. The holographic memory IS the index. Don't build separate
 - **Known limitation**: schema_match compares full struct_ctx; variable masking not yet implemented
 - The holographic memory IS the index
 
+### Self/Other Boundary (Surprise System)
+- **SURPRISE_SELF**: high-confidence region was wrong → self-model violated
+  - Flags region with RFLAG_NEEDS_REPAIR
+  - Boosts ST_INTROSPECT_PRESSURE → triggers introspect_repair_cycle()
+  - Presence: CONTINUITY=0.1, DISSONANCE=1.0, SURPRISE=1.0
+  - This is "I was wrong about MYSELF"
+- **SURPRISE_OUTCOME**: low-confidence miss → world is unknown
+  - Standard miss handling, boosts dream_pressure
+  - Presence: CONTINUITY=0.5, DISSONANCE=0.5, SURPRISE=0.5
+  - This is "the WORLD surprised me"
+- **introspect_repair_cycle()** (introspect.asm): processes RFLAG_NEEDS_REPAIR regions
+  - hits > misses → specialize (too general, conflating contexts)
+  - misses >= hits → generalize (too specific, over-fitted)
+- The boundary lets the system distinguish internal errors from external novelty
+
 ### Unified Trace System
 - One trace (UNIFIED_TRACE_IDX=240) replaces 6 separate traces
 - 8 dimensions: event, ctx, actual, predicted, region, aux, tracer, time

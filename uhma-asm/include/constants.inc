@@ -181,6 +181,7 @@
 %define RFLAG_FROZEN        0x0002
 %define RFLAG_NURSERY       0x0004
 %define RFLAG_CONDEMNED     0x0008
+%define RFLAG_NEEDS_REPAIR  0x0010  ; Self-surprise: region violated self-model, needs introspection
 
 ;; ============================================================
 ;; Region Table Entry (32 bytes)
@@ -766,9 +767,10 @@
 %define ST_DREAM_PRESSURE   (ST_MISS_PRESSURE + 8)        ; f64 accumulates when miss_pressure high
 %define ST_OBSERVE_PRESSURE (ST_DREAM_PRESSURE + 8)       ; f64 accumulates from accuracy variance
 %define ST_EVOLVE_PRESSURE  (ST_OBSERVE_PRESSURE + 8)     ; f64 accumulates from stagnation
+%define ST_INTROSPECT_PRESSURE (ST_EVOLVE_PRESSURE + 8)   ; f64 accumulates from SURPRISE_SELF (self-model violations)
 
 ; Oscillation monitoring (flat = dead)
-%define ST_PREV_ACCURACY    (ST_EVOLVE_PRESSURE + 8)      ; f64 accuracy N-1 steps ago
+%define ST_PREV_ACCURACY    (ST_INTROSPECT_PRESSURE + 8)  ; f64 accuracy N-1 steps ago
 %define ST_PREV_PREV_ACC    (ST_PREV_ACCURACY + 8)        ; f64 accuracy N-2 steps ago
 %define ST_OSCILLATION_AMP  (ST_PREV_PREV_ACC + 8)        ; f64 current oscillation amplitude
 %define ST_FLATNESS_COUNT   (ST_OSCILLATION_AMP + 8)      ; u32 consecutive flat steps
@@ -1418,6 +1420,7 @@
 %define DREAM_PRESSURE_THRESH   0x3FF199999999999A  ; 1.1 — dream fires when pressure > this
 %define OBSERVE_PRESSURE_THRESH 0x3FF0000000000000  ; 1.0 — observe fires when pressure > this
 %define EVOLVE_PRESSURE_THRESH  0x4000000000000000  ; 2.0 — evolve fires when pressure > this
+%define INTROSPECT_PRESSURE_THRESH 0x3FE8000000000000 ; 0.75 — introspect fires when self-surprise accumulates
 %define ANTIC_MATERIALIZE_THRESH 0x3FE999999999999A ; 0.8 — anticipation becomes concrete
 %define ANTIC_SIGNAL_FLOOR      0x3FA999999999999A  ; 0.05 — below this, signal is noise
 %define MISS_PRESSURE_ALPHA     0x3F947AE147AE147B  ; 0.02 — EMA smoothing for miss pressure
