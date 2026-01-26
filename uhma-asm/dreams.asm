@@ -4,7 +4,7 @@
 ; @entry dream_consolidate() -> void ; review NURSERY, promote/condemn
 ; @entry dream_extract_schemas() -> void ; holographic schema extraction
 ; @calls emit.asm:emit_dispatch_pattern
-; @calls vsa.asm:holo_store, vsa.asm:holo_dot_f64, vsa.asm:holo_scale_f64
+; @calls vsa.asm:holo_store, vsa.asm:holo_cosim_f64, vsa.asm:holo_scale_f64
 ; @calls receipt.asm:receipt_resonate, emit_receipt_simple
 ; @calls dispatch.asm:schema_learn_from_context
 ; @calledby repl.asm:cmd_dream
@@ -15,8 +15,8 @@
 ;   NURSERY aged>50 → no hits=condemn, hits=promote+reinforce
 ;
 ; SCHEMA EXTRACTION (holographic approach):
-;   1. Query: holo_dot_f64(struct_ctx, schema_trace) → resonance
-;   2. If resonance > 0.6: call schema_learn_from_context
+;   1. Query: holo_cosim_f64(struct_ctx, schema_trace) → cosine similarity
+;   2. If similarity > 0.01: call schema_learn_from_context
 ;   3. Decay trace by 0.5 to prevent saturation
 ;   The schema trace accumulates struct_ctx on every MISS (in dispatch.asm)
 ;   High resonance = recurring structural pattern worth generalizing
@@ -25,6 +25,7 @@
 ;   - NURSERY patterns need 50+ steps before judgment
 ;   - Schema trace decays each dream (0.5x) to allow new patterns
 ;   - Promoted patterns must be reinforced via holo_store
+;   - Uses cosine similarity (normalized) not raw dot product
 %include "syscalls.inc"
 %include "constants.inc"
 
@@ -36,13 +37,15 @@ section .data
     dream_count:    db " entries, emitted: ", 0
     dream_nl:       db 10, 0
     schema_msg:     db "[DREAM] Schema extracted (generalized pattern)", 10, 0
+    schema_res_msg: db "[DREAM] Schema resonance: ", 0
     reinforce_msg:  db "[LTM] Reinforcing proven pattern ctx=0x", 0
 
     align 8
     ; Reinforcement strength for proven patterns (counteracts decay)
     reinforce_strength: dq 2.0
     ; Schema resonance threshold - structural pattern must resonate above this
-    schema_resonate_thresh: dq 0.6
+    ; NOTE: Very low threshold (0.01) for testing; tune up once working
+    schema_resonate_thresh: dq 0.01
     ; Schema trace decay factor - prevents saturation
     schema_trace_decay: dq 0.5
 
@@ -51,6 +54,7 @@ section .text
 extern print_cstr
 extern print_u64
 extern print_newline
+extern print_f64
 extern find_existing_pattern
 extern emit_dispatch_pattern
 extern fire_hook
@@ -60,6 +64,7 @@ extern sym_scan_for_discoveries
 extern holo_store
 extern holo_dot_f64
 extern holo_scale_f64
+extern holo_cosim_f64
 extern receipt_resonate
 extern emit_receipt_simple
 extern schema_learn_from_context
@@ -288,13 +293,27 @@ dream_extract_schemas:
     je .no_schema
 
     ; Query: does current struct_ctx resonate with accumulated schema trace?
+    ; Use COSINE similarity (normalized dot product) for magnitude-independent comparison
     ; High similarity = we've seen this structural pattern many times on misses
     lea rdi, [rbx + STATE_OFFSET + ST_STRUCT_CTX_VEC]
     lea rsi, [rbx + STATE_OFFSET + ST_SCHEMA_TRACE_VEC]
-    call holo_dot_f64           ; xmm0 = similarity
+    call holo_cosim_f64         ; xmm0 = cosine similarity
+
+    ; DEBUG: Print resonance value
+    push rbx
+    sub rsp, 8                  ; align for call
+    movsd [rsp], xmm0           ; save resonance
+    lea rdi, [rel schema_res_msg]
+    call print_cstr
+    movsd xmm0, [rsp]           ; restore resonance
+    call print_f64
+    call print_newline
+    movsd xmm0, [rsp]           ; restore resonance again
+    add rsp, 8
+    pop rbx
 
     ; If resonance > threshold, create schema from current struct_ctx
-    movsd xmm1, [rel schema_resonate_thresh]  ; 0.6
+    movsd xmm1, [rel schema_resonate_thresh]  ; 0.2
     ucomisd xmm0, xmm1
     jbe .decay_trace            ; below threshold, just decay
 

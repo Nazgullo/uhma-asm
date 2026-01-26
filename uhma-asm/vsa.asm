@@ -4,6 +4,8 @@
 ; @entry holo_unbind_f64(rdi=a, rsi=b, rdx=out) -> void ; = bind (HRR self-inverse)
 ; @entry holo_superpose_f64(rdi=dst, rsi=src) -> void ; element-wise add
 ; @entry holo_dot_f64(rdi=a, rsi=b) -> xmm0=similarity
+; @entry holo_cosim_f64(rdi=a, rsi=b) -> xmm0=cosine ; normalized dot product
+; @entry holo_scale_f64(rdi=vec, xmm0=scalar) -> void ; multiply all elements
 ; @entry holo_gen_vec(edi=seed, rsi=out) -> void ; deterministic from hash
 ; @entry holo_store(edi=ctx, esi=token, xmm0=strength) -> void
 ; @entry holo_predict(edi=ctx) -> eax=token, xmm0=conf
@@ -638,6 +640,62 @@ holo_scale_f64:
     jnz .hscale_loop
 
     vzeroupper
+    ret
+
+;; ============================================================
+;; holo_cosim_f64(a_ptr, b_ptr) → xmm0
+;; rdi=a (f64[1024]), rsi=b (f64[1024])
+;; Returns cosine similarity: dot(a,b) / (|a| * |b|)
+;; ============================================================
+global holo_cosim_f64
+holo_cosim_f64:
+    push rbx
+    push r12
+    push r13
+    sub rsp, 32               ; space for intermediate results
+
+    mov r12, rdi              ; save a
+    mov r13, rsi              ; save b
+
+    ; dot(a, b)
+    call holo_dot_f64
+    movsd [rsp], xmm0        ; save dot product
+
+    ; |a| = sqrt(dot(a, a))
+    mov rdi, r12
+    mov rsi, r12
+    call holo_dot_f64
+    sqrtsd xmm0, xmm0
+    movsd [rsp + 8], xmm0    ; save |a|
+
+    ; |b| = sqrt(dot(b, b))
+    mov rdi, r13
+    mov rsi, r13
+    call holo_dot_f64
+    sqrtsd xmm0, xmm0        ; |b| in xmm0
+
+    ; result = dot / (|a| * |b|)
+    movsd xmm1, [rsp + 8]    ; |a|
+    mulsd xmm0, xmm1         ; |a| * |b|
+
+    ; Check for zero magnitude
+    xorpd xmm2, xmm2
+    ucomisd xmm0, xmm2
+    je .hcosim_zero_mag
+
+    movsd xmm1, [rsp]        ; dot product
+    divsd xmm1, xmm0
+    movapd xmm0, xmm1
+    jmp .hcosim_done
+
+.hcosim_zero_mag:
+    xorpd xmm0, xmm0         ; return 0 if zero magnitude
+
+.hcosim_done:
+    add rsp, 32
+    pop r13
+    pop r12
+    pop rbx
     ret
 
 ;; ============================================================

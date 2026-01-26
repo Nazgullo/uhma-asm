@@ -73,11 +73,15 @@ This is O(1) per item. The holographic memory IS the index. Don't build separate
 
 ### Schema System (Holographic Approach)
 - Schemas generalize STRUCTURAL CONTEXT (8-token positional patterns)
-- **On MISS** (dispatch.asm): struct_ctx superposed into ST_SCHEMA_TRACE_VEC
-- **On DREAM** (dreams.asm): query trace via holo_dot_f64
-  - If resonance > 0.6 threshold → call schema_learn_from_context
+- **compute_struct_ctx** (dispatch.asm): builds f64 vector from token history
+  - struct_ctx = Σ bind(ROLE_pos, token_vec[pos]) for positions 0-7
+  - Uses holo_gen_vec, holo_bind_f64, holo_superpose_f64 (ALL f64!)
+- **On MISS** (dispatch.asm ~line 825): struct_ctx superposed into ST_SCHEMA_TRACE_VEC
+- **On DREAM** (dreams.asm): query trace via holo_cosim_f64 (cosine similarity)
+  - If similarity > 0.01 threshold → call schema_learn_from_context
   - Decay trace by 0.5 to prevent saturation
 - This is O(1) resonance query, not O(n²) buffer scan
+- **Known limitation**: schema_match compares full struct_ctx; variable masking not yet implemented
 - The holographic memory IS the index
 
 ### Unified Trace System
@@ -107,7 +111,7 @@ This is O(1) per item. The holographic memory IS the index. Don't build separate
 ### Consolidation
 | File | Purpose | Calls | Called By |
 |------|---------|-------|-----------|
-| dreams.asm | Offline consolidation | emit_dispatch_pattern, holo_store, holo_dot_f64, schema_learn_from_context | repl (dream cmd) |
+| dreams.asm | Offline consolidation | emit_dispatch_pattern, holo_store, holo_cosim_f64, schema_learn_from_context | repl (dream cmd) |
 | observe.asm | Self-observation, metrics | receipt_resonate, gene_extract | repl (observe cmd) |
 | genes.asm | Gene pool for condemned regions | (storage) | observe, dreams |
 

@@ -47,21 +47,56 @@ def parse_header(content: str) -> Dict:
     }
 
     in_gotchas = False
+    in_entry_points = False
 
-    for line in lines[:80]:  # Only scan first 80 lines (header)
+    for line in lines[:100]:  # Scan first 100 lines (header)
         line = line.strip()
 
-        # Stop at section .data or .text
-        if line.startswith('section ') or line.startswith('%include'):
-            if not line.startswith('; '):
-                break
+        # Stop at section .data or .text (but not if it's a comment)
+        if (line.startswith('section ') or line.startswith('%include')) and not line.startswith('; '):
+            break
 
-        # Description (first line after filename)
+        # Description (first line after filename with em-dash)
         if line.startswith('; ') and ' — ' in line and not result['description']:
             result['description'] = line.split(' — ', 1)[1] if ' — ' in line else ''
             continue
 
-        # @entry func(args) -> return
+        # === NEW FORMAT: "ENTRY POINTS:" section ===
+        if line == '; ENTRY POINTS:':
+            in_entry_points = True
+            in_gotchas = False
+            continue
+
+        # Entry in ENTRY POINTS section: "func(args) → description" or "func(args) - description"
+        if in_entry_points and line.startswith(';   '):
+            entry_line = line[4:].strip()
+
+            # Handle multiple funcs on one line: "func1(args), func2(args) - description"
+            # Split on the description separator first
+            desc_match = re.match(r'^(.+?)\s+(?:→|->|-|—)\s*(.+)$', entry_line)
+            if desc_match:
+                funcs_part = desc_match.group(1)
+                returns_desc = desc_match.group(2).strip()
+            else:
+                funcs_part = entry_line
+                returns_desc = 'void'
+
+            # Find all func(args) patterns in the funcs part
+            func_matches = re.findall(r'(\w+)\(([^)]*)\)', funcs_part)
+            if func_matches:
+                for name, args in func_matches:
+                    result['entries'].append({
+                        'name': name,
+                        'args': args.strip(),
+                        'returns': returns_desc
+                    })
+                continue
+
+            # End of ENTRY POINTS if we hit a non-matching line
+            if not entry_line.startswith('-') and not re.search(r'\w+\(', entry_line):
+                in_entry_points = False
+
+        # === ORIGINAL FORMAT: @entry func(args) -> return ===
         match = re.match(r'^; @entry\s+(\w+)\(([^)]*)\)\s*(?:->)?\s*(.*)', line)
         if match:
             result['entries'].append({
@@ -70,6 +105,7 @@ def parse_header(content: str) -> Dict:
                 'returns': match.group(3).strip() if match.group(3) else 'void'
             })
             in_gotchas = False
+            in_entry_points = False
             continue
 
         # @calls file.asm:func, file.asm:func
@@ -78,6 +114,7 @@ def parse_header(content: str) -> Dict:
             calls = [c.strip() for c in match.group(1).split(',')]
             result['calls'].extend(calls)
             in_gotchas = False
+            in_entry_points = False
             continue
 
         # @calledby file.asm:func
@@ -86,13 +123,44 @@ def parse_header(content: str) -> Dict:
             called_by = [c.strip() for c in match.group(1).split(',')]
             result['called_by'].extend(called_by)
             in_gotchas = False
+            in_entry_points = False
             continue
 
-        # FLOW: description
-        match = re.match(r'^; FLOW:\s*(.+)', line)
+        # CALLS OUT TO: file.asm: func(), ... (alternative format)
+        match = re.match(r'^; CALLS OUT TO:\s*$', line)
+        if match:
+            in_entry_points = False
+            continue
+        match = re.match(r'^;   (\w+\.asm):\s*(.+)', line)
+        if match:
+            funcs = [f.strip().rstrip('()') for f in match.group(2).split(',')]
+            for func in funcs:
+                if func:
+                    result['calls'].append(f"{match.group(1)}:{func}")
+            continue
+
+        # CALLED BY: file.asm (func), ... (alternative format)
+        match = re.match(r'^; CALLED BY:\s*(.+)', line)
+        if match:
+            called_by_str = match.group(1)
+            # Parse "file.asm (func)" or "file.asm: func" patterns
+            for part in called_by_str.split(','):
+                part = part.strip()
+                m = re.match(r'(\w+\.asm)(?:\s*[:(]\s*(\w+))?', part)
+                if m:
+                    if m.group(2):
+                        result['called_by'].append(f"{m.group(1)}:{m.group(2)}")
+                    else:
+                        result['called_by'].append(m.group(1))
+            in_entry_points = False
+            continue
+
+        # FLOW: description  OR  DATA FLOW:
+        match = re.match(r'^; (?:DATA )?FLOW:\s*(.+)', line)
         if match:
             result['flow'] = match.group(1)
             in_gotchas = False
+            in_entry_points = False
             continue
 
         # STATE: field1, field2
@@ -101,11 +169,13 @@ def parse_header(content: str) -> Dict:
             state = [s.strip() for s in match.group(1).split(',')]
             result['state'].extend(state)
             in_gotchas = False
+            in_entry_points = False
             continue
 
         # GOTCHAS:
         if line == '; GOTCHAS:':
             in_gotchas = True
+            in_entry_points = False
             continue
 
         # Gotcha item

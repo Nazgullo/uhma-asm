@@ -15,8 +15,38 @@
     "decode.asm": {
       "path": "decode.asm",
       "description": "x86 instruction decoder for self-reading and verification",
-      "entries": [],
-      "calls": [],
+      "entries": [
+        {
+          "name": "decode_instruction_length",
+          "args": "ptr",
+          "returns": "eax=length in bytes"
+        },
+        {
+          "name": "decode_instruction_full",
+          "args": "ptr, out_buf",
+          "returns": "fills DecodedInstr struct"
+        },
+        {
+          "name": "decode_region_instructions",
+          "args": "hdr, out",
+          "returns": "decode all instrs in region"
+        },
+        {
+          "name": "count_region_instructions",
+          "args": "hdr",
+          "returns": "eax=instruction count"
+        },
+        {
+          "name": "classify_opcode",
+          "args": "opcode",
+          "returns": "eax=OpClass enum"
+        }
+      ],
+      "calls": [
+        "verify.asm:verify_modification() for abstract interpretation",
+        "introspect.asm:introspect_region() for semantic analysis",
+        "factor.asm:suffix length detection"
+      ],
       "called_by": [],
       "flow": "",
       "state": [],
@@ -44,9 +74,19 @@
           "returns": "eax=token, xmm0=conf"
         },
         {
+          "name": "schema_dispatch",
+          "args": "",
+          "returns": "eax=token ; match schemas against struct_ctx"
+        },
+        {
           "name": "schema_learn_from_context",
           "args": "",
           "returns": "void ; create schema from struct_ctx"
+        },
+        {
+          "name": "compute_struct_ctx",
+          "args": "",
+          "returns": "void ; build 8-position f64 structural context"
         }
       ],
       "calls": [
@@ -55,8 +95,11 @@
         "receipt.asm:emit_receipt_full",
         "receipt.asm:receipt_resonate",
         "vsa.asm:holo_predict",
-        "vsa.asm:holo_query_valence",
-        "vsa.asm:holo_superpose_f64"
+        "vsa.asm:holo_superpose_f64",
+        "vsa.asm:holo_cosim_f64",
+        "vsa.asm:holo_gen_vec",
+        "vsa.asm:holo_bind_f64",
+        "vsa.asm:holo_unbind_f64"
       ],
       "called_by": [
         "repl.asm:repl_run",
@@ -73,10 +116,11 @@
       "gotchas": [
         "ctx = hash(prev_token) ONLY, no somatic XOR (breaks pattern identity)",
         "rcx is caller-saved, use r10-r15 in loops that call functions",
-        "Token abstraction must match in BOTH process_input AND digest_file"
+        "Token abstraction must match in BOTH process_input AND digest_file",
+        "All struct_ctx operations use f64 (holo_*), not f32 (vsa_*)"
       ],
-      "content_hash": "dea496a2837c",
-      "line_count": 2957
+      "content_hash": "df8fdd3f3803",
+      "line_count": 2968
     },
     "dreams.asm": {
       "path": "dreams.asm",
@@ -101,7 +145,7 @@
       "calls": [
         "emit.asm:emit_dispatch_pattern",
         "vsa.asm:holo_store",
-        "vsa.asm:holo_dot_f64",
+        "vsa.asm:holo_cosim_f64",
         "vsa.asm:holo_scale_f64",
         "receipt.asm:receipt_resonate",
         "emit_receipt_simple",
@@ -115,17 +159,37 @@
       "gotchas": [
         "NURSERY patterns need 50+ steps before judgment",
         "Schema trace decays each dream (0.5x) to allow new patterns",
-        "Promoted patterns must be reinforced via holo_store"
+        "Promoted patterns must be reinforced via holo_store",
+        "Uses cosine similarity (normalized) not raw dot product"
       ],
-      "content_hash": "f00b9631826c",
-      "line_count": 458
+      "content_hash": "d1a3a2ea8211",
+      "line_count": 477
     },
     "drives.asm": {
       "path": "drives.asm",
       "description": "Homeostatic drive system: thresholds, goals, actions",
-      "entries": [],
+      "entries": [
+        {
+          "name": "drives_check",
+          "args": "",
+          "returns": "check all drives vs thresholds, trigger actions"
+        },
+        {
+          "name": "drives_show",
+          "args": "",
+          "returns": "display current drive levels and thresholds"
+        },
+        {
+          "name": "drives_set_threshold",
+          "args": "id,val",
+          "returns": "set threshold for drive id"
+        }
+      ],
       "calls": [],
-      "called_by": [],
+      "called_by": [
+        "introspect.asm:update_organic_pressure",
+        "repl.asm:periodic"
+      ],
       "flow": "",
       "state": [],
       "gotchas": [],
@@ -135,8 +199,46 @@
     "emit.asm": {
       "path": "emit.asm",
       "description": "Code emission: write x86 dispatch patterns to surface",
-      "entries": [],
-      "calls": [],
+      "entries": [
+        {
+          "name": "emit_dispatch_pattern",
+          "args": "ctx_hash, token, birth_step",
+          "returns": "rax=region_ptr"
+        },
+        {
+          "name": "emit_resonant_pattern",
+          "args": "ctx_hash, token, birth_step",
+          "returns": "holo-enhanced pattern"
+        },
+        {
+          "name": "emit_call_rel32",
+          "args": "dest, target",
+          "returns": "write CALL rel32 at dest"
+        },
+        {
+          "name": "emit_nop_sled",
+          "args": "dest, len",
+          "returns": "write NOP padding"
+        },
+        {
+          "name": "emit_ret",
+          "args": "dest",
+          "returns": "single-byte instructions"
+        },
+        {
+          "name": "emit_int3",
+          "args": "dest",
+          "returns": "single-byte instructions"
+        }
+      ],
+      "calls": [
+        "surface.asm:region_alloc",
+        "surface.asm:wire_new_region",
+        "verify.asm:verify_modification",
+        "receipt.asm:emit_receipt_full",
+        "vsa.asm:holo_gen_vec",
+        "vsa.asm:holo_superpose_f64"
+      ],
       "called_by": [],
       "flow": "",
       "state": [],
@@ -147,9 +249,42 @@
     "evolve.asm": {
       "path": "evolve.asm",
       "description": "Genetic evolution: reproduce, mutate, crossover regions",
-      "entries": [],
-      "calls": [],
-      "called_by": [],
+      "entries": [
+        {
+          "name": "evolve_cycle",
+          "args": "",
+          "returns": "full evolution pass (select \u2192 reproduce \u2192 mutate)"
+        },
+        {
+          "name": "evolve_reproduce",
+          "args": "region_idx",
+          "returns": "copy region with small mutation"
+        },
+        {
+          "name": "evolve_mutate",
+          "args": "region_idx",
+          "returns": "apply random mutation to region"
+        },
+        {
+          "name": "evolve_crossover",
+          "args": "idx1, idx2",
+          "returns": "combine two parent regions"
+        },
+        {
+          "name": "evolve_from_gene_pool",
+          "args": "",
+          "returns": "resurrect patterns from gene pool"
+        }
+      ],
+      "calls": [
+        "genes.asm:gene_pool_sample() for resurrection",
+        "emit.asm:emit_dispatch_pattern() for new offspring",
+        "gate.asm:gate_test_modification() to validate mutations",
+        "hooks.asm:fire_hook(HOOK_EVOLVE"
+      ],
+      "called_by": [
+        "introspect.asm:update_organic_pressure"
+      ],
       "flow": "",
       "state": [],
       "gotchas": [],
@@ -159,9 +294,53 @@
     "factor.asm": {
       "path": "factor.asm",
       "description": "Subroutine extraction: find common suffixes, create shared code",
-      "entries": [],
+      "entries": [
+        {
+          "name": "factor_init",
+          "args": "",
+          "returns": "init subroutine table"
+        },
+        {
+          "name": "factor_suffix",
+          "args": "",
+          "returns": "main: scan regions, extract shared suffixes"
+        },
+        {
+          "name": "find_common_suffix",
+          "args": "r1, r2",
+          "returns": "eax=common suffix length"
+        },
+        {
+          "name": "emit_subroutine",
+          "args": "code_ptr, len",
+          "returns": "rax=new RTYPE_SUBROUTINE region"
+        },
+        {
+          "name": "rewrite_to_call",
+          "args": "region, sub_addr",
+          "returns": "replace suffix with CALL"
+        },
+        {
+          "name": "verify_valid_call",
+          "args": "addr",
+          "returns": "eax=1 if addr points to valid sub"
+        },
+        {
+          "name": "subroutines_show",
+          "args": "",
+          "returns": "list all extracted subroutines"
+        },
+        {
+          "name": "garbage_collect_subroutines",
+          "args": "",
+          "returns": "remove subroutines with 0 callers"
+        }
+      ],
       "calls": [],
-      "called_by": [],
+      "called_by": [
+        "dreams.asm:consolidation",
+        "repl.asm:factor"
+      ],
       "flow": "",
       "state": [],
       "gotchas": [],
@@ -171,7 +350,58 @@
     "format.asm": {
       "path": "format.asm",
       "description": "Output formatting: integers, floats, hex, strings",
-      "entries": [],
+      "entries": [
+        {
+          "name": "print_str",
+          "args": "ptr, len",
+          "returns": "write raw bytes to stdout"
+        },
+        {
+          "name": "print_cstr",
+          "args": "ptr",
+          "returns": "write null-terminated string to stdout"
+        },
+        {
+          "name": "print_u64",
+          "args": "val",
+          "returns": "print u64 as decimal"
+        },
+        {
+          "name": "print_i64",
+          "args": "val",
+          "returns": "print i64 as signed decimal"
+        },
+        {
+          "name": "print_hex64",
+          "args": "val",
+          "returns": "print 16-digit hex (0-padded)"
+        },
+        {
+          "name": "print_hex32",
+          "args": "val",
+          "returns": "print 8-digit hex (0-padded)"
+        },
+        {
+          "name": "print_f32",
+          "args": "val",
+          "returns": "print f32 with 3 decimal places"
+        },
+        {
+          "name": "print_f64",
+          "args": "val",
+          "returns": "print f64 with 6 decimal places"
+        },
+        {
+          "name": "print_newline",
+          "args": "",
+          "returns": "write '\\n' to stdout"
+        },
+        {
+          "name": "print_space",
+          "args": "",
+          "returns": "write ' ' to stdout"
+        }
+      ],
       "calls": [],
       "called_by": [],
       "flow": "",
@@ -183,8 +413,24 @@
     "gate.asm": {
       "path": "gate.asm",
       "description": "Predictive gating: test modifications in sandbox before commit",
-      "entries": [],
-      "calls": [],
+      "entries": [
+        {
+          "name": "gate_test_modification",
+          "args": "region_ptr, mod_type, arg",
+          "returns": "eax=1(pass)/0(fail)"
+        },
+        {
+          "name": "gate_check_region",
+          "args": "region_ptr",
+          "returns": "eax=1(valid)/0(invalid)"
+        }
+      ],
+      "calls": [
+        "evolve.asm:evolve_mutate",
+        "evolve.asm:evolve_crossover",
+        "modify.asm:modify_specialize",
+        "modify.asm:modify_generalize"
+      ],
       "called_by": [],
       "flow": "",
       "state": [],
@@ -195,8 +441,37 @@
     "genes.asm": {
       "path": "genes.asm",
       "description": "Gene Pool: metabolic recycling of condemned regions",
-      "entries": [],
-      "calls": [],
+      "entries": [
+        {
+          "name": "gene_pool_init",
+          "args": "",
+          "returns": "zero out gene pool"
+        },
+        {
+          "name": "gene_extract",
+          "args": "region_ptr",
+          "returns": "extract ctx/token/fitness from dying region"
+        },
+        {
+          "name": "gene_pool_add",
+          "args": "ctx, token, fitness",
+          "returns": "void"
+        },
+        {
+          "name": "gene_pool_sample",
+          "args": "",
+          "returns": "ctx in eax, token in edx (or 0 if empty)"
+        },
+        {
+          "name": "gene_pool_show",
+          "args": "",
+          "returns": "display pool status and top genes"
+        }
+      ],
+      "calls": [
+        "surface.asm:region_condemn() extracts gene before death",
+        "evolve.asm:evolve_from_gene_pool() resurrects genes"
+      ],
       "called_by": [],
       "flow": "",
       "state": [],
@@ -392,7 +667,33 @@
     "hooks.asm": {
       "path": "hooks.asm",
       "description": "Event hook system: register callbacks, fire events",
-      "entries": [],
+      "entries": [
+        {
+          "name": "fire_hook",
+          "args": "hook_id, arg",
+          "returns": "call all handlers for hook_id with arg"
+        },
+        {
+          "name": "hook_register",
+          "args": "hook_id, fn_ptr",
+          "returns": "eax=slot index or -1 if full"
+        },
+        {
+          "name": "hook_unregister",
+          "args": "hook_id, fn_ptr",
+          "returns": "remove handler from hook"
+        },
+        {
+          "name": "hook_clear",
+          "args": "hook_id",
+          "returns": "remove all handlers from hook"
+        },
+        {
+          "name": "hook_get_count",
+          "args": "hook_id",
+          "returns": "eax=number of registered handlers"
+        }
+      ],
       "calls": [],
       "called_by": [],
       "flow": "",
@@ -404,9 +705,68 @@
     "introspect.asm": {
       "path": "introspect.asm",
       "description": "Self-reading and organic regulation (homoiconic core)",
-      "entries": [],
+      "entries": [
+        {
+          "name": "introspect_region",
+          "args": "hdr",
+          "returns": "decode region, extract ctx/token/semantics"
+        },
+        {
+          "name": "introspect_scan_regions",
+          "args": "",
+          "returns": "scan all regions, update statistics"
+        },
+        {
+          "name": "update_anticipatory",
+          "args": "token, conf",
+          "returns": "build anticipation for upcoming tokens"
+        },
+        {
+          "name": "decay_anticipatory",
+          "args": "",
+          "returns": "fade anticipation each step"
+        },
+        {
+          "name": "update_organic_pressure",
+          "args": "",
+          "returns": "manage dream/observe/evolve triggers"
+        },
+        {
+          "name": "update_oscillation",
+          "args": "",
+          "returns": "detect flatness, perturb if needed"
+        },
+        {
+          "name": "update_presence_dispatch",
+          "args": "",
+          "returns": "run presence regions for hormonal control"
+        },
+        {
+          "name": "metacog_report",
+          "args": "",
+          "returns": "detailed metacognitive status dump"
+        },
+        {
+          "name": "absorb_code",
+          "args": "ptr, len",
+          "returns": "learn from arbitrary code bytes"
+        },
+        {
+          "name": "tick_workers",
+          "args": "",
+          "returns": "main per-step regulation entry point"
+        },
+        {
+          "name": "release_pheromone",
+          "args": "type, val",
+          "returns": "signal state to collective (if shared)"
+        }
+      ],
       "calls": [],
-      "called_by": [],
+      "called_by": [
+        "dispatch.asm:after",
+        "repl.asm:tick"
+      ],
       "flow": "",
       "state": [],
       "gotchas": [],
@@ -501,9 +861,54 @@
     "maturity.asm": {
       "path": "maturity.asm",
       "description": "Developmental stage gating: earn capabilities through stability",
-      "entries": [],
+      "entries": [
+        {
+          "name": "maturity_init",
+          "args": "",
+          "returns": "set Stage 0, init mastery tracking"
+        },
+        {
+          "name": "maturity_update",
+          "args": "accuracy, stability, coherence",
+          "returns": "update EMA metrics"
+        },
+        {
+          "name": "maturity_check_advance",
+          "args": "",
+          "returns": "check if ready to advance stage"
+        },
+        {
+          "name": "gate_syscall",
+          "args": "syscall_num",
+          "returns": "eax=1(allowed)/0(blocked) for stage"
+        },
+        {
+          "name": "gate_fd_write",
+          "args": "fd",
+          "returns": "eax=1 if write allowed"
+        },
+        {
+          "name": "gate_fd_read",
+          "args": "fd",
+          "returns": "eax=1 if read allowed"
+        },
+        {
+          "name": "get_maturity_level",
+          "args": "",
+          "returns": "eax=current stage (0-2)"
+        },
+        {
+          "name": "get_mastery_metrics",
+          "args": "",
+          "returns": "pointer to metrics struct"
+        }
+      ],
       "calls": [],
-      "called_by": [],
+      "called_by": [
+        "io.asm:gate_fd_",
+        "repl.asm:status",
+        "dispatch.asm:periodic"
+      ],
       "flow": "",
       "state": [],
       "gotchas": [],
@@ -513,9 +918,50 @@
     "modify.asm": {
       "path": "modify.asm",
       "description": "Self-modification primitives: prune, promote, specialize, generalize",
-      "entries": [],
+      "entries": [
+        {
+          "name": "modify_prune",
+          "args": "region_idx",
+          "returns": "mark region as CONDEMNED"
+        },
+        {
+          "name": "modify_promote",
+          "args": "region_idx",
+          "returns": "boost region's activation"
+        },
+        {
+          "name": "modify_specialize",
+          "args": "region_idx",
+          "returns": "duplicate region with narrower context"
+        },
+        {
+          "name": "modify_generalize",
+          "args": "region_idx",
+          "returns": "relax context matching (mask bits)"
+        },
+        {
+          "name": "modify_restructure",
+          "args": "",
+          "returns": "batch restructuring when coherence low"
+        },
+        {
+          "name": "clear_connections_to",
+          "args": "region_idx",
+          "returns": "remove all references to region"
+        },
+        {
+          "name": "log_causal",
+          "args": "cause_idx, effect_idx",
+          "returns": "record causal relationship"
+        }
+      ],
       "calls": [],
-      "called_by": [],
+      "called_by": [
+        "drives.asm",
+        "evolve.asm",
+        "observe.asm",
+        "dreams.asm"
+      ],
       "flow": "",
       "state": [],
       "gotchas": [],
@@ -567,9 +1013,43 @@
     "persist.asm": {
       "path": "persist.asm",
       "description": "Save/restore surface state to/from file",
-      "entries": [],
+      "entries": [
+        {
+          "name": "persist_save",
+          "args": "filename",
+          "returns": "save surface to file"
+        },
+        {
+          "name": "persist_load",
+          "args": "filename",
+          "returns": "restore surface from file"
+        },
+        {
+          "name": "gene_export",
+          "args": "filename",
+          "returns": "export gene pool to portable format"
+        },
+        {
+          "name": "gene_import",
+          "args": "filename",
+          "returns": "import gene pool from file"
+        },
+        {
+          "name": "gene_auto_export",
+          "args": "",
+          "returns": "periodic auto-save of genes"
+        },
+        {
+          "name": "gene_scan_library",
+          "args": "dir_path",
+          "returns": "scan directory for importable genes"
+        }
+      ],
       "calls": [],
-      "called_by": [],
+      "called_by": [
+        "repl.asm:save",
+        "boot.asm:auto"
+      ],
       "flow": "",
       "state": [],
       "gotchas": [],
@@ -579,9 +1059,28 @@
     "presence.asm": {
       "path": "presence.asm",
       "description": "Hormonal modulator: presence regions for emotional reflexes",
-      "entries": [],
+      "entries": [
+        {
+          "name": "presence_init",
+          "args": "",
+          "returns": "create hardwired reflex regions"
+        },
+        {
+          "name": "trigger_presence_regions",
+          "args": "",
+          "returns": "evaluate all presence regions"
+        },
+        {
+          "name": "presence_regions_show",
+          "args": "",
+          "returns": "display active presence regions"
+        }
+      ],
       "calls": [],
-      "called_by": [],
+      "called_by": [
+        "introspect.asm:update_presence_dispatch",
+        "surface.asm:init"
+      ],
       "flow": "",
       "state": [],
       "gotchas": [],
@@ -737,9 +1236,88 @@
     "surface.asm": {
       "path": "surface.asm",
       "description": "Surface memory: mmap, region allocation, compaction",
-      "entries": [],
+      "entries": [
+        {
+          "name": "surface_init",
+          "args": "",
+          "returns": "rax=surface base (mmaps persistent file)"
+        },
+        {
+          "name": "region_alloc",
+          "args": "size",
+          "returns": "rax=ptr to new region header"
+        },
+        {
+          "name": "region_condemn",
+          "args": "idx",
+          "returns": "mark region for death (extracts gene first)"
+        },
+        {
+          "name": "region_compact",
+          "args": "",
+          "returns": "reclaim condemned regions"
+        },
+        {
+          "name": "region_find_by_addr",
+          "args": "addr",
+          "returns": "rax=region_idx or -1"
+        },
+        {
+          "name": "region_merge_pass",
+          "args": "",
+          "returns": "merge compatible adjacent regions"
+        },
+        {
+          "name": "get_surface_base",
+          "args": "",
+          "returns": "rax=SURFACE_BASE"
+        },
+        {
+          "name": "get_state_ptr",
+          "args": "",
+          "returns": "rax=state block address"
+        },
+        {
+          "name": "get_vsa_base",
+          "args": "",
+          "returns": "rax=VSA arena base"
+        },
+        {
+          "name": "surface_freeze",
+          "args": "",
+          "returns": "mark surface read-only (safety)"
+        },
+        {
+          "name": "surface_init_shared",
+          "args": "",
+          "returns": "init /dev/shm Mycorrhiza shared memory"
+        },
+        {
+          "name": "broadcast_pain",
+          "args": "intensity",
+          "returns": "share pain to colony (if shared mode)"
+        },
+        {
+          "name": "sense_collective_valence",
+          "args": "",
+          "returns": "xmm0=colony average valence"
+        },
+        {
+          "name": "get_colony_size",
+          "args": "",
+          "returns": "eax=number of connected instances"
+        },
+        {
+          "name": "is_shared_mode",
+          "args": "",
+          "returns": "eax=1 if running with Mycorrhiza"
+        }
+      ],
       "calls": [],
-      "called_by": [],
+      "called_by": [
+        "boot.asm:init",
+        "emit.asm:region_alloc"
+      ],
       "flow": "",
       "state": [],
       "gotchas": [],
@@ -749,9 +1327,64 @@
     "symbolic.asm": {
       "path": "symbolic.asm",
       "description": "Symbolic observation: log modifications, block only crashes",
-      "entries": [],
+      "entries": [
+        {
+          "name": "sym_init",
+          "args": "",
+          "returns": "init observation system"
+        },
+        {
+          "name": "sym_check_write",
+          "args": "addr, size",
+          "returns": "eax=1(allowed)/0(blocked unmapped)"
+        },
+        {
+          "name": "sym_observe_mod",
+          "args": "addr, size, type",
+          "returns": "log modification to circular buffer"
+        },
+        {
+          "name": "sym_record_anomaly",
+          "args": "addr, desc",
+          "returns": "record unusual-but-working pattern"
+        },
+        {
+          "name": "sym_record_discovery",
+          "args": "addr, hash, steps",
+          "returns": "log \"shouldn't work\" pattern"
+        },
+        {
+          "name": "sym_get_stats",
+          "args": "",
+          "returns": "ptr to stats struct"
+        },
+        {
+          "name": "sym_hash_pattern",
+          "args": "addr, len",
+          "returns": "eax=pattern hash"
+        },
+        {
+          "name": "sym_analyze_region",
+          "args": "hdr",
+          "returns": "full symbolic analysis of region"
+        },
+        {
+          "name": "sym_is_anomalous",
+          "args": "addr",
+          "returns": "eax=1 if addr is known anomaly"
+        },
+        {
+          "name": "sym_scan_for_discoveries",
+          "args": "",
+          "returns": "find patterns that survived unexpectedly"
+        }
+      ],
       "calls": [],
-      "called_by": [],
+      "called_by": [
+        "emit.asm",
+        "modify.asm",
+        "evolve.asm:before"
+      ],
       "flow": "",
       "state": [],
       "gotchas": [],
@@ -761,9 +1394,55 @@
     "trace.asm": {
       "path": "trace.asm",
       "description": "Token journey tracing: record token path through system",
-      "entries": [],
+      "entries": [
+        {
+          "name": "journey_start",
+          "args": "token_id",
+          "returns": "begin tracing this token"
+        },
+        {
+          "name": "journey_stop",
+          "args": "",
+          "returns": "stop tracing"
+        },
+        {
+          "name": "journey_step",
+          "args": "trace_id",
+          "returns": "record step in journey (if tracing)"
+        },
+        {
+          "name": "journey_dump",
+          "args": "",
+          "returns": "print full journey path"
+        },
+        {
+          "name": "trace_enable",
+          "args": "",
+          "returns": "global trace on/off"
+        },
+        {
+          "name": "trace_disable",
+          "args": "",
+          "returns": "global trace on/off"
+        },
+        {
+          "name": "trace_log",
+          "args": "msg",
+          "returns": "debug logging"
+        },
+        {
+          "name": "trace_dump",
+          "args": "",
+          "returns": "debug logging"
+        }
+      ],
       "calls": [],
-      "called_by": [],
+      "called_by": [
+        "dispatch.asm",
+        "learn.asm",
+        "hooks.asm",
+        "dreams.asm"
+      ],
       "flow": "",
       "state": [],
       "gotchas": [],
@@ -773,26 +1452,114 @@
     "verify.asm": {
       "path": "verify.asm",
       "description": "Runtime verification: validate self-modifications before commit",
-      "entries": [],
+      "entries": [
+        {
+          "name": "verify_init",
+          "args": "",
+          "returns": "init verification system"
+        },
+        {
+          "name": "verify_enable",
+          "args": "",
+          "returns": "toggle verification"
+        },
+        {
+          "name": "verify_disable",
+          "args": "",
+          "returns": "toggle verification"
+        },
+        {
+          "name": "verify_begin_modification",
+          "args": "addr, size",
+          "returns": "snapshot before change"
+        },
+        {
+          "name": "verify_modification",
+          "args": "addr, size",
+          "returns": "eax=1(pass)/0(fail)"
+        },
+        {
+          "name": "verify_commit",
+          "args": "",
+          "returns": "discard snapshot (change accepted)"
+        },
+        {
+          "name": "verify_rollback",
+          "args": "",
+          "returns": "restore snapshot (reject change)"
+        },
+        {
+          "name": "verify_region_invariants",
+          "args": "hdr",
+          "returns": "eax=1 if region satisfies invariants"
+        },
+        {
+          "name": "verify_abstract",
+          "args": "code, len",
+          "returns": "eax=1 if abstract interpretation passes"
+        },
+        {
+          "name": "verify_theorems",
+          "args": "",
+          "returns": "eax=count of held theorems"
+        },
+        {
+          "name": "verify_set_mode",
+          "args": "mode",
+          "returns": "0=abstract, 1=geometric, 2=both"
+        },
+        {
+          "name": "verify_get_mode",
+          "args": "",
+          "returns": "0=abstract, 1=geometric, 2=both"
+        },
+        {
+          "name": "verify_geometric_gate",
+          "args": "code, len",
+          "returns": "eax=1 if geometric safety passes"
+        },
+        {
+          "name": "verify_unified",
+          "args": "code, len",
+          "returns": "eax=1 if both modes pass"
+        },
+        {
+          "name": "verify_region_geometric",
+          "args": "hdr",
+          "returns": "eax=1 if region geometrically safe"
+        },
+        {
+          "name": "get_code_safety_score",
+          "args": "code, len",
+          "returns": "xmm0=f64 safety score"
+        },
+        {
+          "name": "verify_bind_unbind",
+          "args": "ptr, len",
+          "returns": "validates bind/unbind pairs"
+        },
+        {
+          "name": "verify_role_orthogonality",
+          "args": "",
+          "returns": "validates VSA role vectors"
+        },
+        {
+          "name": "verify_vsa_math",
+          "args": "",
+          "returns": "startup math verification"
+        }
+      ],
       "calls": [],
-      "called_by": [],
+      "called_by": [
+        "emit.asm",
+        "modify.asm",
+        "evolve.asm:before"
+      ],
       "flow": "",
       "state": [],
       "gotchas": [],
       "content_hash": "6d1599ffad73",
       "line_count": 1692
-    },
-    "visualizer.asm": {
-      "path": "visualizer.asm",
-      "description": "",
-      "entries": [],
-      "calls": [],
-      "called_by": [],
-      "flow": "",
-      "state": [],
-      "gotchas": [],
-      "content_hash": "d41d8cd98f00",
-      "line_count": 1
     },
     "vsa.asm": {
       "path": "vsa.asm",
@@ -817,6 +1584,16 @@
           "name": "holo_dot_f64",
           "args": "rdi=a, rsi=b",
           "returns": "xmm0=similarity"
+        },
+        {
+          "name": "holo_cosim_f64",
+          "args": "rdi=a, rsi=b",
+          "returns": "xmm0=cosine ; normalized dot product"
+        },
+        {
+          "name": "holo_scale_f64",
+          "args": "rdi=vec, xmm0=scalar",
+          "returns": "void ; multiply all elements"
         },
         {
           "name": "holo_gen_vec",
@@ -868,15 +1645,79 @@
         "holo_gen_vec is deterministic: same seed = same vector",
         "Superposition accumulates - trace gets denser, needs decay"
       ],
-      "content_hash": "abd670e275c7",
-      "line_count": 1512
+      "content_hash": "1ecc4211703b",
+      "line_count": 1570
     },
     "vsa_ops.asm": {
       "path": "vsa_ops.asm",
       "description": "Code-to-Vector: geometric safety via high-dim embeddings",
-      "entries": [],
+      "entries": [
+        {
+          "name": "init_safety_vectors",
+          "args": "",
+          "returns": "build safety/danger template vectors"
+        },
+        {
+          "name": "opcode_to_hash",
+          "args": "opcode",
+          "returns": "eax=deterministic hash for opcode"
+        },
+        {
+          "name": "opcode_to_vector",
+          "args": "opcode, out_vec",
+          "returns": "write 1024-dim f64 vector for opcode"
+        },
+        {
+          "name": "classify_opcode_vec",
+          "args": "opcode",
+          "returns": "category + safety weight"
+        },
+        {
+          "name": "encode_code_to_vector",
+          "args": "ptr, len, out",
+          "returns": "encode code block to vector"
+        },
+        {
+          "name": "check_code_safety",
+          "args": "vec",
+          "returns": "xmm0=dot(vec, safety_template)"
+        },
+        {
+          "name": "check_code_danger",
+          "args": "vec",
+          "returns": "xmm0=dot(vec, danger_template)"
+        },
+        {
+          "name": "code_vectors_similar",
+          "args": "v1, v2",
+          "returns": "xmm0=cosine similarity"
+        },
+        {
+          "name": "get_safety_template",
+          "args": "",
+          "returns": "rax=ptr to safety template"
+        },
+        {
+          "name": "get_danger_template",
+          "args": "",
+          "returns": "rax=ptr to danger template"
+        },
+        {
+          "name": "encode_region_to_vector",
+          "args": "hdr, out",
+          "returns": "encode full region to vector"
+        },
+        {
+          "name": "verify_code_geometric",
+          "args": "ptr, len",
+          "returns": "eax=1 if geometrically safe"
+        }
+      ],
       "calls": [],
-      "called_by": [],
+      "called_by": [
+        "verify.asm:verify_geometric_gate",
+        "vsa.asm:learning"
+      ],
       "flow": "",
       "state": [],
       "gotchas": [],
@@ -885,6 +1726,21 @@
     }
   },
   "functions": {
+    "decode_instruction_length": [
+      "decode.asm"
+    ],
+    "decode_instruction_full": [
+      "decode.asm"
+    ],
+    "decode_region_instructions": [
+      "decode.asm"
+    ],
+    "count_region_instructions": [
+      "decode.asm"
+    ],
+    "classify_opcode": [
+      "decode.asm"
+    ],
     "process_input": [
       "dispatch.asm"
     ],
@@ -894,7 +1750,13 @@
     "dispatch_predict": [
       "dispatch.asm"
     ],
+    "schema_dispatch": [
+      "dispatch.asm"
+    ],
     "schema_learn_from_context": [
+      "dispatch.asm"
+    ],
+    "compute_struct_ctx": [
       "dispatch.asm"
     ],
     "dream_cycle": [
@@ -905,6 +1767,123 @@
     ],
     "dream_extract_schemas": [
       "dreams.asm"
+    ],
+    "drives_check": [
+      "drives.asm"
+    ],
+    "drives_show": [
+      "drives.asm"
+    ],
+    "drives_set_threshold": [
+      "drives.asm"
+    ],
+    "emit_dispatch_pattern": [
+      "emit.asm"
+    ],
+    "emit_resonant_pattern": [
+      "emit.asm"
+    ],
+    "emit_call_rel32": [
+      "emit.asm"
+    ],
+    "emit_nop_sled": [
+      "emit.asm"
+    ],
+    "emit_ret": [
+      "emit.asm"
+    ],
+    "emit_int3": [
+      "emit.asm"
+    ],
+    "evolve_cycle": [
+      "evolve.asm"
+    ],
+    "evolve_reproduce": [
+      "evolve.asm"
+    ],
+    "evolve_mutate": [
+      "evolve.asm"
+    ],
+    "evolve_crossover": [
+      "evolve.asm"
+    ],
+    "evolve_from_gene_pool": [
+      "evolve.asm"
+    ],
+    "factor_init": [
+      "factor.asm"
+    ],
+    "factor_suffix": [
+      "factor.asm"
+    ],
+    "find_common_suffix": [
+      "factor.asm"
+    ],
+    "emit_subroutine": [
+      "factor.asm"
+    ],
+    "rewrite_to_call": [
+      "factor.asm"
+    ],
+    "verify_valid_call": [
+      "factor.asm"
+    ],
+    "subroutines_show": [
+      "factor.asm"
+    ],
+    "garbage_collect_subroutines": [
+      "factor.asm"
+    ],
+    "print_str": [
+      "format.asm"
+    ],
+    "print_cstr": [
+      "format.asm"
+    ],
+    "print_u64": [
+      "format.asm"
+    ],
+    "print_i64": [
+      "format.asm"
+    ],
+    "print_hex64": [
+      "format.asm"
+    ],
+    "print_hex32": [
+      "format.asm"
+    ],
+    "print_f32": [
+      "format.asm"
+    ],
+    "print_f64": [
+      "format.asm"
+    ],
+    "print_newline": [
+      "format.asm"
+    ],
+    "print_space": [
+      "format.asm"
+    ],
+    "gate_test_modification": [
+      "gate.asm"
+    ],
+    "gate_check_region": [
+      "gate.asm"
+    ],
+    "gene_pool_init": [
+      "genes.asm"
+    ],
+    "gene_extract": [
+      "genes.asm"
+    ],
+    "gene_pool_add": [
+      "genes.asm"
+    ],
+    "gene_pool_sample": [
+      "genes.asm"
+    ],
+    "gene_pool_show": [
+      "genes.asm"
     ],
     "gfx_init": [
       "gui/gfx.asm"
@@ -963,6 +1942,54 @@
     "main": [
       "gui/viz_main.asm"
     ],
+    "fire_hook": [
+      "hooks.asm"
+    ],
+    "hook_register": [
+      "hooks.asm"
+    ],
+    "hook_unregister": [
+      "hooks.asm"
+    ],
+    "hook_clear": [
+      "hooks.asm"
+    ],
+    "hook_get_count": [
+      "hooks.asm"
+    ],
+    "introspect_region": [
+      "introspect.asm"
+    ],
+    "introspect_scan_regions": [
+      "introspect.asm"
+    ],
+    "update_anticipatory": [
+      "introspect.asm"
+    ],
+    "decay_anticipatory": [
+      "introspect.asm"
+    ],
+    "update_organic_pressure": [
+      "introspect.asm"
+    ],
+    "update_oscillation": [
+      "introspect.asm"
+    ],
+    "update_presence_dispatch": [
+      "introspect.asm"
+    ],
+    "metacog_report": [
+      "introspect.asm"
+    ],
+    "absorb_code": [
+      "introspect.asm"
+    ],
+    "tick_workers": [
+      "introspect.asm"
+    ],
+    "release_pheromone": [
+      "introspect.asm"
+    ],
     "digest_file": [
       "io.asm"
     ],
@@ -984,6 +2011,51 @@
     "learn_connections": [
       "learn.asm"
     ],
+    "maturity_init": [
+      "maturity.asm"
+    ],
+    "maturity_update": [
+      "maturity.asm"
+    ],
+    "maturity_check_advance": [
+      "maturity.asm"
+    ],
+    "gate_syscall": [
+      "maturity.asm"
+    ],
+    "gate_fd_write": [
+      "maturity.asm"
+    ],
+    "gate_fd_read": [
+      "maturity.asm"
+    ],
+    "get_maturity_level": [
+      "maturity.asm"
+    ],
+    "get_mastery_metrics": [
+      "maturity.asm"
+    ],
+    "modify_prune": [
+      "modify.asm"
+    ],
+    "modify_promote": [
+      "modify.asm"
+    ],
+    "modify_specialize": [
+      "modify.asm"
+    ],
+    "modify_generalize": [
+      "modify.asm"
+    ],
+    "modify_restructure": [
+      "modify.asm"
+    ],
+    "clear_connections_to": [
+      "modify.asm"
+    ],
+    "log_causal": [
+      "modify.asm"
+    ],
     "observe_cycle": [
       "observe.asm"
     ],
@@ -995,6 +2067,33 @@
     ],
     "repair_routing": [
       "observe.asm"
+    ],
+    "persist_save": [
+      "persist.asm"
+    ],
+    "persist_load": [
+      "persist.asm"
+    ],
+    "gene_export": [
+      "persist.asm"
+    ],
+    "gene_import": [
+      "persist.asm"
+    ],
+    "gene_auto_export": [
+      "persist.asm"
+    ],
+    "gene_scan_library": [
+      "persist.asm"
+    ],
+    "presence_init": [
+      "presence.asm"
+    ],
+    "trigger_presence_regions": [
+      "presence.asm"
+    ],
+    "presence_regions_show": [
+      "presence.asm"
     ],
     "emit_receipt_full": [
       "receipt.asm"
@@ -1035,6 +2134,162 @@
     "bp_remove": [
       "signal.asm"
     ],
+    "surface_init": [
+      "surface.asm"
+    ],
+    "region_alloc": [
+      "surface.asm"
+    ],
+    "region_condemn": [
+      "surface.asm"
+    ],
+    "region_compact": [
+      "surface.asm"
+    ],
+    "region_find_by_addr": [
+      "surface.asm"
+    ],
+    "region_merge_pass": [
+      "surface.asm"
+    ],
+    "get_surface_base": [
+      "surface.asm"
+    ],
+    "get_state_ptr": [
+      "surface.asm"
+    ],
+    "get_vsa_base": [
+      "surface.asm"
+    ],
+    "surface_freeze": [
+      "surface.asm"
+    ],
+    "surface_init_shared": [
+      "surface.asm"
+    ],
+    "broadcast_pain": [
+      "surface.asm"
+    ],
+    "sense_collective_valence": [
+      "surface.asm"
+    ],
+    "get_colony_size": [
+      "surface.asm"
+    ],
+    "is_shared_mode": [
+      "surface.asm"
+    ],
+    "sym_init": [
+      "symbolic.asm"
+    ],
+    "sym_check_write": [
+      "symbolic.asm"
+    ],
+    "sym_observe_mod": [
+      "symbolic.asm"
+    ],
+    "sym_record_anomaly": [
+      "symbolic.asm"
+    ],
+    "sym_record_discovery": [
+      "symbolic.asm"
+    ],
+    "sym_get_stats": [
+      "symbolic.asm"
+    ],
+    "sym_hash_pattern": [
+      "symbolic.asm"
+    ],
+    "sym_analyze_region": [
+      "symbolic.asm"
+    ],
+    "sym_is_anomalous": [
+      "symbolic.asm"
+    ],
+    "sym_scan_for_discoveries": [
+      "symbolic.asm"
+    ],
+    "journey_start": [
+      "trace.asm"
+    ],
+    "journey_stop": [
+      "trace.asm"
+    ],
+    "journey_step": [
+      "trace.asm"
+    ],
+    "journey_dump": [
+      "trace.asm"
+    ],
+    "trace_enable": [
+      "trace.asm"
+    ],
+    "trace_disable": [
+      "trace.asm"
+    ],
+    "trace_log": [
+      "trace.asm"
+    ],
+    "trace_dump": [
+      "trace.asm"
+    ],
+    "verify_init": [
+      "verify.asm"
+    ],
+    "verify_enable": [
+      "verify.asm"
+    ],
+    "verify_disable": [
+      "verify.asm"
+    ],
+    "verify_begin_modification": [
+      "verify.asm"
+    ],
+    "verify_modification": [
+      "verify.asm"
+    ],
+    "verify_commit": [
+      "verify.asm"
+    ],
+    "verify_rollback": [
+      "verify.asm"
+    ],
+    "verify_region_invariants": [
+      "verify.asm"
+    ],
+    "verify_abstract": [
+      "verify.asm"
+    ],
+    "verify_theorems": [
+      "verify.asm"
+    ],
+    "verify_set_mode": [
+      "verify.asm"
+    ],
+    "verify_get_mode": [
+      "verify.asm"
+    ],
+    "verify_geometric_gate": [
+      "verify.asm"
+    ],
+    "verify_unified": [
+      "verify.asm"
+    ],
+    "verify_region_geometric": [
+      "verify.asm"
+    ],
+    "get_code_safety_score": [
+      "verify.asm"
+    ],
+    "verify_bind_unbind": [
+      "verify.asm"
+    ],
+    "verify_role_orthogonality": [
+      "verify.asm"
+    ],
+    "verify_vsa_math": [
+      "verify.asm"
+    ],
     "holo_bind_f64": [
       "vsa.asm"
     ],
@@ -1045,6 +2300,12 @@
       "vsa.asm"
     ],
     "holo_dot_f64": [
+      "vsa.asm"
+    ],
+    "holo_cosim_f64": [
+      "vsa.asm"
+    ],
+    "holo_scale_f64": [
       "vsa.asm"
     ],
     "holo_gen_vec": [
@@ -1067,6 +2328,42 @@
     ],
     "confidence_query": [
       "vsa.asm"
+    ],
+    "init_safety_vectors": [
+      "vsa_ops.asm"
+    ],
+    "opcode_to_hash": [
+      "vsa_ops.asm"
+    ],
+    "opcode_to_vector": [
+      "vsa_ops.asm"
+    ],
+    "classify_opcode_vec": [
+      "vsa_ops.asm"
+    ],
+    "encode_code_to_vector": [
+      "vsa_ops.asm"
+    ],
+    "check_code_safety": [
+      "vsa_ops.asm"
+    ],
+    "check_code_danger": [
+      "vsa_ops.asm"
+    ],
+    "code_vectors_similar": [
+      "vsa_ops.asm"
+    ],
+    "get_safety_template": [
+      "vsa_ops.asm"
+    ],
+    "get_danger_template": [
+      "vsa_ops.asm"
+    ],
+    "encode_region_to_vector": [
+      "vsa_ops.asm"
+    ],
+    "verify_code_geometric": [
+      "vsa_ops.asm"
     ]
   },
   "dependencies": {
@@ -1075,7 +2372,11 @@
       "depended_by": []
     },
     "decode.asm": {
-      "depends_on": [],
+      "depends_on": [
+        "factor.asm",
+        "introspect.asm",
+        "verify.asm"
+      ],
       "depended_by": []
     },
     "dispatch.asm": {
@@ -1107,32 +2408,57 @@
       "depended_by": []
     },
     "emit.asm": {
-      "depends_on": [],
+      "depends_on": [
+        "receipt.asm",
+        "surface.asm",
+        "verify.asm",
+        "vsa.asm"
+      ],
       "depended_by": [
         "dispatch.asm",
         "dreams.asm",
+        "evolve.asm",
         "learn.asm"
       ]
     },
     "evolve.asm": {
-      "depends_on": [],
-      "depended_by": []
+      "depends_on": [
+        "emit.asm",
+        "gate.asm",
+        "genes.asm",
+        "hooks.asm"
+      ],
+      "depended_by": [
+        "gate.asm",
+        "genes.asm"
+      ]
     },
     "factor.asm": {
       "depends_on": [],
-      "depended_by": []
+      "depended_by": [
+        "decode.asm"
+      ]
     },
     "format.asm": {
       "depends_on": [],
       "depended_by": []
     },
     "gate.asm": {
-      "depends_on": [],
-      "depended_by": []
+      "depends_on": [
+        "evolve.asm",
+        "modify.asm"
+      ],
+      "depended_by": [
+        "evolve.asm"
+      ]
     },
     "genes.asm": {
-      "depends_on": [],
+      "depends_on": [
+        "evolve.asm",
+        "surface.asm"
+      ],
       "depended_by": [
+        "evolve.asm",
         "observe.asm"
       ]
     },
@@ -1149,18 +2475,20 @@
       "depended_by": []
     },
     "gui/viz_main.asm": {
-      "depends_on": [
-        "visualizer.asm"
-      ],
+      "depends_on": [],
       "depended_by": []
     },
     "hooks.asm": {
       "depends_on": [],
-      "depended_by": []
+      "depended_by": [
+        "evolve.asm"
+      ]
     },
     "introspect.asm": {
       "depends_on": [],
-      "depended_by": []
+      "depended_by": [
+        "decode.asm"
+      ]
     },
     "io.asm": {
       "depends_on": [
@@ -1189,7 +2517,9 @@
     },
     "modify.asm": {
       "depends_on": [],
-      "depended_by": []
+      "depended_by": [
+        "gate.asm"
+      ]
     },
     "observe.asm": {
       "depends_on": [
@@ -1215,6 +2545,7 @@
       "depended_by": [
         "dispatch.asm",
         "dreams.asm",
+        "emit.asm",
         "learn.asm",
         "observe.asm",
         "repl.asm"
@@ -1238,6 +2569,8 @@
     "surface.asm": {
       "depends_on": [],
       "depended_by": [
+        "emit.asm",
+        "genes.asm",
         "repl.asm"
       ]
     },
@@ -1251,12 +2584,9 @@
     },
     "verify.asm": {
       "depends_on": [],
-      "depended_by": []
-    },
-    "visualizer.asm": {
-      "depends_on": [],
       "depended_by": [
-        "gui/viz_main.asm"
+        "decode.asm",
+        "emit.asm"
       ]
     },
     "vsa.asm": {
@@ -1264,6 +2594,7 @@
       "depended_by": [
         "dispatch.asm",
         "dreams.asm",
+        "emit.asm",
         "learn.asm",
         "receipt.asm"
       ]
@@ -1274,8 +2605,8 @@
     }
   },
   "meta": {
-    "file_count": 34,
-    "function_count": 61,
-    "total_gotchas": 45
+    "file_count": 33,
+    "function_count": 213,
+    "total_gotchas": 47
   }
 }

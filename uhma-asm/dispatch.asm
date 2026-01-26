@@ -3,10 +3,13 @@
 ; @entry process_input(rdi=buf, rsi=len) -> void
 ; @entry process_token(edi=token_id) -> void
 ; @entry dispatch_predict(edi=ctx_hash) -> eax=token, xmm0=conf
+; @entry schema_dispatch() -> eax=token ; match schemas against struct_ctx
 ; @entry schema_learn_from_context() -> void ; create schema from struct_ctx
+; @entry compute_struct_ctx() -> void ; build 8-position f64 structural context
 ; @calls learn.asm:learn_pattern, emit.asm:emit_dispatch_pattern
 ; @calls receipt.asm:emit_receipt_full, receipt.asm:receipt_resonate
-; @calls vsa.asm:holo_predict, vsa.asm:holo_query_valence, vsa.asm:holo_superpose_f64
+; @calls vsa.asm:holo_predict, vsa.asm:holo_superpose_f64, vsa.asm:holo_cosim_f64
+; @calls vsa.asm:holo_gen_vec, vsa.asm:holo_bind_f64, vsa.asm:holo_unbind_f64
 ; @calledby repl.asm:repl_run, io.asm:digest_file, dreams.asm:dream_extract_schemas
 ;
 ; FLOW: token → ctx=hash(prev) → predict → HIT/MISS → learn on miss
@@ -16,10 +19,11 @@
 ;   digits → TOKEN_NUM (0x4e554d21), 0x... → TOKEN_HEX (0x48455821)
 ;   MUST match io.asm:digest_file abstraction
 ;
-; TRACE QUERY (~line 1020):
-;   receipt_resonate(HIT/MISS, ctx) → modulate confidence
+; STRUCTURAL CONTEXT (compute_struct_ctx):
+;   struct_ctx = Σ bind(ROLE_i, token_history[i]) for positions 0-7
+;   Uses f64 vectors: holo_gen_vec for roles/tokens, holo_bind_f64, holo_superpose_f64
 ;
-; SCHEMA TRACE (~line 816):
+; SCHEMA TRACE (~line 825):
 ;   On MISS: superpose ST_STRUCT_CTX_VEC into ST_SCHEMA_TRACE_VEC
 ;   Accumulates structural patterns for holographic schema learning
 ;
@@ -27,6 +31,7 @@
 ;   - ctx = hash(prev_token) ONLY, no somatic XOR (breaks pattern identity)
 ;   - rcx is caller-saved, use r10-r15 in loops that call functions
 ;   - Token abstraction must match in BOTH process_input AND digest_file
+;   - All struct_ctx operations use f64 (holo_*), not f32 (vsa_*)
 ;
 %include "syscalls.inc"
 %include "constants.inc"
@@ -80,6 +85,10 @@ extern fire_hook
 extern vsa_get_token_vec
 extern vsa_superpose
 extern holo_superpose_f64
+extern holo_gen_vec
+extern holo_bind_f64
+extern holo_cosim_f64
+extern holo_unbind_f64
 extern vsa_bind
 extern vsa_unbind
 extern vsa_gen_role_pos
@@ -2470,12 +2479,14 @@ compute_struct_ctx:
     cmp r13d, r12d
     jge .ctx_normalize
 
-    ; --- Generate role vector for position r13 ---
-    mov edi, r13d                         ; position
-    mov rsi, r14                          ; output to temp_role
+    ; --- Generate f64 role vector for position r13 ---
+    ; Use (position | 0x524F4C00) as seed for unique role vectors
+    mov edi, r13d
+    or edi, 0x524F4C00                    ; "ROL\0" + position
+    mov rsi, r14                          ; output to temp_role (f64[1024])
     push r12
     push r13
-    call vsa_gen_role_pos
+    call holo_gen_vec
     pop r13
     pop r12
 
@@ -2488,39 +2499,35 @@ compute_struct_ctx:
 
     ; token_id = token_buf[ring_idx]
     lea rcx, [rbx + STATE_OFFSET + ST_TOKEN_BUF]
-    mov edi, [rcx + rax * 4]              ; token_id
+    mov r10d, [rcx + rax * 4]             ; token_id (use r10, rcx is clobbered)
 
-    ; Clamp token_id to VSA_MAX_TOKENS to avoid out-of-bounds
-    cmp edi, VSA_MAX_TOKENS
-    jb .token_ok
-    and edi, (VSA_MAX_TOKENS - 1)         ; wrap around
-.token_ok:
-
-    ; --- Get token vector ---
+    ; --- Generate f64 token vector ---
+    ; Use SCRATCH_OFFSET + 2*HOLO_VEC_BYTES for temp_token
+    mov edi, r10d                         ; token_id as seed
+    lea rsi, [rbx + SCRATCH_OFFSET + HOLO_VEC_BYTES * 2]  ; temp_token (f64[1024])
     push r12
     push r13
-    call vsa_get_token_vec
-    pop r13
-    pop r12
-    ; rax = token_vec ptr
-
-    ; --- Bind role with token: temp_bound = bind(temp_role, token_vec) ---
-    mov rdi, r14                          ; temp_role
-    mov rsi, rax                          ; token_vec
-    mov rdx, r15                          ; output to temp_bound
-    push r12
-    push r13
-    call vsa_bind
+    call holo_gen_vec
     pop r13
     pop r12
 
-    ; --- Superpose into structural context ---
+    ; --- Bind role with token: temp_bound = bind(temp_role, temp_token) ---
+    mov rdi, r14                          ; temp_role (f64)
+    lea rsi, [rbx + SCRATCH_OFFSET + HOLO_VEC_BYTES * 2]  ; temp_token (f64)
+    mov rdx, r15                          ; output to temp_bound (f64)
+    push r12
+    push r13
+    call holo_bind_f64
+    pop r13
+    pop r12
+
+    ; --- Superpose into structural context (f64) ---
     ; struct_ctx += temp_bound
     lea rdi, [rbx + STATE_OFFSET + ST_STRUCT_CTX_VEC]
-    mov rsi, r15                          ; temp_bound
+    mov rsi, r15                          ; temp_bound (f64)
     push r12
     push r13
-    call vsa_superpose
+    call holo_superpose_f64
     pop r13
     pop r12
 
@@ -2552,7 +2559,10 @@ compute_struct_ctx:
 
 section .data
     align 8
-    schema_match_thresh: dq 0.6           ; minimum similarity for schema match
+    ; NOTE: Schema matching threshold is low (0.01) because current implementation
+    ; stores full struct_ctx but doesn't mask variable positions during comparison.
+    ; Full variable masking would allow higher thresholds.
+    schema_match_thresh: dq 0.01
 
 section .text
 
@@ -2577,7 +2587,7 @@ schema_match:
     ; Compute cosine similarity: cos(template, struct_ctx)
     mov rdi, r12                          ; template is at start of schema entry
     lea rsi, [rbx + STATE_OFFSET + ST_STRUCT_CTX_VEC]
-    call vsa_cosim
+    call holo_cosim_f64
     ; xmm0 = similarity
 
     jmp .match_done
@@ -2609,16 +2619,17 @@ schema_extract_var:
     mov r13, rsi                          ; out_ptr
     mov rbx, SURFACE_BASE
 
-    ; Generate role vector in scratch area
-    lea rsi, [rbx + SCRATCH_OFFSET + HOLO_VEC_BYTES * 2]  ; temp for role
+    ; Generate f64 role vector in scratch area
     mov edi, r12d
-    call vsa_gen_role_pos
+    or edi, 0x524F4C00                    ; "ROL\0" + position (same as compute_struct_ctx)
+    lea rsi, [rbx + SCRATCH_OFFSET + HOLO_VEC_BYTES * 2]  ; temp for role
+    call holo_gen_vec
 
-    ; Unbind: filler = unbind(struct_ctx, role)
+    ; Unbind: filler = unbind(struct_ctx, role) using f64
     lea rdi, [rbx + STATE_OFFSET + ST_STRUCT_CTX_VEC]
     lea rsi, [rbx + SCRATCH_OFFSET + HOLO_VEC_BYTES * 2]  ; role vector
     mov rdx, r13                          ; output
-    call vsa_unbind
+    call holo_unbind_f64
 
     add rsp, 8
     pop r13
@@ -2654,24 +2665,24 @@ schema_query_filler:
     cmp r14d, 256
     jge .scan_done
 
-    ; Get token vector
-    mov edi, r14d
+    ; Generate f64 token vector in scratch area
+    mov edi, r14d                         ; token_id as seed
+    lea rsi, [rbx + SCRATCH_OFFSET + HOLO_VEC_BYTES * 4]  ; temp for token vec
     push r12
     push r13
     push r14
-    call vsa_get_token_vec
+    call holo_gen_vec
     pop r14
     pop r13
     pop r12
-    ; rax = token_vec ptr
 
-    ; Compute similarity
-    mov rdi, r12                          ; filler
-    mov rsi, rax                          ; token_vec
+    ; Compute similarity (f64)
+    mov rdi, r12                          ; filler (f64)
+    lea rsi, [rbx + SCRATCH_OFFSET + HOLO_VEC_BYTES * 4]  ; token_vec (f64)
     push r12
     push r13
     push r14
-    call vsa_cosim
+    call holo_cosim_f64
     pop r14
     pop r13
     pop r12
@@ -2690,8 +2701,8 @@ schema_query_filler:
     jmp .scan_loop
 
 .scan_done:
-    ; Check if best_sim > 0.5 (reasonable match)
-    mov rax, 0x3FE0000000000000           ; 0.5
+    ; Check if best_sim > 0.1 (lowered for noisy unbinding)
+    mov rax, 0x3FB999999999999A           ; 0.1
     movq xmm0, rax
     ucomisd xmm7, xmm0
     jbe .no_good_match
