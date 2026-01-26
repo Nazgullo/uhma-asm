@@ -2533,7 +2533,7 @@ draw_status:
     push rbx
     push r12
     push r13
-    sub rsp, 24
+    sub rsp, 32
 
     mov r12d, 0
     mov r13d, WIN_H - STATUS_H
@@ -2563,7 +2563,7 @@ draw_status:
     mov r8d, [rel col_cyan]
     call gfx_text
 
-    add rsp, 24
+    add rsp, 32
     pop r13
     pop r12
     pop rbx
@@ -2748,7 +2748,7 @@ load_dir:
     push r13
     push r14
     push r15
-    sub rsp, 520
+    sub rsp, 528
 
     lea rdi, [rel zenity_dir]
     call system
@@ -2887,7 +2887,7 @@ load_dir:
     mov dword [rel feedback_timer], 90
 
 .done:
-    add rsp, 520
+    add rsp, 528
     pop r15
     pop r14
     pop r13
