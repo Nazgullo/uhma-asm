@@ -8,7 +8,8 @@
 ; @calledby viz_main.asm:main
 ;
 ; GOTCHAS:
-;   - Stack alignment: ODD pushes (1,3,5) need sub rsp,16; EVEN pushes (2,4) need sub rsp,8
+;   - Stack alignment (x86-64 ABI): ODD pushes → aligned → sub must be multiple of 16
+;                                   EVEN pushes → unaligned → sub must be 8 mod 16
 ;   - gfx_fill_rect takes 5 args: edi=x, esi=y, edx=w, ecx=h, r8d=color
 ;   - Callee-saved regs (rbx, r12-r15) must be preserved across gfx_* calls
 ;   - ecx is caller-saved: reload h from memory before each gfx call, don't push/pop

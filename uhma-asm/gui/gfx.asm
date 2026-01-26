@@ -16,7 +16,8 @@
 ; GOTCHAS:
 ;   - XFillRectangle/XDrawRectangle/XDrawLine take 7 args: 7th (height) goes on stack at [rsp]
 ;   - XDrawString takes 7 args: 7th (length) goes on stack
-;   - Stack alignment: odd pushes (3,5) need sub rsp,16; even pushes (2) need sub rsp,8
+;   - Stack alignment (x86-64 ABI): ODD pushes → aligned → sub must be multiple of 16
+;                                   EVEN pushes → unaligned → sub must be 8 mod 16
 ;   - display/gc/window are module-local BSS; must call gfx_init first
 ;   - Colors are 0x00RRGGBB format
 ;

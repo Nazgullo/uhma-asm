@@ -15,7 +15,8 @@
 ;   - Response buffer is static, overwritten each call
 ;   - JSON-RPC uses Content-Length header framing
 ;   - MCP server spawns UHMA internally
-;   - Stack alignment: ODD pushes need sub rsp,16; EVEN pushes need sub rsp,8
+;   - Stack alignment (x86-64 ABI): ODD pushes → aligned → sub must be multiple of 16
+;                                   EVEN pushes → unaligned → sub must be 8 mod 16
 
 section .data
     ; MCP server command

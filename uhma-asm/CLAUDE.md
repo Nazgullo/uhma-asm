@@ -48,8 +48,10 @@ This is O(1) per item. The holographic memory IS the index. Don't build separate
 ### Stack Alignment (x86-64 System V ABI)
 - **RSP must be 16-byte aligned BEFORE call instruction**
 - Entry to function: rsp = 16n - 8 (return address was pushed)
-- **ODD pushes (1,3,5)** → stack becomes 16-aligned → need `sub rsp, 16`
-- **EVEN pushes (0,2,4)** → stack is NOT aligned → need `sub rsp, 8`
+- **ODD pushes (1,3,5)** → stack becomes 16-aligned → `sub rsp` must be **multiple of 16**
+- **EVEN pushes (0,2,4)** → stack is NOT aligned → `sub rsp` must be **8 mod 16** (8, 24, 40...)
+- Example: 3 pushes + need 24 bytes local → use `sub rsp, 32` (not 24, since 24 is 8 mod 16)
+- Example: 5 pushes + need 520 bytes local → use `sub rsp, 528` (not 520, round up to multiple of 16)
 - Misalignment causes segfaults in libc/X11 calls (XSetForeground, printf, etc.)
 - GUI files (gfx.asm, visualizer.asm, mcp_client.asm) had this bug fixed 2026-01-26
 

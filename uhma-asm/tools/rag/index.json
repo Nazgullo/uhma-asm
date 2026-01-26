@@ -255,12 +255,12 @@
       "gotchas": [
         "XFillRectangle/XDrawRectangle/XDrawLine take 7 args: 7th (height) goes on stack at [rsp]",
         "XDrawString takes 7 args: 7th (length) goes on stack",
-        "Stack alignment: odd pushes (3,5) need sub rsp,16; even pushes (2) need sub rsp,8",
+        "Stack alignment (x86-64 ABI): ODD pushes \u2192 aligned \u2192 sub must be multiple of 16",
         "display/gc/window are module-local BSS; must call gfx_init first",
         "Colors are 0x00RRGGBB format"
       ],
-      "content_hash": "5d0c1e7c6148",
-      "line_count": 590
+      "content_hash": "ad465831bd51",
+      "line_count": 591
     },
     "gui/mcp_client.asm": {
       "path": "gui/mcp_client.asm",
@@ -300,10 +300,10 @@
         "Response buffer is static, overwritten each call",
         "JSON-RPC uses Content-Length header framing",
         "MCP server spawns UHMA internally",
-        "Stack alignment: ODD pushes need sub rsp,16; EVEN pushes need sub rsp,8"
+        "Stack alignment (x86-64 ABI): ODD pushes \u2192 aligned \u2192 sub must be multiple of 16"
       ],
-      "content_hash": "2751ad1d6bde",
-      "line_count": 540
+      "content_hash": "1a898a384f88",
+      "line_count": 541
     },
     "gui/visualizer.asm": {
       "path": "gui/visualizer.asm",
@@ -336,13 +336,13 @@
       "flow": "",
       "state": [],
       "gotchas": [
-        "Stack alignment: ODD pushes (1,3,5) need sub rsp,16; EVEN pushes (2,4) need sub rsp,8",
+        "Stack alignment (x86-64 ABI): ODD pushes \u2192 aligned \u2192 sub must be multiple of 16",
         "gfx_fill_rect takes 5 args: edi=x, esi=y, edx=w, ecx=h, r8d=color",
         "Callee-saved regs (rbx, r12-r15) must be preserved across gfx_* calls",
         "ecx is caller-saved: reload h from memory before each gfx call, don't push/pop"
       ],
-      "content_hash": "e875a263f553",
-      "line_count": 2905
+      "content_hash": "d139979e1c55",
+      "line_count": 2906
     },
     "gui/viz_main.asm": {
       "path": "gui/viz_main.asm",
@@ -369,10 +369,10 @@
         "MCP server spawned as subprocess (python3 tools/rag/server.py)",
         "vis_update returns 0 to quit, 1 to continue",
         "16ms usleep \u2248 60fps frame rate",
-        "Stack alignment: ODD pushes need sub rsp,16; EVEN pushes need sub rsp,8"
+        "Stack alignment (x86-64 ABI): ODD pushes \u2192 aligned \u2192 sub must be multiple of 16"
       ],
-      "content_hash": "e2f3030d934d",
-      "line_count": 96
+      "content_hash": "326c50c39e47",
+      "line_count": 97
     },
     "hooks.asm": {
       "path": "hooks.asm",
