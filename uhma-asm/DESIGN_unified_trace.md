@@ -141,12 +141,27 @@ Use: Monitor system activity levels.
 System-wide HIT vs MISS ratio.
 Use: Self-model - "how well am I doing overall?"
 
-## Integration Points
+## Existing Integration (via receipt_resonate)
 
-| Subsystem | Query | Action |
-|-----------|-------|--------|
-| Pruning (dreams.asm) | trace_region_performance | Remove regions < 0.3 |
-| Prediction (dispatch.asm) | trace_context_confidence | Scale confidence |
-| Learning (learn.asm) | trace_token_learnability | Adjust learning rate |
-| Self-model (observe.asm) | trace_hit_miss_ratio | Update drive system |
-| Schema extraction | trace_context_confidence | Target unreliable contexts |
+The subsystems already use trace queries for decision-making:
+
+| Subsystem | Queries | Purpose |
+|-----------|---------|---------|
+| dispatch.asm:1018-1035 | HIT, MISS by ctx | Modulate prediction confidence |
+| learn.asm:120-131 | LEARN by ctx+token | Skip redundant learning |
+| observe.asm:161-178 | PRUNE, MISS by ctx | Avoid regretted prunes |
+| observe.asm:243-263 | PROMOTE, HIT by ctx | Boost promising regions |
+
+## Cognitive Access Functions (additional helpers)
+
+These functions provide pre-packaged ratio queries:
+
+| Function | Returns | Use case |
+|----------|---------|----------|
+| trace_region_performance | HIT/(HIT+MISS) for region | Evaluate specific region |
+| trace_context_confidence | HIT/(HIT+MISS) for context | Context reliability |
+| trace_token_learnability | LEARN resonance for token | Problem token detection |
+| trace_event_count | Event magnitude | Activity monitoring |
+| trace_hit_miss_ratio | System-wide ratio | Overall performance |
+
+Available for REPL queries and future cognitive enhancements.
