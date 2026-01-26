@@ -1,4 +1,22 @@
-; boot.asm — _start, mmap surface, install handlers, begin REPL
+; boot.asm — System startup: mmap surface, install handlers, enter REPL
+;
+; ENTRY POINTS:
+;   _start                        - ELF entry point, never returns
+;
+; STARTUP SEQUENCE:
+;   1. surface_init()             - mmap 100GB sparse persistent file
+;   2. install_fault_handlers()   - SIGSEGV/SIGFPE/SIGBUS recovery
+;   3. dispatch_init()            - init dispatch tree with echo behavior
+;   4. vsa_init_random()          - seed random vectors for VSA arena
+;   5. verify_init()              - assembly brittleness protection
+;   6. maturity_init()            - developmental gating (Stage 0)
+;   7. repl_run()                 - enter main REPL loop (never returns)
+;
+; CALLS OUT TO:
+;   surface.asm, signal.asm, dispatch.asm, vsa.asm, verify.asm, maturity.asm, repl.asm
+;
+; NOTE: Stack aligned to 16 at entry. No cleanup needed (repl_run loops forever).
+;
 %include "syscalls.inc"
 %include "constants.inc"
 

@@ -1,4 +1,35 @@
-; surface.asm — Surface management: region allocation, headers, compaction
+; surface.asm — Surface memory: mmap, region allocation, compaction
+;
+; ENTRY POINTS:
+;   surface_init()                    → rax=surface base (mmaps persistent file)
+;   region_alloc(size)                → rax=ptr to new region header
+;   region_condemn(idx)               - mark region for death (extracts gene first)
+;   region_compact()                  - reclaim condemned regions
+;   region_find_by_addr(addr)         → rax=region_idx or -1
+;   region_merge_pass()               - merge compatible adjacent regions
+;   get_surface_base()                → rax=SURFACE_BASE
+;   get_state_ptr()                   → rax=state block address
+;   get_vsa_base()                    → rax=VSA arena base
+;   surface_freeze()                  - mark surface read-only (safety)
+;   surface_init_shared()             - init /dev/shm Mycorrhiza shared memory
+;   broadcast_pain(intensity)         - share pain to colony (if shared mode)
+;   sense_collective_valence()        → xmm0=colony average valence
+;   get_colony_size()                 → eax=number of connected instances
+;   is_shared_mode()                  → eax=1 if running with Mycorrhiza
+;
+; MEMORY LAYOUT (100GB sparse file "uhma.surface"):
+;   [0, STATE_OFFSET)         - dispatch regions (code)
+;   [STATE_OFFSET, +64KB)     - state block (counters, hooks, drives)
+;   [REGION_TABLE_OFFSET, +)  - region table (index of all regions)
+;   [VSA_ARENA_OFFSET, +)     - holographic memory (vocab, traces)
+;
+; PERSISTENCE:
+;   File opened O_CREAT|O_RDWR, mmap'd MAP_SHARED
+;   Session count incremented on each load (tracks restarts)
+;   Total steps preserved across sessions
+;
+; CALLED BY: boot.asm (init), emit.asm (region_alloc), everywhere
+;
 %include "syscalls.inc"
 %include "constants.inc"
 

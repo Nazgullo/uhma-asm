@@ -1,4 +1,32 @@
-; modify.asm — Self-modification: prune, reorder, specialize, generalize
+; modify.asm — Self-modification primitives: prune, promote, specialize, generalize
+;
+; ENTRY POINTS:
+;   modify_prune(region_idx)          - mark region as CONDEMNED
+;   modify_promote(region_idx)        - boost region's activation
+;   modify_specialize(region_idx)     - duplicate region with narrower context
+;   modify_generalize(region_idx)     - relax context matching (mask bits)
+;   modify_restructure()              - batch restructuring when coherence low
+;   clear_connections_to(region_idx)  - remove all references to region
+;   log_causal(cause_idx, effect_idx) - record causal relationship
+;
+; PRUNE FLOW:
+;   Set RHDR_FLAGS |= RFLAG_CONDEMNED → region_compact() will reclaim later
+;   Gene extraction happens before final death (in region_condemn)
+;
+; PROMOTE FLOW:
+;   activation = min(1.0, activation + mod_boost_val)
+;   Higher activation = more likely to be called during spread
+;
+; SPECIALIZE:
+;   Copy region, tighten context hash (fewer bits masked)
+;   Creates more specific pattern matcher
+;
+; GENERALIZE:
+;   Mask low bits of context hash (broader matching)
+;   Converts dispatch pattern toward schema-like behavior
+;
+; CALLED BY: drives.asm, evolve.asm, observe.asm, dreams.asm
+;
 %include "syscalls.inc"
 %include "constants.inc"
 

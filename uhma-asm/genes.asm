@@ -1,13 +1,26 @@
-; genes.asm — Gene Pool: Composting via Genetic Recombination
-; Before condemned regions are wiped, extract their useful code fragments
-; into a "Gene Pool" for later reuse during evolution.
+; genes.asm — Gene Pool: metabolic recycling of condemned regions
 ;
-; The gene pool preserves knowledge from dying regions:
-; - Extract (ctx_hash, token_id, fitness) before a region is condemned
-; - Store in a fixed-size pool, replacing lowest-fitness genes when full
-; - During evolution, sample from the gene pool to seed new patterns
+; ENTRY POINTS:
+;   gene_pool_init()                  - zero out gene pool
+;   gene_extract(region_ptr)          - extract ctx/token/fitness from dying region
+;   gene_pool_add(ctx, token, fitness)- add gene, replace lowest if full
+;   gene_pool_sample()                → ctx in eax, token in edx (or 0 if empty)
+;   gene_pool_show()                  - display pool status and top genes
 ;
-; This is metabolic recycling: condemned regions become genetic material.
+; GENE STRUCTURE (16 bytes each):
+;   [0-3]  ctx_hash   - context hash pattern matched
+;   [4-7]  token_id   - predicted token
+;   [8-15] fitness    - f64 fitness at time of death (hits/(hits+miss))
+;
+; POOL POLICY:
+;   Fixed size: GENE_POOL_SIZE entries (default 64)
+;   When full: find lowest-fitness gene, replace if new gene is fitter
+;   Minimum fitness threshold: gene_min_fitness (0.05) to avoid junk
+;
+; CALLED BY:
+;   surface.asm: region_condemn() extracts gene before death
+;   evolve.asm:  evolve_from_gene_pool() resurrects genes
+;
 %include "syscalls.inc"
 %include "constants.inc"
 

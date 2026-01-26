@@ -1,6 +1,29 @@
-; trace.asm — Token Journey Tracing
-; The token itself records its path through the system
-; Zero overhead for non-traced tokens (single compare)
+; trace.asm — Token journey tracing: record token path through system
+;
+; ENTRY POINTS:
+;   journey_start(token_id)           - begin tracing this token
+;   journey_stop()                    - stop tracing
+;   journey_step(trace_id)            - record step in journey (if tracing)
+;   journey_dump()                    - print full journey path
+;   trace_enable(), trace_disable()   - global trace on/off
+;   trace_log(msg), trace_dump()      - debug logging
+;
+; TRACE IDs (function identifiers):
+;   TRACE_PROCESS_INPUT, TRACE_PROCESS_TOKEN, TRACE_DISPATCH_PREDICT,
+;   TRACE_SPREAD_ACTIVATION, TRACE_LEARN_PATTERN, TRACE_FIND_EXISTING,
+;   TRACE_WIRE_NEW_REGION, TRACE_EMIT_PATTERN, TRACE_FIRE_HOOK,
+;   TRACE_OBSERVE_CYCLE, TRACE_MODIFY_PRUNE, TRACE_MODIFY_PROMOTE,
+;   TRACE_EVOLVE_CYCLE, TRACE_DREAM_CYCLE, TRACE_UPDATE_ORGANIC
+;
+; ZERO OVERHEAD:
+;   journey_step checks ST_JOURNEY_TOKEN first (single cmp)
+;   If not tracing current token, returns immediately
+;   Only traced tokens incur logging overhead
+;
+; BUFFER: ST_JOURNEY_BUF (256 entries of trace_id)
+;
+; CALLED BY: dispatch.asm, learn.asm, hooks.asm, dreams.asm, etc.
+;
 %include "syscalls.inc"
 %include "constants.inc"
 

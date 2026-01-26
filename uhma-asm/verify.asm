@@ -1,10 +1,33 @@
-; verify.asm — Runtime symbolic verification for self-modifications
+; verify.asm — Runtime verification: validate self-modifications before commit
 ;
-; The system must verify its own changes before committing them.
-; This module provides:
-; 1. Symbolic representation of code invariants
-; 2. Verification of proposed modifications
-; 3. Rollback mechanism for failed verifications
+; ENTRY POINTS:
+;   verify_init()                     - init verification system
+;   verify_enable(), verify_disable() - toggle verification
+;   verify_begin_modification(addr, size) - snapshot before change
+;   verify_modification(addr, size)   → eax=1(pass)/0(fail)
+;   verify_commit()                   - discard snapshot (change accepted)
+;   verify_rollback()                 - restore snapshot (reject change)
+;   verify_region_invariants(hdr)     → eax=1 if region satisfies invariants
+;   verify_abstract(code, len)        → eax=1 if abstract interpretation passes
+;   verify_theorems()                 → eax=count of held theorems
+;   verify_set_mode(mode), verify_get_mode() - 0=abstract, 1=geometric, 2=both
+;   verify_geometric_gate(code, len)  → eax=1 if geometric safety passes
+;   verify_unified(code, len)         → eax=1 if both modes pass
+;   verify_region_geometric(hdr)      → eax=1 if region geometrically safe
+;   get_code_safety_score(code, len)  → xmm0=f64 safety score
+;   verify_bind_unbind(ptr, len)      → validates bind/unbind pairs
+;   verify_role_orthogonality()       → validates VSA role vectors
+;   verify_vsa_math()                 - startup math verification
+;
+; VERIFICATION MODES:
+;   Abstract: stack balance, callee-saved regs, valid jumps, no syscall
+;   Geometric: code → vector → dot(code, safe_template) > threshold
+;
+; SNAPSHOT FOR ROLLBACK:
+;   snapshot_buf[4096]: backup of code before modification
+;   If verify fails, restore original bytes
+;
+; CALLED BY: emit.asm, modify.asm, evolve.asm (before committing changes)
 ;
 %include "syscalls.inc"
 %include "constants.inc"

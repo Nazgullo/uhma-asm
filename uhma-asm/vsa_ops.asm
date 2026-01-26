@@ -1,15 +1,35 @@
-; vsa_ops.asm — The Rosetta Stone: Code Becomes Math
+; vsa_ops.asm — Code-to-Vector: geometric safety via high-dim embeddings
 ;
-; This module implements the Unified Field Theory:
-;   Code → Vector → Interference → Emergence
+; ENTRY POINTS:
+;   init_safety_vectors()             - build safety/danger template vectors
+;   opcode_to_hash(opcode)            → eax=deterministic hash for opcode
+;   opcode_to_vector(opcode, out_vec) - write 1024-dim f64 vector for opcode
+;   classify_opcode_vec(opcode)       → category + safety weight
+;   encode_code_to_vector(ptr, len, out) - encode code block to vector
+;   check_code_safety(vec)            → xmm0=dot(vec, safety_template)
+;   check_code_danger(vec)            → xmm0=dot(vec, danger_template)
+;   code_vectors_similar(v1, v2)      → xmm0=cosine similarity
+;   get_safety_template()             → rax=ptr to safety template
+;   get_danger_template()             → rax=ptr to danger template
+;   encode_region_to_vector(hdr, out) - encode full region to vector
+;   verify_code_geometric(ptr, len)   → eax=1 if geometrically safe
 ;
-; Every x86 instruction becomes a 1024-dim f64 vector.
-; Safety checking becomes geometric: DotProduct(Code, Safe) > 0
-; Learning becomes superposition: CodeTrace += Code
-; Communication becomes projection: SharedVector ⊗ LocalContext
+; PHILOSOPHY ("One Math"):
+;   Every x86 instruction → 1024-dim f64 vector
+;   Safety = DotProduct(Code, SafeTemplate) > threshold
+;   Learning = superposition (CodeTrace += Code)
+;   No if-statements for safety, just linear algebra
 ;
-; "One Math" — No more if statements for safety, just Linear Algebra.
-
+; OPCODE CATEGORIES:
+;   Data movement (1.0), arithmetic (0.8), logic (0.8), comparison (0.6)
+;   Control flow (0.4), memory (0.5), system (-1.0 = dangerous)
+;
+; TEMPLATES:
+;   safety_template[1024]: high values in safe dimensions
+;   danger_template[1024]: high values for syscall/interrupt/privileged
+;
+; CALLED BY: verify.asm (verify_geometric_gate), vsa.asm (learning)
+;
 %include "syscalls.inc"
 %include "constants.inc"
 %include "vsa_ops.inc"

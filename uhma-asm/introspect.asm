@@ -1,6 +1,31 @@
-; introspect.asm — Self-reading: decode own regions, extract semantic meaning
-; This is the homoiconic core: code reads itself as data, understands what it does.
-; x86 instructions ARE the primitives — mov, cmp, je are atoms like car, cdr, cons.
+; introspect.asm — Self-reading and organic regulation (homoiconic core)
+;
+; ENTRY POINTS:
+;   introspect_region(hdr)            → decode region, extract ctx/token/semantics
+;   introspect_scan_regions()         - scan all regions, update statistics
+;   update_anticipatory(token, conf)  - build anticipation for upcoming tokens
+;   decay_anticipatory()              - fade anticipation each step
+;   update_organic_pressure()         - manage dream/observe/evolve triggers
+;   update_oscillation()              - detect flatness, perturb if needed
+;   update_presence_dispatch()        - run presence regions for hormonal control
+;   metacog_report()                  - detailed metacognitive status dump
+;   absorb_code(ptr, len)             - learn from arbitrary code bytes
+;   tick_workers()                    - main per-step regulation entry point
+;   release_pheromone(type, val)      - signal state to collective (if shared)
+;
+; SEMANTIC SIGNATURES:
+;   SEM_CMP_JE    - simple cmp-je-ret pattern
+;   SEM_CHAIN     - cmp chain with multiple exits
+;   SEM_SCHEMA    - masked context matcher
+;   SEM_RELAY     - call to subroutine
+;
+; ORGANIC PRESSURE SYSTEM:
+;   dream_pressure:  misses accumulate → dream_cycle() when > 1.0
+;   observe_pressure: accuracy variance → observe_cycle() when > 1.0
+;   evolve_pressure: stagnation → evolve_cycle() when > 1.0
+;
+; CALLED BY: dispatch.asm (after each token), repl.asm (tick command)
+;
 %include "syscalls.inc"
 %include "constants.inc"
 

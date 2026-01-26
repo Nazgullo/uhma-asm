@@ -1,18 +1,30 @@
-; maturity.asm — Developmental stage gating and mastery tracking
-; The system earns capabilities through demonstrated stability.
+; maturity.asm — Developmental stage gating: earn capabilities through stability
 ;
-; Stage 0 (Infant): Internal operations only
-;   - Surface memory (the body) - mmap, madvise, disk-backed holo
-;   - Timestamps, random - internal sensing
-;   - REPL I/O - umbilical cord (supervised interaction)
+; ENTRY POINTS:
+;   maturity_init()                   - set Stage 0, init mastery tracking
+;   maturity_update(accuracy, stability, coherence) - update EMA metrics
+;   maturity_check_advance()          - check if ready to advance stage
+;   gate_syscall(syscall_num)         → eax=1(allowed)/0(blocked) for stage
+;   gate_fd_write(fd)                 → eax=1 if write allowed
+;   gate_fd_read(fd)                  → eax=1 if read allowed
+;   get_maturity_level()              → eax=current stage (0-2)
+;   get_mastery_metrics()             → pointer to metrics struct
 ;
-; Stage 1 (Aware): + Read-only external perception
-;   - Can read /proc/self, external files
-;   - Still no external effects
+; STAGES:
+;   Stage 0 (Infant): Internal only - surface, timestamps, REPL I/O
+;   Stage 1 (Aware):  + read external files (/proc/self, data files)
+;   Stage 2 (Active): + write files, spawn processes (with checks)
 ;
-; Stage 2 (Active): + Motor output
-;   - Can write external files
-;   - Can spawn processes (with safety checks)
+; ADVANCEMENT CRITERIA (must sustain for thresh_window steps):
+;   accuracy  >= 75% prediction hit rate
+;   stability >= 80% metabolic stability
+;   coherence >= 70% graph-holo agreement
+;
+; MASTERY TRACKING:
+;   Uses EMA (alpha=0.01) for rolling averages
+;   mastery_window_count, mastery_above_thresh counters
+;
+; CALLED BY: io.asm (gate_fd_*), repl.asm (status), dispatch.asm (periodic)
 ;
 %include "syscalls.inc"
 %include "constants.inc"

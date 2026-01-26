@@ -1,4 +1,30 @@
-; persist.asm — Save/restore the entire surface to/from file
+; persist.asm — Save/restore surface state to/from file
+;
+; ENTRY POINTS:
+;   persist_save(filename)            - save surface to file
+;   persist_load(filename)            - restore surface from file
+;   gene_export(filename)             - export gene pool to portable format
+;   gene_import(filename)             - import gene pool from file
+;   gene_auto_export()                - periodic auto-save of genes
+;   gene_scan_library(dir_path)       - scan directory for importable genes
+;
+; FILE FORMAT (persist_save/load):
+;   [0-7]   magic "UHMA" + padding
+;   [8-15]  version (currently 2)
+;   [16+]   state block
+;   [+]     region table
+;   [+]     dispatch region (bootstrap to alloc_ptr)
+;   [+]     holographic arena (vocab, traces)
+;
+; GENE EXPORT FORMAT:
+;   Portable JSON-like format for sharing learned patterns
+;   Contains: ctx_hash, token_id, fitness, optional metadata
+;
+; HOOKS FIRED:
+;   HOOK_SAVE before save, HOOK_LOAD after successful load
+;
+; CALLED BY: repl.asm (save/load commands), boot.asm (auto-restore)
+;
 %include "syscalls.inc"
 %include "constants.inc"
 

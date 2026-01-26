@@ -1,13 +1,29 @@
-; symbolic.asm — Symbolic observation and minimal crash prevention
+; symbolic.asm — Symbolic observation: log modifications, block only crashes
 ;
-; Philosophy: OBSERVE, don't constrain. Only prevent guaranteed crashes.
-; Let the system discover solutions we wouldn't think of.
+; ENTRY POINTS:
+;   sym_init()                        - init observation system
+;   sym_check_write(addr, size)       → eax=1(allowed)/0(blocked unmapped)
+;   sym_observe_mod(addr, size, type) - log modification to circular buffer
+;   sym_record_anomaly(addr, desc)    - record unusual-but-working pattern
+;   sym_record_discovery(addr, hash, steps) - log "shouldn't work" pattern
+;   sym_get_stats()                   → ptr to stats struct
+;   sym_hash_pattern(addr, len)       → eax=pattern hash
+;   sym_analyze_region(hdr)           - full symbolic analysis of region
+;   sym_is_anomalous(addr)            → eax=1 if addr is known anomaly
+;   sym_scan_for_discoveries()        - find patterns that survived unexpectedly
 ;
-; This module:
-; 1. Records symbolic state of all modifications
-; 2. Only blocks writes to unmapped/critical memory
-; 3. Logs everything for post-hoc analysis of emergence
-; 4. Tracks "anomalous" patterns that work despite looking wrong
+; PHILOSOPHY:
+;   OBSERVE, don't constrain. Only block writes to unmapped/critical memory.
+;   Log everything for post-hoc analysis of emergence.
+;   Track "anomalous" patterns that work despite looking wrong.
+;
+; LOG BUFFERS:
+;   sym_log_buf[256]: circular buffer of modifications (32B each)
+;   disc_log_buf[64]: patterns that "shouldn't work" but do
+;
+; STATS: sym_mod_count, sym_blocked_count, sym_anomaly_count
+;
+; CALLED BY: emit.asm, modify.asm, evolve.asm (before any code change)
 ;
 %include "syscalls.inc"
 %include "constants.inc"

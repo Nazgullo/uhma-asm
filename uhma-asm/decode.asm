@@ -1,6 +1,24 @@
-; decode.asm — x86 instruction decoder for self-reading and Logic Probe
-; Provides both simple length decoding and full semantic analysis for
-; the abstract interpreter (verify.asm)
+; decode.asm — x86 instruction decoder for self-reading and verification
+;
+; ENTRY POINTS:
+;   decode_instruction_length(ptr)        → eax=length in bytes
+;   decode_instruction_full(ptr, out_buf) → fills DecodedInstr struct
+;   decode_region_instructions(hdr, out)  → decode all instrs in region
+;   count_region_instructions(hdr)        → eax=instruction count
+;   classify_opcode(opcode)               → eax=OpClass enum
+;
+; DATA FLOW:
+;   Raw bytes → REX detection → opcode dispatch → ModR/M → SIB → displ → imm
+;   Output: length, opcode class, registers used, memory access info
+;
+; OPCODE CLASSES (used by verify.asm):
+;   OP_CMP, OP_JCC, OP_MOV, OP_CALL, OP_RET, OP_SYSCALL, OP_PUSH, OP_POP, etc.
+;
+; CALLED BY:
+;   verify.asm:  verify_modification() for abstract interpretation
+;   introspect.asm: introspect_region() for semantic analysis
+;   factor.asm: suffix length detection
+;
 %include "syscalls.inc"
 %include "constants.inc"
 

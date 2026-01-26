@@ -1,4 +1,24 @@
-; drives.asm — Drive system: thresholds, actions, homeostatic loops
+; drives.asm — Homeostatic drive system: thresholds, goals, actions
+;
+; ENTRY POINTS:
+;   drives_check()               - check all drives vs thresholds, trigger actions
+;   drives_show()                - display current drive levels and thresholds
+;   drives_set_threshold(id,val) - set threshold for drive id
+;
+; DRIVES (f32 values in ST_DRIVES[]):
+;   [0] Accuracy   - prediction hit rate, triggers exploration when low
+;   [1] Efficiency - resource usage, triggers pruning when low
+;   [2] Novelty    - pattern diversity, triggers context rotation when low
+;   [3] Coherence  - graph/holo agreement, triggers alignment when low
+;
+; ACTIONS:
+;   Accuracy low  → set GOAL_EXPLORATION, increase exploration
+;   Efficiency low → set GOAL_EFFICIENCY, call region_compact()
+;   Novelty low   → set GOAL_NOVELTY, rotate context
+;   Coherence low → set GOAL_COHERENCE, call modify_restructure()
+;
+; CALLED BY: introspect.asm (update_organic_pressure), repl.asm (periodic)
+;
 %include "syscalls.inc"
 %include "constants.inc"
 

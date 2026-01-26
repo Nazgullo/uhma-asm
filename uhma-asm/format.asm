@@ -1,4 +1,26 @@
 ; format.asm — Output formatting: integers, floats, hex, strings
+;
+; ENTRY POINTS:
+;   print_str(ptr, len)     - write raw bytes to stdout
+;   print_cstr(ptr)         - write null-terminated string to stdout
+;   print_u64(val)          - print u64 as decimal
+;   print_i64(val)          - print i64 as signed decimal
+;   print_hex64(val)        - print 16-digit hex (0-padded)
+;   print_hex32(val)        - print 8-digit hex (0-padded)
+;   print_f32(val)          - print f32 with 3 decimal places
+;   print_f64(val)          - print f64 with 6 decimal places
+;   print_newline()         - write '\n' to stdout
+;   print_space()           - write ' ' to stdout
+;
+; IMPLEMENTATION:
+;   Uses 128-byte scratch buffer (fmt_buf) for conversions
+;   Decimal: divide-by-10 loop, reverse digits
+;   Hex: nibble extraction with lookup table
+;   Float: integer part + decimal part conversion
+;
+; CALLED BY: nearly every module for debug/status output
+; NO EXTERNAL CALLS (self-contained, uses SYS_WRITE directly)
+;
 %include "syscalls.inc"
 %include "constants.inc"
 

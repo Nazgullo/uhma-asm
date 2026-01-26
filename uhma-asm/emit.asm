@@ -1,4 +1,28 @@
-; emit.asm — Code emission primitives: write x86 instructions to surface
+; emit.asm — Code emission: write x86 dispatch patterns to surface
+;
+; ENTRY POINTS:
+;   emit_dispatch_pattern(ctx_hash, token, birth_step) → rax=region_ptr
+;   emit_resonant_pattern(ctx_hash, token, birth_step) → holo-enhanced pattern
+;   emit_call_rel32(dest, target)  - write CALL rel32 at dest
+;   emit_nop_sled(dest, len)       - write NOP padding
+;   emit_ret(dest), emit_int3(dest) - single-byte instructions
+;   emit_cmp_eax_imm32, emit_jne_rel8, emit_mov_eax_imm32, emit_xor_eax_eax
+;
+; EMITTED PATTERN STRUCTURE (23 bytes):
+;   cmp eax, <ctx_hash>    ; 5B - check context match
+;   jne .skip              ; 2B - skip if no match
+;   inc [header+0]         ; 7B - increment hit counter
+;   mov eax, <token>       ; 5B - return predicted token
+;   ret                    ; 1B
+;   .skip: xor eax,eax     ; 2B - no prediction
+;   ret                    ; 1B
+;
+; CALLS OUT TO:
+;   surface.asm: region_alloc(), wire_new_region()
+;   verify.asm:  verify_modification()
+;   receipt.asm: emit_receipt_full()
+;   vsa.asm:     holo_gen_vec(), holo_superpose_f64()
+;
 %include "syscalls.inc"
 %include "constants.inc"
 

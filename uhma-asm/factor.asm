@@ -1,13 +1,28 @@
-; factor.asm — Recursive Schema Hierarchy: Subroutine extraction and factoring
+; factor.asm — Subroutine extraction: find common suffixes, create shared code
 ;
-; This module enables code reuse through suffix factoring:
-; - Scans regions for common code endings
-; - Extracts shared suffixes into callable RTYPE_SUBROUTINE regions
-; - Rewrites callers to CALL the subroutine instead of duplicating code
+; ENTRY POINTS:
+;   factor_init()                       - init subroutine table
+;   factor_suffix()                     - main: scan regions, extract shared suffixes
+;   find_common_suffix(r1, r2)          → eax=common suffix length
+;   emit_subroutine(code_ptr, len)      → rax=new RTYPE_SUBROUTINE region
+;   rewrite_to_call(region, sub_addr)   - replace suffix with CALL
+;   verify_valid_call(addr)             → eax=1 if addr points to valid sub
+;   subroutines_show()                  - list all extracted subroutines
+;   garbage_collect_subroutines()       - remove subroutines with 0 callers
 ;
-; The system becomes hierarchical: regions can CALL other regions,
-; enabling abstraction and knowledge organization.
-
+; ALGORITHM (O(n) hash-based grouping):
+;   1. Hash last 8 bytes of each region's code
+;   2. Group regions by hash into suffix_registry
+;   3. For each group with 2+ members, verify byte equality
+;   4. Extract matching suffix as RTYPE_SUBROUTINE
+;   5. Rewrite original regions to CALL the subroutine
+;
+; DATA STRUCTURES:
+;   subroutine_table[64]:  16B each (addr, len, caller_count, code_hash)
+;   suffix_registry[]:     hash + region_ptr pairs for O(1) grouping
+;
+; CALLED BY: dreams.asm (consolidation phase), repl.asm (factor command)
+;
 %include "syscalls.inc"
 %include "constants.inc"
 

@@ -1,4 +1,29 @@
-; evolve.asm — Evolution: reproduce, mutate, crossover regions
+; evolve.asm — Genetic evolution: reproduce, mutate, crossover regions
+;
+; ENTRY POINTS:
+;   evolve_cycle()                    - full evolution pass (select → reproduce → mutate)
+;   evolve_reproduce(region_idx)      - copy region with small mutation
+;   evolve_mutate(region_idx)         - apply random mutation to region
+;   evolve_crossover(idx1, idx2)      - combine two parent regions
+;   evolve_from_gene_pool()           - resurrect patterns from gene pool
+;
+; SELECTION:
+;   Fitness = hits / (hits + misses) - regions sorted by fitness
+;   Top EVOLVE_POOL_SIZE regions selected for reproduction
+;
+; MUTATION TYPES:
+;   - Context hash bit flip (broaden/narrow matching)
+;   - Token substitution (predict different outcome)
+;   - Structure modification (via gate_test_modification)
+;
+; CALLS OUT TO:
+;   genes.asm:   gene_pool_sample() for resurrection
+;   emit.asm:    emit_dispatch_pattern() for new offspring
+;   gate.asm:    gate_test_modification() to validate mutations
+;   hooks.asm:   fire_hook(HOOK_EVOLVE)
+;
+; CALLED BY: introspect.asm (update_organic_pressure when stagnation detected)
+;
 %include "syscalls.inc"
 %include "constants.inc"
 

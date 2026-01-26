@@ -1,4 +1,27 @@
-; gate.asm — Predictive gating: test modifications before committing
+; gate.asm — Predictive gating: test modifications in sandbox before commit
+;
+; ENTRY POINTS:
+;   gate_test_modification(region_ptr, mod_type, arg) → eax=1(pass)/0(fail)
+;   gate_check_region(region_ptr)                     → eax=1(valid)/0(invalid)
+;
+; PROCESS:
+;   1. Copy region to ST_NURSERY buffer (sandbox)
+;   2. Apply proposed modification to sandbox copy
+;   3. Run test cases against sandbox
+;   4. Compare accuracy/behavior before vs after
+;   5. Return pass/fail without touching original
+;
+; MODIFICATION TYPES:
+;   MOD_MUTATE, MOD_SPECIALIZE, MOD_GENERALIZE, MOD_CROSSOVER
+;
+; KEY CONSTRAINT:
+;   Region + header must fit in ST_NURSERY_SIZE (4KB default)
+;   Oversized regions automatically fail
+;
+; CALLED BY:
+;   evolve.asm: evolve_mutate(), evolve_crossover()
+;   modify.asm: modify_specialize(), modify_generalize()
+;
 %include "syscalls.inc"
 %include "constants.inc"
 

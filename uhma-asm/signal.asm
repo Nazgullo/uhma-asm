@@ -1,4 +1,32 @@
-; signal.asm — SIGSEGV/SIGFPE/SIGBUS fault handler for isolation
+; signal.asm — Fault handling: SIGSEGV/SIGFPE/SIGBUS recovery to REPL
+;
+; ENTRY POINTS:
+;   install_fault_handlers()          - register signal handlers
+;   fault_return_stub()               - internal: longjmp back to REPL
+;   get_fault_count()                 → rax=total faults caught
+;   bp_init()                         - init breakpoint system
+;   bp_find_by_addr(addr)             → rax=bp_entry or 0
+;   bp_inject(addr, handler)          - install INT3 breakpoint
+;   bp_remove(addr)                   - remove breakpoint, restore byte
+;   bp_inject_struggling(region_ptr)  - add bp to struggling region
+;   bp_has_breakpoints()              → eax=1 if any active breakpoints
+;
+; FAULT RECOVERY:
+;   Handler saves fault info, increments fault_count
+;   If fault_safe_rsp/rip set, longjmp back to REPL loop
+;   Max 3 consecutive faults before forced return (prevents infinite loop)
+;
+; BREAKPOINT SYSTEM:
+;   Replaces byte with INT3 (0xCC), saves original
+;   On SIGTRAP: lookup bp_entry, call handler, restore, single-step, re-inject
+;   Used for learning from struggling regions
+;
+; CRITICAL STATE:
+;   fault_safe_rsp, fault_safe_rip - saved before calling untrusted code
+;   Must be saved in digest_file loop, restored after fault
+;
+; CALLED BY: boot.asm (install), dispatch.asm/io.asm (set safe points)
+;
 %include "syscalls.inc"
 %include "constants.inc"
 

@@ -1,7 +1,30 @@
-; presence.asm — Hormonal Modulator System (Presence Hyper-Regions)
-; Creates regions that check state configurations and trigger system-wide changes.
-; These are "emotional reflexes" that evolve to manage system parameters.
-; The Presence system becomes the steering wheel, not just a dashboard.
+; presence.asm — Hormonal modulator: presence regions for emotional reflexes
+;
+; ENTRY POINTS:
+;   presence_init()                   - create hardwired reflex regions
+;   trigger_presence_regions()        - evaluate all presence regions
+;   presence_regions_show()           - display active presence regions
+;
+; PRESENCE REGIONS (emitted at init):
+;   PANIC_MODE:       high entropy + low energy → force fast/prune
+;   CONTEMPLATIVE:    low entropy + high energy → slow down, consolidate
+;   FATIGUE_RESPONSE: high fatigue → reduce activity, trigger dreams
+;   VIGOR_BOOST:      high energy + low fatigue → increase exploration
+;   CRISIS_INTERVENTION: very low accuracy → emergency restructure
+;   STABILITY_RESTORED: all metrics good → normal operation
+;
+; STATE THRESHOLDS:
+;   high_entropy_thresh (0.8), low_entropy_thresh (0.3)
+;   low_energy_thresh (20.0), high_energy_thresh (80.0)
+;   high_arousal_thresh (0.7), low_arousal_thresh (0.3)
+;   high_fatigue_thresh (0.7), low_accuracy_thresh (0.3)
+;
+; PHILOSOPHY:
+;   Presence regions are "emotional reflexes" - they check somatic state
+;   and trigger system-wide parameter changes. The system steers itself.
+;
+; CALLED BY: introspect.asm (update_presence_dispatch), surface.asm (init)
+;
 %include "syscalls.inc"
 %include "constants.inc"
 

@@ -1,4 +1,28 @@
-; hooks.asm — Hook table management, fire_hook
+; hooks.asm — Event hook system: register callbacks, fire events
+;
+; ENTRY POINTS:
+;   fire_hook(hook_id, arg)           - call all handlers for hook_id with arg
+;   hook_register(hook_id, fn_ptr)    → eax=slot index or -1 if full
+;   hook_unregister(hook_id, fn_ptr)  - remove handler from hook
+;   hook_clear(hook_id)               - remove all handlers from hook
+;   hook_get_count(hook_id)           → eax=number of registered handlers
+;
+; HOOK IDs (0 to NUM_HOOKS-1):
+;   HOOK_TOKEN_IN, HOOK_PREDICT, HOOK_HIT, HOOK_MISS, HOOK_LEARN,
+;   HOOK_EMIT, HOOK_PRUNE, HOOK_EVOLVE, HOOK_DREAM, HOOK_OBSERVE,
+;   HOOK_SAVE, HOOK_LOAD, HOOK_FAULT, etc.
+;
+; STORAGE (in ST_HOOKS[]):
+;   Each hook: HOOK_ENTRY_SIZE bytes
+;     [0-1]  handler_count: u16
+;     [2-7]  padding
+;     [8+]   handler_ptrs: array of function pointers
+;
+; HANDLER SIGNATURE: fn(hook_id: edi, arg: esi)
+; Handlers are called in registration order. fire_hook is safe to call even if empty.
+;
+; CALLED BY: nearly every module fires hooks at key events
+;
 %include "syscalls.inc"
 %include "constants.inc"
 
