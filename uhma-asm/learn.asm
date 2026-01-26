@@ -50,6 +50,7 @@ extern vsa_gen_valence_vec
 extern holo_superpose_f64
 extern holo_gen_vec
 extern emit_receipt_simple
+extern receipt_resonate
 
 ;; ============================================================
 ;; learn_pattern(ctx_hash, token_id, energy_delta)
@@ -114,6 +115,19 @@ learn_pattern:
     ; Register token in vocabulary
     mov edi, r13d
     call vocab_register
+
+    ; --- RESONANCE QUERY: Should we learn this pattern? ---
+    ; Query past LEARN events for similar ctx+token combinations
+    ; High similarity suggests we've tried this before
+    mov edi, EVENT_LEARN
+    mov esi, r12d             ; ctx_hash
+    mov edx, r13d             ; token_id
+    call receipt_resonate     ; → xmm0 = similarity to past LEARNs
+    ; If very high similarity (>0.8), we've likely learned this recently
+    mov rax, 0x3FE999999999999A  ; 0.8 f64
+    movq xmm1, rax
+    ucomisd xmm0, xmm1
+    ja .already_exists        ; skip if too similar to recent learn
 
     ; Check if this exact pattern already exists
     mov edi, r12d
@@ -662,6 +676,37 @@ learn_connections:
     ; Δw = LEARNING_RATE * exp(-x)
     mulsd xmm4, [rel learn_rate]
     ; xmm4 = Δw
+
+    ; --- RESONANCE MODULATION: Scale Δw by historical success ---
+    ; If past HITs occurred with similar firing patterns, boost learning
+    ; This makes the system learn faster from proven temporal patterns
+    push r14
+    push r15
+    sub rsp, 16
+    movsd [rsp], xmm4             ; save Δw on stack
+    ; Get context from current region (r12 = firing region)
+    cmp byte [r12 + RHDR_SIZE], 0x3D
+    jne .stdp_skip_resonate
+    mov edi, EVENT_HIT
+    mov esi, [r12 + RHDR_SIZE + 1]  ; ctx_hash from region
+    xor edx, edx
+    call receipt_resonate           ; → xmm0 = similarity to past HITs
+    ; Modulate: Δw *= (1 + 0.5 * hit_similarity)
+    mov rax, 0x3FE0000000000000     ; 0.5 f64
+    movq xmm1, rax
+    mulsd xmm0, xmm1               ; 0.5 * similarity
+    mov rax, 0x3FF0000000000000    ; 1.0 f64
+    movq xmm1, rax
+    addsd xmm0, xmm1               ; 1 + 0.5 * similarity
+    movsd xmm4, [rsp]             ; restore Δw
+    mulsd xmm4, xmm0               ; Δw *= modulator
+    jmp .stdp_resonate_done
+.stdp_skip_resonate:
+    movsd xmm4, [rsp]             ; restore Δw
+.stdp_resonate_done:
+    add rsp, 16
+    pop r15
+    pop r14
 
     ; --- Strengthen: prev should excite current ---
     ; Check prev.excite_a

@@ -575,8 +575,9 @@ receipt_init:
     mov rax, SURFACE_BASE
     mov dword [rax + STATE_OFFSET + ST_RECEIPT_WORK_POS], 0
     mov qword [rax + STATE_OFFSET + ST_RECEIPT_TOTAL], 0
-    ; Enable holographic storage by default (the whole point!)
-    mov dword [rax + STATE_OFFSET + ST_RECEIPT_LISTENER], LISTENER_HOLO
+    ; Enable holographic storage, working buffer, AND print for observability
+    ; This is the communication backbone - everything flows through receipts
+    mov dword [rax + STATE_OFFSET + ST_RECEIPT_LISTENER], LISTENER_HOLO | LISTENER_WORKING | LISTENER_PRINT
     ret
 
 ;; ============================================================

@@ -33,6 +33,8 @@ extern bp_inject_struggling
 extern gene_extract
 extern factor_suffix           ; from factor.asm - detect and extract shared subroutines
 extern trigger_presence_regions ; from presence.asm - hormonal modulator system
+extern receipt_resonate         ; resonance query for decision-making
+extern emit_receipt_simple      ; emit receipts for major events
 
 ;; ============================================================
 ;; observe_cycle
@@ -146,6 +148,44 @@ observe_cycle:
     comiss xmm0, xmm1
     ja .check_promote          ; accuracy > 0.1, don't prune
 
+    ; --- RESONANCE QUERY: Have we regretted pruning similar patterns? ---
+    ; Check if past PRUNE events for similar contexts led to later MISSes
+    push rsi
+    sub rsp, 16
+    movss [rsp], xmm0               ; save accuracy on stack
+    ; Get context from region
+    cmp byte [rsi + RHDR_SIZE], 0x3D
+    jne .prune_no_resonate
+    mov edi, EVENT_PRUNE
+    mov esi, [rsi + RHDR_SIZE + 1]  ; ctx_hash
+    xor edx, edx
+    call receipt_resonate           ; → xmm0 = similarity to past PRUNEs
+    ; If high similarity to past prunes (>0.7), and we had MISSes after, be cautious
+    mov rax, 0x3FE6666666666666     ; 0.7 f64
+    movq xmm1, rax
+    ucomisd xmm0, xmm1
+    jbe .prune_no_resonate
+    ; High similarity to past prunes - query for subsequent MISSes
+    mov edi, EVENT_MISS
+    mov rsi, [rsp + 16]             ; restore rsi (region header) from stack
+    mov esi, [rsi + RHDR_SIZE + 1]  ; ctx_hash again
+    xor edx, edx
+    call receipt_resonate           ; → xmm0 = similarity to MISSes
+    ; If high MISS similarity too, skip this prune (we've regretted before)
+    mov rax, 0x3FE0000000000000     ; 0.5 f64
+    movq xmm1, rax
+    ucomisd xmm0, xmm1
+    jbe .prune_no_resonate
+    ; Skip prune - give this pattern more time
+    movss xmm0, [rsp]               ; restore accuracy
+    add rsp, 16
+    pop rsi
+    jmp .check_promote
+.prune_no_resonate:
+    movss xmm0, [rsp]               ; restore accuracy
+    add rsp, 16
+    pop rsi
+
     ; CONDEMN this region — extract genes first (composting)
     mov rdi, rsi              ; header ptr
     push rsi
@@ -155,8 +195,28 @@ observe_cycle:
     mov rdi, rsi
     call log_causal           ; record causal link
     pop rsi
+    push rsi
     mov rdi, rsi
     call region_condemn       ; mark for removal
+    pop rsi
+
+    ; === EMIT RECEIPT: EVENT_PRUNE ===
+    ; Record this pruning decision for future resonance queries
+    cmp byte [rsi + RHDR_SIZE], 0x3D
+    jne .prune_no_receipt
+    ; Extract ctx_hash and token_id before calling
+    mov eax, [rsi + RHDR_SIZE + 1]  ; ctx_hash
+    xor edx, edx                    ; default token = 0
+    cmp byte [rsi + RHDR_SIZE + 7], 0xB8
+    jne .prune_emit
+    mov edx, [rsi + RHDR_SIZE + 8]  ; token_id
+.prune_emit:
+    mov edi, EVENT_PRUNE      ; event_type
+    mov esi, eax              ; ctx_hash
+    xorps xmm0, xmm0          ; confidence = 0
+    call emit_receipt_simple
+.prune_no_receipt:
+
     inc r15d
     jmp .next_region
 
@@ -170,9 +230,51 @@ observe_cycle:
     cvtsi2ss xmm0, eax
     cvtsi2ss xmm1, edx
     divss xmm0, xmm1
+    movss [rsp + 8 + 16], xmm0  ; save accuracy for later
 
-    mov eax, PROMOTE_ACCURACY ; 0.8f
+    ; --- RESONANCE QUERY: Have similar patterns been successfully promoted? ---
+    ; If past PROMOTE events led to HITs, lower the threshold
+    push rsi
+    sub rsp, 8
+    cmp byte [rsi + RHDR_SIZE], 0x3D
+    jne .promote_use_default
+    mov edi, EVENT_PROMOTE
+    mov esi, [rsi + RHDR_SIZE + 1]  ; ctx_hash
+    xor edx, edx
+    call receipt_resonate           ; → xmm0 = similarity to past PROMOTEs
+    ; If high similarity (>0.5), query if those led to HITs
+    mov rax, 0x3FE0000000000000     ; 0.5 f64
+    movq xmm1, rax
+    ucomisd xmm0, xmm1
+    jbe .promote_use_default
+    ; Check for subsequent HITs
+    add rsp, 8
+    pop rsi
+    push rsi
+    sub rsp, 8
+    mov edi, EVENT_HIT
+    mov esi, [rsi + RHDR_SIZE + 1]
+    xor edx, edx
+    call receipt_resonate           ; → xmm0 = HIT similarity
+    ; If high HIT similarity, lower threshold by 0.1 (0.8 → 0.7)
+    mov rax, 0x3FE0000000000000     ; 0.5 f64
+    movq xmm1, rax
+    ucomisd xmm0, xmm1
+    jbe .promote_use_default
+    ; Use lowered threshold (0.7 instead of 0.8)
+    add rsp, 8
+    pop rsi
+    movss xmm0, [rsp + 8 + 16]      ; restore accuracy
+    mov eax, 0x3F333333             ; 0.7f (lowered threshold)
     movd xmm1, eax
+    jmp .promote_compare
+.promote_use_default:
+    add rsp, 8
+    pop rsi
+    movss xmm0, [rsp + 8 + 16]      ; restore accuracy
+    mov eax, PROMOTE_ACCURACY       ; 0.8f
+    movd xmm1, eax
+.promote_compare:
     comiss xmm0, xmm1
     jb .check_struggling
 

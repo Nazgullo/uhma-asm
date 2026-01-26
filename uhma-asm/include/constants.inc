@@ -214,6 +214,7 @@
 %define RTYPE_PRESENCE      10  ; Hormonal modulator (checks state, modifies system params)
 %define RTYPE_WORKER        11  ; Specialized hive worker caste (responds to pheromone signals)
 %define RTYPE_INGESTED      12  ; High-value schema learned from ingested code (structural absorption)
+%define RTYPE_SCHEMA        13  ; Structural schema with variable binding (Phase 3)
 
 ;; ============================================================
 ;; Mycorrhiza: Shared Consciousness Between Instances
@@ -964,6 +965,11 @@
 %define RCPT_TRACE_COMBINED 245   ; combined trace (all events superposed)
 %define RCPT_TRACE_COUNT    6     ; number of receipt traces
 
+;; Holographic Suffix Factoring — O(1) suffix similarity via resonance
+%define SUFFIX_TRACE_IDX    246   ; trace index for suffix resonance
+%define SUFFIX_HASH_LEN     8     ; bytes of suffix to hash for encoding
+%define SUFFIX_MATCH_THRESH 0.7   ; dot product threshold for "same suffix"
+
 ;; ============================================================
 ;; Gene Pool State (composting via genetic recombination)
 ;; ============================================================
@@ -1049,6 +1055,67 @@
 
 ; End of structural context section
 %define ST_STRUCT_END       (ST_STRUCT_CTX_STEP + 8)
+
+;; ============================================================
+;; Schema Table (Phase 3: Parameterized Patterns)
+;;
+;; Schemas are structural templates with variable slots.
+;; When a schema fires:
+;;   1. Match: dot(struct_ctx, schema_template) > threshold
+;;   2. Extract: filler = unbind(struct_ctx, ROLE_POS_var_slot)
+;;   3. Predict: based on extracted fillers and schema rule
+;;
+;; Example: "When ROLE_0=noun and ROLE_1=verb, predict based on noun"
+;; Template: bind(ROLE_0, NOUN_PATTERN) + bind(ROLE_1, VERB_PATTERN)
+;; Variable: ROLE_2 (extracted and used for prediction)
+;; ============================================================
+
+; Schema table location (in scratch/meta area)
+%define SCHEMA_TABLE_OFFSET     (SCRATCH_OFFSET + 0x800000)  ; 8MB into scratch
+%define SCHEMA_MAX              64                            ; max schemas
+%define SCHEMA_ENTRY_SIZE       (HOLO_VEC_BYTES + 64)        ; template vec + metadata
+
+; Schema entry structure:
+; +0:         template_vec (8192 bytes) - the structural pattern
+; +8192:      var_mask (u8) - which positions are variables (bit i = ROLE_POS_i is var)
+; +8193:      predict_role (u8) - which role position to predict
+; +8194:      condition_role (u8) - role to match against for prediction
+; +8195:      flags (u8) - schema flags
+; +8196:      match_thresh (f32) - similarity threshold for matching
+; +8200:      predict_token_base (u32) - base token for prediction
+; +8204:      hits (u32) - successful schema predictions
+; +8208:      misses (u32) - failed schema predictions
+; +8212:      birth_step (u32) - when schema was created
+; +8216:      last_fire_step (u32) - when schema last matched
+; +8220:      ctx_hash_pattern (u32) - optional hash pattern for fast filtering
+; +8224:      reserved (32 bytes padding to 64 byte metadata)
+
+%define SCHE_TEMPLATE       0                             ; template vector start
+%define SCHE_META           HOLO_VEC_BYTES                ; metadata offset (8192)
+%define SCHE_VAR_MASK       (SCHE_META + 0)               ; u8 variable position mask
+%define SCHE_PREDICT_ROLE   (SCHE_META + 1)               ; u8 role to predict
+%define SCHE_CONDITION_ROLE (SCHE_META + 2)               ; u8 role for condition
+%define SCHE_FLAGS          (SCHE_META + 3)               ; u8 flags
+%define SCHE_MATCH_THRESH   (SCHE_META + 4)               ; f32 match threshold
+%define SCHE_PRED_TOKEN     (SCHE_META + 8)               ; u32 base prediction token
+%define SCHE_HITS           (SCHE_META + 12)              ; u32 hit count
+%define SCHE_MISSES         (SCHE_META + 16)              ; u32 miss count
+%define SCHE_BIRTH          (SCHE_META + 20)              ; u32 creation step
+%define SCHE_LAST_FIRE      (SCHE_META + 24)              ; u32 last match step
+%define SCHE_CTX_PATTERN    (SCHE_META + 28)              ; u32 hash pattern
+%define SCHE_RESERVED       (SCHE_META + 32)              ; 32 bytes padding
+
+; Schema flags
+%define SCHEF_ACTIVE        0x01                          ; schema is active
+%define SCHEF_FROZEN        0x02                          ; don't modify
+%define SCHEF_LEARNED       0x04                          ; learned from data (vs. bootstrap)
+%define SCHEF_PROVEN        0x08                          ; high accuracy confirmed
+
+; Schema state tracking
+%define ST_SCHEMA_COUNT     ST_STRUCT_END                 ; u32 active schemas
+%define ST_SCHEMA_MATCHES   (ST_SCHEMA_COUNT + 4)         ; u32 total schema matches
+%define ST_SCHEMA_EXTRACTS  (ST_SCHEMA_MATCHES + 4)       ; u32 total variable extractions
+%define ST_SCHEMA_END       (ST_SCHEMA_EXTRACTS + 4)
 
 ; Location IDs for tracing - comprehensive coverage
 ; Format: TRACE_<module>_<function> = base, entry=base, exit=base+1

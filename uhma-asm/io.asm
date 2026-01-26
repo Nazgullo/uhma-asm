@@ -381,6 +381,8 @@ motor_file_write_sandboxed:
 extern process_token
 extern print_cstr
 extern print_u64
+extern fault_safe_rsp
+extern fault_safe_rip
 
 global digest_file
 digest_file:
@@ -462,9 +464,11 @@ digest_file:
 
 .start_token:
     ; Found start of token — read until whitespace
-    push rcx
-    push rbx
+    push rcx                  ; save remaining bytes
+    push rbx                  ; save token start
+    mov r8, rbx               ; r8 = token start (for abstraction check)
     xor edx, edx              ; token hash
+    xor r9d, r9d              ; r9 = token length
 
 .hash_loop:
     test rcx, rcx
@@ -486,21 +490,93 @@ digest_file:
     add edx, eax
     inc rbx
     dec rcx
+    inc r9d                   ; token_len++
     jmp .hash_loop
 
 .token_done:
     pop rax                   ; original token start (discard)
     pop rax                   ; original remaining (discard)
 
-    ; Process token (edx = token hash)
+    ; Skip empty tokens (end of buffer)
+    test r9d, r9d
+    jz .digest_loop           ; no token, continue scanning
+
+    ; --- Categorical abstraction (same as process_input) ---
+    ; r8 = token start, r9d = token length, edx = hash
+    ; SAVE rcx (remaining bytes) - abstraction uses ecx as temp
+    push rcx
+
+    ; Check for hex literal: contains "0x" or "0X"
+    cmp r9d, 3
+    jl .digest_not_hex
+    xor eax, eax
+.digest_hex_scan:
+    cmp eax, r9d
+    jge .digest_not_hex
+    cmp byte [r8 + rax], '0'
+    jne .digest_hex_next
+    lea r10d, [eax + 1]       ; use r10 instead of ecx
+    cmp r10d, r9d
+    jge .digest_hex_next
+    movzx r10d, byte [r8 + r10]
+    or r10b, 0x20             ; lowercase
+    cmp r10b, 'x'
+    je .digest_is_hex
+.digest_hex_next:
+    inc eax
+    jmp .digest_hex_scan
+.digest_is_hex:
+    mov edx, 0x48455821       ; TOKEN_HEX ("HEX!")
+    jmp .digest_abstraction_done
+
+.digest_not_hex:
+    ; Check for all-digit number (len > 1)
+    cmp r9d, 2
+    jl .digest_abstraction_done
+    xor eax, eax
+.digest_num_scan:
+    cmp eax, r9d
+    jge .digest_is_num
+    movzx r10d, byte [r8 + rax]  ; use r10 instead of ecx
+    cmp r10b, '0'
+    jl .digest_abstraction_done
+    cmp r10b, '9'
+    jg .digest_abstraction_done
+    inc eax
+    jmp .digest_num_scan
+.digest_is_num:
+    mov edx, 0x4e554d21       ; TOKEN_NUM ("NUM!")
+
+.digest_abstraction_done:
+    ; RESTORE rcx
+    pop rcx
+
+.digest_token_ready:
+    ; Process token (edx = token hash or class token)
     mov edi, edx
+
     push rcx
     push rbx
     push r15
+
+    ; === SAVE fault recovery point so crashes skip back to loop ===
+    ; Note: We DON'T try to restore old recovery - just set ours
+    ; and let normal return path continue. If fault happens,
+    ; we lose the token but continue the loop.
+    lea rax, [rel .continue_loop]
+    mov [rel fault_safe_rip], rax
+    mov [rel fault_safe_rsp], rsp
+
     call process_token
+
+.continue_loop:
+
     pop r15
     pop rbx
     pop rcx
+
+    ; Restore r14 in case it was clobbered by fault during process_token
+    mov r14, SURFACE_BASE
 
     inc r15d                  ; token count++
     jmp .digest_loop

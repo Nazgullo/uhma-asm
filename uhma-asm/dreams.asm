@@ -28,6 +28,8 @@ extern gate_test_modification
 extern journey_step
 extern sym_scan_for_discoveries
 extern holo_store
+extern receipt_resonate
+extern emit_receipt_simple
 
 ;; ============================================================
 ;; dream_cycle
@@ -113,6 +115,25 @@ dream_cycle:
     test rax, rax
     jnz .skip_entry           ; already exists
 
+    ; --- RESONANCE QUERY: Have we dreamed about this pattern recently? ---
+    ; Avoid redundant speculation by checking past DREAM events
+    lea rsi, [rbx + STATE_OFFSET + ST_MISS_BUF]
+    pop r14
+    push r14
+    imul eax, r14d, ST_MISS_ENTRY_SIZE
+    add rsi, rax
+    ; Read ctx_hash and token_id from miss entry
+    mov eax, [rsi]            ; ctx_hash (save in eax)
+    mov edx, [rsi + 8]        ; token_id
+    mov edi, EVENT_DREAM
+    mov esi, eax              ; ctx_hash as second param
+    call receipt_resonate     ; → xmm0 = similarity to past DREAMs
+    ; If very high similarity (>0.8), skip - we've dreamed this recently
+    mov rax, 0x3FE999999999999A  ; 0.8 f64
+    movq xmm1, rax
+    ucomisd xmm0, xmm1
+    ja .skip_entry            ; skip if too similar to recent dream
+
     ; Check region table capacity
     lea rax, [rbx + STATE_OFFSET + ST_REGION_COUNT]
     mov eax, [rax]
@@ -122,12 +143,14 @@ dream_cycle:
     ; Emit speculative pattern
     ; Recover context and token from miss entry
     lea rsi, [rbx + STATE_OFFSET + ST_MISS_BUF]
-    pop r14
-    push r14
     imul eax, r14d, ST_MISS_ENTRY_SIZE
     add rsi, rax
     mov edi, [rsi]            ; ctx_hash (lower 32)
     mov esi, [rsi + 8]       ; token_id
+
+    ; Save ctx and token for receipt emission
+    push rdi
+    push rsi
 
     ; Get birth step
     lea rax, [rbx + STATE_OFFSET + ST_GLOBAL_STEP]
@@ -138,8 +161,23 @@ dream_cycle:
 
     ; Mark as NURSERY (speculative)
     test rax, rax
-    jz .skip_entry
+    jz .dream_skip_receipt
     or word [rax + RHDR_FLAGS], RFLAG_NURSERY
+
+    ; === EMIT RECEIPT: EVENT_DREAM ===
+    pop rsi                   ; token_id
+    pop rdi                   ; ctx_hash (but we need edi, esi, edx)
+    push rdi
+    push rsi
+    mov edx, esi              ; token_id
+    mov esi, edi              ; ctx_hash
+    mov edi, EVENT_DREAM      ; event_type
+    xorps xmm0, xmm0          ; confidence = 0 (speculative)
+    call emit_receipt_simple
+
+.dream_skip_receipt:
+    pop rsi
+    pop rdi
 
     lea rdi, [rel dream_emit]
     call print_cstr
@@ -414,9 +452,24 @@ dream_consolidate:
     mov esi, [rax + 1]            ; pred_token = bytes after 0xB8
     pop rdi                       ; restore ctx_hash
 
+    ; Save for receipt emission
+    push rdi
+    push rsi
+
     ; Call holo_store(ctx_hash, pred_token, reinforce_strength)
     movsd xmm0, [rel reinforce_strength]
     call holo_store
+
+    ; === EMIT RECEIPT: EVENT_PROMOTE ===
+    pop rsi                       ; token_id
+    pop rdi                       ; ctx_hash
+    mov edx, esi                  ; token_id
+    mov esi, edi                  ; ctx_hash
+    mov edi, EVENT_PROMOTE        ; event_type
+    mov eax, 0x3F800000           ; 1.0f confidence (promoted = proven)
+    movd xmm0, eax
+    call emit_receipt_simple
+
     jmp .reinforce_done
 
 .no_token:

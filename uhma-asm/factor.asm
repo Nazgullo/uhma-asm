@@ -34,7 +34,12 @@ section .bss
     subroutine_table:   resb SUBROUTINE_TABLE_MAX * SUBROUTINE_ENTRY_SIZE
     subroutine_count:   resd 1
 
-    ; Suffix comparison buffer
+    ; Suffix hash registry: (u32 hash, u64 region_ptr) = 16 bytes per entry (padded)
+    ; This replaces O(n²) comparison with O(n) hash + group
+    suffix_registry:    resb FACTOR_SCAN_LIMIT * 16  ; hash + ptr pairs
+    suffix_reg_count:   resd 1                        ; entries in registry
+
+    ; Suffix comparison buffer (for groups found by hash)
     suffix_candidates:  resq FACTOR_SCAN_LIMIT   ; pointers to candidate regions
     suffix_count:       resd 1                    ; number of candidates
     common_suffix_len:  resd 1                    ; detected common suffix length
@@ -68,11 +73,55 @@ factor_init:
     ret
 
 ;; ============================================================
+;; hash_suffix(region_ptr) → eax = hash of last SUFFIX_HASH_LEN bytes
+;; Computes a simple hash of the region's code suffix.
+;; rdi = region header pointer
+;; Returns: eax = 32-bit hash
+;; ============================================================
+hash_suffix:
+    movzx ecx, word [rdi + RHDR_CODE_LEN]
+    cmp ecx, SUFFIX_HASH_LEN
+    jge .has_enough
+    ; Code too short, use what we have
+    jmp .hash_start
+.has_enough:
+    mov ecx, SUFFIX_HASH_LEN
+.hash_start:
+    ; Point to last 'ecx' bytes of code
+    movzx eax, word [rdi + RHDR_CODE_LEN]
+    sub eax, ecx
+    lea rsi, [rdi + RHDR_SIZE]
+    add rsi, rax              ; rsi = start of suffix
+
+    ; Hash: h = h * 31 + byte
+    xor eax, eax
+.hash_loop:
+    test ecx, ecx
+    jz .hash_done
+    imul eax, eax, 31
+    movzx edx, byte [rsi]
+    add eax, edx
+    inc rsi
+    dec ecx
+    jmp .hash_loop
+.hash_done:
+    ret
+
+;; ============================================================
 ;; find_common_suffix()
 ;; Scans active DISPATCH regions for common code endings.
+;; Uses O(n) hash-based grouping instead of O(n²) comparison.
+;;
+;; Algorithm:
+;;   1. Scan regions, compute suffix hash for each → O(n)
+;;   2. Store (hash, region_ptr) in registry
+;;   3. Sort registry by hash → O(n log n) but bounded by FACTOR_SCAN_LIMIT
+;;   4. Find runs of same hash → O(n)
+;;   5. Take largest run with >= SUFFIX_MIN_CALLERS
+;;
 ;; Returns: eax = number of regions sharing a common suffix (0 = none)
 ;;          suffix_candidates[] filled with region pointers
-;;          common_suffix_len set to length of shared suffix
+;;          common_suffix_len set to SUFFIX_HASH_LEN (fixed)
 ;; ============================================================
 global find_common_suffix
 find_common_suffix:
@@ -87,17 +136,19 @@ find_common_suffix:
     lea r12, [rbx + REGION_TABLE_OFFSET]
     mov r13d, [rbx + STATE_OFFSET + ST_REGION_COUNT]
 
-    ; Clear candidate buffer
+    ; Clear buffers
     mov dword [rel suffix_count], 0
     mov dword [rel common_suffix_len], 0
+    mov dword [rel suffix_reg_count], 0
 
-    ; Collect up to FACTOR_SCAN_LIMIT dispatch regions
+    ; === Phase 1: Collect regions and compute suffix hashes → O(n) ===
+    lea r14, [rel suffix_registry]
     xor ecx, ecx        ; region index
-    xor r14d, r14d      ; candidate count
+    xor r15d, r15d      ; registry count
 .collect_loop:
     cmp ecx, r13d
     jge .collect_done
-    cmp r14d, FACTOR_SCAN_LIMIT
+    cmp r15d, FACTOR_SCAN_LIMIT
     jge .collect_done
 
     push rcx
@@ -118,10 +169,19 @@ find_common_suffix:
     cmp eax, SUFFIX_MIN_LEN + 5     ; need enough code to factor
     jl .collect_next
 
-    ; Store candidate
-    lea rdi, [rel suffix_candidates]
-    mov [rdi + r14 * 8], rsi
-    inc r14d
+    ; Compute suffix hash
+    push rsi
+    mov rdi, rsi
+    call hash_suffix
+    pop rsi
+    ; eax = suffix hash, rsi = region ptr
+
+    ; Store in registry: [hash(4) + padding(4) + ptr(8)] = 16 bytes
+    imul edi, r15d, 16
+    add rdi, r14
+    mov [rdi + 0], eax            ; hash
+    mov [rdi + 8], rsi            ; region ptr
+    inc r15d
 
 .collect_next:
     pop rcx
@@ -129,115 +189,122 @@ find_common_suffix:
     jmp .collect_loop
 
 .collect_done:
-    mov [rel suffix_count], r14d
+    mov [rel suffix_reg_count], r15d
 
     ; Need at least SUFFIX_MIN_CALLERS regions to factor
-    cmp r14d, SUFFIX_MIN_CALLERS
+    cmp r15d, SUFFIX_MIN_CALLERS
     jl .no_suffix
 
-    ; Compare suffixes: find longest common suffix across all candidates
-    ; Start by comparing first two, then verify against all others
-    lea r12, [rel suffix_candidates]
-    mov rdi, [r12]              ; first region
-    mov rsi, [r12 + 8]          ; second region
-
-    ; Get code lengths
-    movzx eax, word [rdi + RHDR_CODE_LEN]
-    movzx edx, word [rsi + RHDR_CODE_LEN]
-
-    ; Find minimum length
-    cmp eax, edx
-    jle .use_eax
-    mov eax, edx
-.use_eax:
-    mov r15d, eax               ; max possible suffix length
-
-    ; Compare from end, find longest matching suffix
-    xor ecx, ecx                ; current matching length
-.compare_suffix:
+    ; === Phase 2: Sort registry by hash (insertion sort) → O(n²) worst but small n ===
+    ; For FACTOR_SCAN_LIMIT entries, insertion sort is fine
+    mov ecx, 1          ; i = 1
+.sort_outer:
     cmp ecx, r15d
-    jge .suffix_found
+    jge .sort_done
 
-    ; Get byte from end of first region's code
-    movzx eax, word [rdi + RHDR_CODE_LEN]
-    sub eax, ecx
-    dec eax
-    lea r8, [rdi + RHDR_SIZE]
-    movzx r8d, byte [r8 + rax]
+    ; Load entry[i] into temp
+    imul eax, ecx, 16
+    add rax, r14
+    mov r8d, [rax + 0]        ; temp_hash
+    mov r9, [rax + 8]         ; temp_ptr
 
-    ; Get byte from end of second region's code
-    movzx eax, word [rsi + RHDR_CODE_LEN]
-    sub eax, ecx
-    dec eax
-    lea r9, [rsi + RHDR_SIZE]
-    movzx r9d, byte [r9 + rax]
+    mov edx, ecx              ; j = i
+.sort_inner:
+    test edx, edx
+    jz .sort_insert
 
-    ; Compare
-    cmp r8d, r9d
-    jne .suffix_found
+    ; Compare entry[j-1].hash with temp_hash
+    lea eax, [edx - 1]
+    imul eax, eax, 16
+    add rax, r14
+    mov r10d, [rax + 0]       ; entry[j-1].hash
+    cmp r10d, r8d
+    jle .sort_insert          ; entry[j-1] <= temp, done shifting
+
+    ; Shift entry[j-1] to entry[j]
+    imul edi, edx, 16
+    add rdi, r14
+    mov [rdi + 0], r10d
+    mov r11, [rax + 8]
+    mov [rdi + 8], r11
+
+    dec edx
+    jmp .sort_inner
+
+.sort_insert:
+    ; Insert temp at position j
+    imul eax, edx, 16
+    add rax, r14
+    mov [rax + 0], r8d
+    mov [rax + 8], r9
 
     inc ecx
-    jmp .compare_suffix
+    jmp .sort_outer
 
-.suffix_found:
-    ; ecx = matching suffix length between first two
-    cmp ecx, SUFFIX_MIN_LEN
+.sort_done:
+    ; === Phase 3: Find largest run of same hash → O(n) ===
+    xor ecx, ecx              ; current position
+    xor r8d, r8d              ; best run start
+    xor r9d, r9d              ; best run length
+
+.find_runs:
+    cmp ecx, r15d
+    jge .runs_done
+
+    ; Get current hash
+    imul eax, ecx, 16
+    add rax, r14
+    mov r10d, [rax + 0]       ; current hash
+
+    ; Count run length
+    mov edx, ecx              ; run start
+    mov r11d, 0               ; run length
+.count_run:
+    cmp edx, r15d
+    jge .run_ended
+    imul eax, edx, 16
+    add rax, r14
+    cmp [rax + 0], r10d
+    jne .run_ended
+    inc r11d
+    inc edx
+    jmp .count_run
+
+.run_ended:
+    ; Is this run better than best?
+    cmp r11d, r9d
+    jle .not_better
+    mov r8d, ecx              ; best_start = run_start
+    mov r9d, r11d             ; best_len = run_len
+.not_better:
+    mov ecx, edx              ; skip past this run
+    jmp .find_runs
+
+.runs_done:
+    ; Check if best run meets minimum
+    cmp r9d, SUFFIX_MIN_CALLERS
     jl .no_suffix
 
-    ; Verify this suffix exists in all other candidates
-    mov r15d, ecx               ; save suffix length
-    mov edx, 2                  ; start at third candidate
-.verify_loop:
-    cmp edx, [rel suffix_count]
-    jge .verified
-
-    push rdx
-    mov rdi, [r12]              ; first region (reference)
-    mov rsi, [r12 + rdx * 8]    ; current candidate
-
-    ; Check if this candidate has matching suffix
+    ; === Phase 4: Copy best run to suffix_candidates ===
+    lea rdi, [rel suffix_candidates]
     xor ecx, ecx
-.verify_bytes:
-    cmp ecx, r15d
-    jge .verify_match
+.copy_run:
+    cmp ecx, r9d
+    jge .copy_done
 
-    ; Get byte from first region
-    movzx eax, word [rdi + RHDR_CODE_LEN]
-    sub eax, ecx
-    dec eax
-    lea r8, [rdi + RHDR_SIZE]
-    movzx r8d, byte [r8 + rax]
-
-    ; Get byte from current candidate
-    movzx eax, word [rsi + RHDR_CODE_LEN]
-    sub eax, ecx
-    dec eax
-    lea r9, [rsi + RHDR_SIZE]
-    movzx r9d, byte [r9 + rax]
-
-    cmp r8d, r9d
-    jne .verify_no_match
-
+    ; Get region ptr from registry[best_start + i]
+    lea eax, [r8d + ecx]
+    imul eax, eax, 16
+    add rax, r14
+    mov rsi, [rax + 8]        ; region ptr
+    mov [rdi + rcx * 8], rsi
     inc ecx
-    jmp .verify_bytes
+    jmp .copy_run
 
-.verify_match:
-    pop rdx
-    inc edx
-    jmp .verify_loop
-
-.verify_no_match:
-    ; This candidate doesn't match - reduce suffix length
-    pop rdx
-    mov r15d, ecx               ; reduce to matching portion
-    cmp r15d, SUFFIX_MIN_LEN
-    jl .no_suffix
-    inc edx
-    jmp .verify_loop
-
-.verified:
-    mov [rel common_suffix_len], r15d
-    mov eax, [rel suffix_count]
+.copy_done:
+    mov [rel suffix_count], r9d
+    mov dword [rel common_suffix_len], SUFFIX_HASH_LEN
+    mov eax, r9d
     jmp .done
 
 .no_suffix:

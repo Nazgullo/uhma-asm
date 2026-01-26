@@ -27,6 +27,8 @@ extern gate_test_modification
 extern sym_observe_mod
 extern sym_record_anomaly
 extern gene_pool_sample
+extern receipt_resonate
+extern emit_receipt_simple
 
 ;; ============================================================
 ;; evolve_cycle
@@ -111,6 +113,53 @@ evolve_cycle:
     movd xmm3, edx
     addss xmm2, xmm3         ; 1.0 + resonance
     mulss xmm0, xmm2         ; fitness = accuracy * (1 + resonance)
+
+    ; --- RESONANCE QUERY: Boost fitness if similar evolved patterns succeeded ---
+    ; Query past EVOLVE events for similar contexts
+    push rdi
+    push rsi
+    push rcx
+    sub rsp, 8
+    movss [rsp], xmm0        ; save fitness
+    cmp byte [rsi + RHDR_SIZE], 0x3D
+    jne .evolve_no_resonate
+    mov edi, EVENT_EVOLVE
+    mov esi, [rsi + RHDR_SIZE + 1]  ; ctx_hash from region
+    xor edx, edx
+    call receipt_resonate    ; → xmm0 = similarity to past EVOLVEs
+    ; If high similarity (>0.5), check if those led to HITs
+    mov rax, 0x3FE0000000000000     ; 0.5 f64
+    movq xmm1, rax
+    ucomisd xmm0, xmm1
+    jbe .evolve_no_resonate
+    ; Query for subsequent HITs
+    mov edi, EVENT_HIT
+    add rsp, 8
+    pop rcx
+    pop rsi
+    push rsi
+    push rcx
+    sub rsp, 8
+    mov esi, [rsi + RHDR_SIZE + 1]
+    xor edx, edx
+    call receipt_resonate    ; → xmm0 = HIT similarity
+    ; Boost fitness by (1 + 0.3 * hit_similarity)
+    cvtsd2ss xmm0, xmm0      ; convert to f32
+    mov eax, 0x3E99999A      ; 0.3f
+    movd xmm1, eax
+    mulss xmm0, xmm1         ; 0.3 * hit_sim
+    mov eax, 0x3F800000      ; 1.0f
+    movd xmm1, eax
+    addss xmm0, xmm1         ; 1 + 0.3 * hit_sim
+    movss xmm2, [rsp]        ; restore fitness
+    mulss xmm0, xmm2         ; fitness *= (1 + 0.3 * hit_sim)
+    movss [rsp], xmm0        ; save boosted fitness
+.evolve_no_resonate:
+    movss xmm0, [rsp]        ; restore fitness
+    add rsp, 8
+    pop rcx
+    pop rsi
+    pop rdi
 
     ; Add to pool with fitness score
     pop rcx
@@ -245,10 +294,28 @@ evolve_reproduce:
     mov edi, [rsi + RHDR_SIZE + 1]   ; ctx_hash
     mov esi, [rsi + RHDR_SIZE + 8]   ; token_id (from mov eax, imm32)
 
+    ; Save ctx and token for receipt
+    push rdi
+    push rsi
+
     ; Emit as new region (duplicate)
     lea rax, [rbx + STATE_OFFSET + ST_GLOBAL_STEP]
     mov edx, [rax]
     call emit_dispatch_pattern
+
+    ; === EMIT RECEIPT: EVENT_EVOLVE ===
+    pop rsi                   ; token_id
+    pop rdi                   ; ctx_hash
+    push rdi
+    push rsi
+    mov edx, esi              ; token_id
+    mov esi, edi              ; ctx_hash
+    mov edi, EVENT_EVOLVE     ; event_type
+    mov eax, 0x3F800000       ; 1.0f confidence
+    movd xmm0, eax
+    call emit_receipt_simple
+    pop rsi
+    pop rdi
 
 .done:
     pop r12

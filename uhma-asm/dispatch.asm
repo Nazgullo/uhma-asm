@@ -26,9 +26,9 @@ section .data
 
     ; Holographic threshold (f64) - confidence required to use holographic prediction
     ; VSA element-wise binding produces ~0.7-0.8 confidence for exact matches
-    ; Set at 0.5 to allow holographic predictions while filtering noise
+    ; Lowered to 0.3 to test resonance accumulation
     align 8
-    holo_thresh:    dq 0.5
+    holo_thresh:    dq 0.3
 
     ; Resonant dispatch threshold (f64) - similarity required for fuzzy match
     ; 0.7 = strong similarity required (can adjust based on noise tolerance)
@@ -51,8 +51,11 @@ extern fire_hook
 extern vsa_get_token_vec
 extern vsa_superpose
 extern vsa_bind
+extern vsa_unbind
 extern vsa_gen_role_pos
 extern vsa_normalize
+extern vsa_dot
+extern vsa_cosim
 extern region_alloc
 extern find_existing_pattern
 extern learn_connections
@@ -78,6 +81,7 @@ extern resonant_match
 extern resonant_get_threshold
 extern resonant_extract_token
 extern emit_receipt_simple
+extern receipt_resonate
 
 ;; ============================================================
 ;; dispatch_init
@@ -399,9 +403,9 @@ process_token:
     inc dword [rbx + STATE_OFFSET + ST_NOVELTY_RECENT]
 .token_seen:
 
-    ; --- Context hash = predecessor + SOMATIC BINDING (mood-dependent addressing) ---
-    ; The same input triggers different regions based on internal state.
-    ; This creates state-dependent memory: "I respond differently when tired."
+    ; --- Context hash = predecessor only ---
+    ; Pattern identity is independent of mood. A bike is a bike whether happy or angry.
+    ; Mood affects BEHAVIOR (what to do with patterns), not IDENTITY (what patterns are).
     lea rsi, [rbx + STATE_OFFSET + ST_TOKEN_BUF]
     mov ecx, [rbx + STATE_OFFSET + ST_TOKEN_POS]
     mov r9, 0x9E3779B97F4A7C15  ; golden ratio prime
@@ -411,51 +415,10 @@ process_token:
     and ecx, (ST_TOKEN_BUF_CAP - 1)
     mov r10d, [rsi + rcx * 4]  ; previous token
 
-    ; Context = prev_token * prime (base context)
+    ; Context = prev_token * prime (pure sequential context)
     mov rax, r10
     imul rax, r9
-
-    ; --- SOMATIC BINDING: Salt context with mood signature ---
-    ; Read arousal (f32 at PRES_AROUSAL index 3) and valence (index 4)
-    ; Presence array is 30 f32 values starting at ST_PRESENCE
-    movss xmm0, [rbx + STATE_OFFSET + ST_PRESENCE + PRES_AROUSAL * 4]
-    movss xmm1, [rbx + STATE_OFFSET + ST_PRESENCE + PRES_VALENCE * 4]
-
-    ; Quantize to 0-15 range: clamp to [0,1], multiply by 15, truncate
-    ; xmm2 = 0.0, xmm3 = 1.0, xmm4 = 15.0
-    xorps xmm2, xmm2
-    mov ecx, 0x3F800000         ; 1.0f
-    movd xmm3, ecx
-    mov ecx, 0x41700000         ; 15.0f
-    movd xmm4, ecx
-
-    ; Clamp arousal to [0, 1]
-    maxss xmm0, xmm2            ; max(arousal, 0)
-    minss xmm0, xmm3            ; min(arousal, 1)
-    mulss xmm0, xmm4            ; arousal * 15
-    cvtss2si ecx, xmm0          ; quantized arousal 0-15
-    and ecx, 0xF                ; safety mask
-
-    ; Clamp valence to [0, 1] (valence can be negative, so add 0.5 bias)
-    mov edx, 0x3F000000         ; 0.5f
-    movd xmm5, edx
-    addss xmm1, xmm5            ; shift [-0.5,0.5] → [0,1]
-    maxss xmm1, xmm2
-    minss xmm1, xmm3
-    mulss xmm1, xmm4
-    cvtss2si edx, xmm1          ; quantized valence 0-15
-    and edx, 0xF
-
-    ; Combine into mood signature: (arousal << 4) | valence
-    shl ecx, SOMATIC_AROUSAL_BITS
-    or ecx, edx                 ; mood_sig = arousal_q << 4 | valence_q
-
-    ; Mix mood into context hash (high bits for mood-dependent addressing)
-    shl rcx, SOMATIC_SHIFT      ; shift into bits 24-31
-    xor rax, rcx                ; SOMATIC BINDING: context now includes mood
-
     mov r13, rax
-    ; Store context (now mood-salted)
     mov [rbx + STATE_OFFSET + ST_CTX_HASH], r13
 
     ; --- Update token ring buffer ---
@@ -1034,10 +997,54 @@ dispatch_predict:
     shr eax, 28               ; top 4 bits
     mov [rsp + 68], eax       ; ctx_type
 
+    ; --- RESONANCE QUERY: Check past outcomes for this context ---
+    ; Query receipt trace for past HIT events with similar context
+    ; High similarity → boost confidence; low → be cautious
+    mov edi, EVENT_HIT        ; query for past HITs
+    mov esi, r12d             ; ctx_hash
+    xor edx, edx              ; token=0 (context-only query)
+    call receipt_resonate     ; → xmm0 = similarity to past HITs (f64)
+    movsd [rsp + 72], xmm0    ; save hit_similarity
+
+    ; Query for past MISS events
+    mov edi, EVENT_MISS
+    mov esi, r12d
+    xor edx, edx
+    call receipt_resonate     ; → xmm0 = similarity to past MISSes
+    ; Compute confidence_modulator = hit_sim - miss_sim (range [-1, +1])
+    movsd xmm1, [rsp + 72]    ; hit_similarity
+    subsd xmm1, xmm0          ; hit_sim - miss_sim
+    movsd [rsp + 72], xmm1    ; save confidence_modulator
+
     ; --- TRY HOLOGRAPHIC PREDICTION FIRST ---
     mov edi, r12d             ; ctx_hash
     call holo_predict
     ; eax = best_token, xmm0 = confidence (f64)
+
+    ; Save predicted token BEFORE modulation (uses rax for constants!)
+    mov r15d, eax             ; r15d = best_token (preserved)
+
+    ; --- APPLY RESONANCE MODULATION ---
+    ; Adjust confidence based on past HIT/MISS patterns for this context
+    ; modulated_conf = conf * (1 + 0.2 * confidence_modulator)
+    ; This makes the system trust contexts with good history more
+    movsd xmm2, [rsp + 72]    ; confidence_modulator (hit_sim - miss_sim)
+    mov rax, 0x3FC999999999999A  ; 0.2 f64
+    movq xmm3, rax
+    mulsd xmm2, xmm3          ; 0.2 * modulator
+    mov rax, 0x3FF0000000000000  ; 1.0 f64
+    movq xmm3, rax
+    addsd xmm2, xmm3          ; 1 + 0.2 * modulator
+    mulsd xmm0, xmm2          ; conf * (1 + 0.2 * modulator)
+    ; Clamp to [0, 1]
+    xorpd xmm2, xmm2
+    maxsd xmm0, xmm2          ; max(0, conf)
+    movq xmm2, rax            ; 1.0
+    minsd xmm0, xmm2          ; min(1, conf)
+
+    ; Restore predicted token
+    mov eax, r15d             ; eax = best_token
+
     ; Check if confidence > threshold (f64 comparison)
     ucomisd xmm0, [rel holo_thresh]
     jbe .holo_miss
@@ -1141,6 +1148,25 @@ dispatch_predict:
     ; xmm0 = confidence (already set)
     call update_anticipatory
 .no_antic_signal:
+
+    ; --- Phase 3: Try Schema Dispatch ---
+    ; Schemas use structural context with role bindings for prediction.
+    ; This is faster than graph traversal and preserves positional info.
+    push r12
+    call schema_dispatch
+    pop r12
+    ; eax = predicted token, 0 if no match
+
+    test eax, eax
+    jz .no_schema_hit
+
+    ; Schema hit! Return this prediction
+    mov [rsp + 0], eax            ; best_token
+    mov qword [rsp + 16], 0       ; no region for schema predictions
+    mov dword [rbx + STATE_OFFSET + ST_EXPECT_IS_SCHEMA], 1
+    jmp .predict_return
+
+.no_schema_hit:
 
     ; --- Topological Metacognition: Feel the context before choosing strategy ---
     ; Query how we "feel" about this context type: anxious, neutral, or confident
@@ -2459,5 +2485,415 @@ compute_struct_ctx:
     pop r14
     pop r13
     pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; PHASE 3: SCHEMA DISPATCH FUNCTIONS
+;; Structural pattern matching with variable extraction
+;; ============================================================
+
+section .data
+    align 8
+    schema_match_thresh: dq 0.6           ; minimum similarity for schema match
+
+section .text
+
+;; ============================================================
+;; schema_match(schema_ptr) → xmm0 (similarity score)
+;; rdi = schema entry pointer
+;; Returns cosine similarity between schema template and ST_STRUCT_CTX_VEC
+;; ============================================================
+global schema_match
+schema_match:
+    push rbx
+    push r12
+    sub rsp, 8
+
+    mov r12, rdi                          ; schema_ptr
+    mov rbx, SURFACE_BASE
+
+    ; Check if structural context is valid
+    cmp dword [rbx + STATE_OFFSET + ST_STRUCT_CTX_VALID], 0
+    je .no_match
+
+    ; Compute cosine similarity: cos(template, struct_ctx)
+    mov rdi, r12                          ; template is at start of schema entry
+    lea rsi, [rbx + STATE_OFFSET + ST_STRUCT_CTX_VEC]
+    call vsa_cosim
+    ; xmm0 = similarity
+
+    jmp .match_done
+
+.no_match:
+    xorpd xmm0, xmm0                      ; return 0.0
+
+.match_done:
+    add rsp, 8
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; schema_extract_var(role_idx, out_ptr)
+;; edi = role position index (0-7)
+;; rsi = output vector pointer
+;; Extracts filler from structural context by unbinding with role vector.
+;; filler ≈ unbind(struct_ctx, ROLE_POS_idx)
+;; ============================================================
+global schema_extract_var
+schema_extract_var:
+    push rbx
+    push r12
+    push r13
+    sub rsp, 8
+
+    mov r12d, edi                         ; role_idx
+    mov r13, rsi                          ; out_ptr
+    mov rbx, SURFACE_BASE
+
+    ; Generate role vector in scratch area
+    lea rsi, [rbx + SCRATCH_OFFSET + HOLO_VEC_BYTES * 2]  ; temp for role
+    mov edi, r12d
+    call vsa_gen_role_pos
+
+    ; Unbind: filler = unbind(struct_ctx, role)
+    lea rdi, [rbx + STATE_OFFSET + ST_STRUCT_CTX_VEC]
+    lea rsi, [rbx + SCRATCH_OFFSET + HOLO_VEC_BYTES * 2]  ; role vector
+    mov rdx, r13                          ; output
+    call vsa_unbind
+
+    add rsp, 8
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; schema_query_filler(filler_ptr) → eax (best matching token)
+;; rdi = filler vector pointer
+;; Finds the token whose vector is most similar to the filler.
+;; Returns token_id of best match, 0 if no good match.
+;; ============================================================
+global schema_query_filler
+schema_query_filler:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 8
+
+    mov r12, rdi                          ; filler_ptr
+    mov rbx, SURFACE_BASE
+    xor r13d, r13d                        ; best_token = 0
+    mov rax, 0xBFF0000000000000           ; -1.0 (any positive beats this)
+    movq xmm7, rax                        ; best_sim in xmm7
+
+    ; Scan first 256 token vectors for best match
+    xor r14d, r14d                        ; token_idx
+
+.scan_loop:
+    cmp r14d, 256
+    jge .scan_done
+
+    ; Get token vector
+    mov edi, r14d
+    push r12
+    push r13
+    push r14
+    call vsa_get_token_vec
+    pop r14
+    pop r13
+    pop r12
+    ; rax = token_vec ptr
+
+    ; Compute similarity
+    mov rdi, r12                          ; filler
+    mov rsi, rax                          ; token_vec
+    push r12
+    push r13
+    push r14
+    call vsa_cosim
+    pop r14
+    pop r13
+    pop r12
+    ; xmm0 = similarity
+
+    ; Check if better than best
+    ucomisd xmm0, xmm7
+    jbe .next_token
+
+    ; New best
+    movapd xmm7, xmm0
+    mov r13d, r14d                        ; best_token = current
+
+.next_token:
+    inc r14d
+    jmp .scan_loop
+
+.scan_done:
+    ; Check if best_sim > 0.5 (reasonable match)
+    mov rax, 0x3FE0000000000000           ; 0.5
+    movq xmm0, rax
+    ucomisd xmm7, xmm0
+    jbe .no_good_match
+
+    mov eax, r13d                         ; return best_token
+    jmp .query_done
+
+.no_good_match:
+    xor eax, eax                          ; return 0
+
+.query_done:
+    add rsp, 8
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; schema_dispatch() → eax (predicted token, 0=none)
+;; Tries to match structural context against all active schemas.
+;; If match found, extracts variables and makes prediction.
+;; ============================================================
+global schema_dispatch
+schema_dispatch:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 24                           ; locals
+
+    mov rbx, SURFACE_BASE
+
+    ; Check if structural context is valid
+    cmp dword [rbx + STATE_OFFSET + ST_STRUCT_CTX_VALID], 0
+    je .no_schema_match
+
+    ; Get schema count
+    mov eax, [rbx + STATE_OFFSET + ST_SCHEMA_COUNT]
+    test eax, eax
+    jz .no_schema_match
+
+    mov r12d, eax                         ; num_schemas
+    xor r13d, r13d                        ; schema_idx
+    xor r14d, r14d                        ; best_token = 0
+    mov rax, 0xBFF0000000000000           ; -1.0
+    mov [rsp], rax                        ; best_score
+
+    ; Schema table base
+    lea r15, [rbx + SCHEMA_TABLE_OFFSET]
+
+.schema_loop:
+    cmp r13d, r12d
+    jge .schema_done
+
+    ; Compute schema entry address
+    mov eax, r13d
+    imul eax, SCHEMA_ENTRY_SIZE
+    lea rdi, [r15 + rax]                  ; schema_ptr
+
+    ; Check if schema is active
+    movzx eax, byte [rdi + SCHE_FLAGS]
+    test al, SCHEF_ACTIVE
+    jz .next_schema
+
+    ; Save schema_ptr
+    mov [rsp + 8], rdi
+
+    ; Match schema
+    push r12
+    push r13
+    push r14
+    push r15
+    call schema_match
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    ; xmm0 = match score
+
+    ; Check against threshold
+    ucomisd xmm0, [rel schema_match_thresh]
+    jbe .next_schema
+
+    ; Check if better than current best
+    ucomisd xmm0, [rsp]
+    jbe .next_schema
+
+    ; New best match - extract variable and predict
+    movsd [rsp], xmm0                     ; update best_score
+
+    ; Get predict_role from schema
+    mov rdi, [rsp + 8]                    ; schema_ptr
+    movzx edi, byte [rdi + SCHE_PREDICT_ROLE]
+    and edi, 7                            ; clamp to 0-7
+
+    ; Output to scratch area
+    lea rsi, [rbx + SCRATCH_OFFSET + HOLO_VEC_BYTES * 3]
+    push r12
+    push r13
+    push r14
+    push r15
+    call schema_extract_var
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+
+    ; Query extracted filler to find predicted token
+    lea rdi, [rbx + SCRATCH_OFFSET + HOLO_VEC_BYTES * 3]
+    push r12
+    push r13
+    push r14
+    push r15
+    call schema_query_filler
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    ; eax = predicted token
+
+    test eax, eax
+    jz .next_schema
+
+    mov r14d, eax                         ; best_token
+
+    ; Update schema stats
+    mov rdi, [rsp + 8]                    ; schema_ptr
+    inc dword [rdi + SCHE_HITS]
+
+    ; Track match
+    inc dword [rbx + STATE_OFFSET + ST_SCHEMA_MATCHES]
+
+.next_schema:
+    inc r13d
+    jmp .schema_loop
+
+.schema_done:
+    mov eax, r14d                         ; return best_token
+    test eax, eax
+    jz .no_schema_match
+
+    ; Increment schema extraction counter
+    inc dword [rbx + STATE_OFFSET + ST_SCHEMA_EXTRACTS]
+
+    jmp .schema_exit
+
+.no_schema_match:
+    xor eax, eax
+
+.schema_exit:
+    add rsp, 24
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; schema_create(template_ptr, var_mask, predict_role) → rax (schema_ptr)
+;; rdi = template vector pointer
+;; esi = variable mask (bits for variable positions)
+;; edx = predict role (which position to predict)
+;; Creates a new schema entry. Returns pointer or 0 if full.
+;; ============================================================
+global schema_create
+schema_create:
+    push rbx
+    push r12
+    push r13
+    push r14
+    sub rsp, 8
+
+    mov r12, rdi                          ; template_ptr
+    mov r13d, esi                         ; var_mask
+    mov r14d, edx                         ; predict_role
+    mov rbx, SURFACE_BASE
+
+    ; Check if we have room
+    mov eax, [rbx + STATE_OFFSET + ST_SCHEMA_COUNT]
+    cmp eax, SCHEMA_MAX
+    jge .schema_full
+
+    ; Compute new schema entry address
+    mov ecx, eax                          ; schema_idx
+    imul ecx, SCHEMA_ENTRY_SIZE
+    lea rax, [rbx + SCHEMA_TABLE_OFFSET + rcx]
+    push rax                              ; save schema_ptr
+
+    ; Copy template vector
+    mov rdi, rax                          ; dest = schema entry start
+    mov rsi, r12                          ; src = template
+    mov ecx, HOLO_VEC_BYTES / 8
+.copy_template:
+    mov rdx, [rsi]
+    mov [rdi], rdx
+    add rsi, 8
+    add rdi, 8
+    dec ecx
+    jnz .copy_template
+
+    ; Fill metadata
+    pop rax                               ; restore schema_ptr
+    mov byte [rax + SCHE_VAR_MASK], r13b
+    mov byte [rax + SCHE_PREDICT_ROLE], r14b
+    mov byte [rax + SCHE_CONDITION_ROLE], 0
+    mov byte [rax + SCHE_FLAGS], SCHEF_ACTIVE | SCHEF_LEARNED
+    mov dword [rax + SCHE_MATCH_THRESH], 0x3F19999A  ; 0.6 f32
+    mov dword [rax + SCHE_PRED_TOKEN], 0
+    mov dword [rax + SCHE_HITS], 0
+    mov dword [rax + SCHE_MISSES], 0
+    mov ecx, [rbx + STATE_OFFSET + ST_GLOBAL_STEP]
+    mov [rax + SCHE_BIRTH], ecx
+    mov [rax + SCHE_LAST_FIRE], ecx
+
+    ; Increment count
+    inc dword [rbx + STATE_OFFSET + ST_SCHEMA_COUNT]
+
+    jmp .create_done
+
+.schema_full:
+    xor eax, eax                          ; return 0
+
+.create_done:
+    add rsp, 8
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; schema_learn_from_context()
+;; Creates a schema from the current structural context.
+;; Called when a pattern is worth generalizing.
+;; Uses current struct_ctx as template, position 0 as condition,
+;; position 2 as variable to predict.
+;; ============================================================
+global schema_learn_from_context
+schema_learn_from_context:
+    push rbx
+    sub rsp, 8
+
+    mov rbx, SURFACE_BASE
+
+    ; Check if structural context is valid
+    cmp dword [rbx + STATE_OFFSET + ST_STRUCT_CTX_VALID], 0
+    je .learn_done
+
+    ; Use current structural context as template
+    lea rdi, [rbx + STATE_OFFSET + ST_STRUCT_CTX_VEC]
+    mov esi, 0x04                         ; var_mask = bit 2 (ROLE_POS_2 is variable)
+    mov edx, 2                            ; predict_role = 2
+    call schema_create
+
+.learn_done:
+    add rsp, 8
     pop rbx
     ret
