@@ -2,9 +2,9 @@
 """
 Hook script for Claude Code preToolUse.
 
-Called automatically before Edit/Write operations.
-Reads tool input from stdin (JSON), extracts file_path,
-and outputs context if the file is a .asm file in UHMA.
+Called automatically before Edit/Write/Read/Grep/Glob operations.
+Reads tool input from stdin (JSON), extracts file path info,
+and outputs context if targeting .asm files in UHMA.
 """
 
 import sys
@@ -17,8 +17,22 @@ try:
 except (json.JSONDecodeError, EOFError):
     sys.exit(0)
 
-# Extract file_path from tool input
-file_path = tool_input.get('file_path', '')
+# Extract file path from various tool formats
+# Edit/Write/Read use 'file_path', Grep/Glob use 'path'
+file_path = tool_input.get('file_path') or tool_input.get('path') or ''
+
+# For Glob, check if pattern targets .asm files
+pattern = tool_input.get('pattern', '')
+if pattern and '.asm' in pattern and not file_path:
+    # Glob searching for asm files - show general context
+    script_dir = Path(__file__).parent
+    sys.path.insert(0, str(script_dir))
+    from context import get_all_gotchas
+    gotchas = get_all_gotchas()
+    if gotchas and 'not built' not in gotchas:
+        print(gotchas)
+    sys.exit(0)
+
 if not file_path:
     sys.exit(0)
 
