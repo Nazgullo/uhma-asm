@@ -3,56 +3,109 @@
 Hook script for Claude Code preToolUse.
 
 Called automatically before Edit/Write/Read/Grep/Glob operations.
-Reads tool input from stdin (JSON), extracts file path info,
-and outputs context if targeting .asm files in UHMA.
+- Injects memory context on first operation of session
+- Injects file-specific context for .asm files
+- Injects all gotchas for .asm glob patterns
 """
 
 import sys
 import json
 from pathlib import Path
 
-# Read tool input from stdin (preToolUse provides JSON)
+SCRIPT_DIR = Path(__file__).parent
+SESSION_MARKER = SCRIPT_DIR / 'memory' / '.session_active'
+
+def inject_session_context():
+    """Inject memory context at session start (first operation)."""
+    if SESSION_MARKER.exists():
+        return None  # Already injected this session
+
+    # Mark session as active
+    SESSION_MARKER.parent.mkdir(exist_ok=True)
+    SESSION_MARKER.write_text('')
+
+    # Load current state
+    current_state_file = SCRIPT_DIR / 'memory' / 'current_state.md'
+    if not current_state_file.exists():
+        return None
+
+    # Load recent memory entries
+    sys.path.insert(0, str(SCRIPT_DIR))
+    try:
+        from memory import Memory
+        mem = Memory()
+        recent = mem.recent(10)
+
+        output = []
+        output.append("<session-context>")
+        output.append("## Current State Summary")
+        output.append(current_state_file.read_text()[:2000])  # First 2K chars
+
+        if recent:
+            output.append("\n## Recent Memory Entries")
+            for entry in recent[:5]:
+                icon = {'finding': '✓', 'hypothesis': '?', 'failed': '✗',
+                        'success': '★', 'insight': '💡'}.get(entry.category, '•')
+                output.append(f"[{icon}] {entry.content[:100]}")
+
+        output.append("</session-context>")
+        return '\n'.join(output)
+    except Exception as e:
+        return f"<session-context>Error loading memory: {e}</session-context>"
+
+
+def inject_file_context(filename):
+    """Inject context for a specific .asm file."""
+    sys.path.insert(0, str(SCRIPT_DIR))
+    from context import context_before_edit
+
+    context = context_before_edit(filename)
+    if context and 'Unknown file' not in context and 'not built' not in context:
+        return context
+    return None
+
+
+def inject_all_gotchas():
+    """Inject all gotchas for glob patterns targeting .asm."""
+    sys.path.insert(0, str(SCRIPT_DIR))
+    from context import get_all_gotchas
+
+    gotchas = get_all_gotchas()
+    if gotchas and 'not built' not in gotchas:
+        return gotchas
+    return None
+
+
+# Main execution
 try:
     tool_input = json.load(sys.stdin)
 except (json.JSONDecodeError, EOFError):
     sys.exit(0)
 
+output_parts = []
+
+# Always try to inject session context on first operation
+session_ctx = inject_session_context()
+if session_ctx:
+    output_parts.append(session_ctx)
+
 # Extract file path from various tool formats
-# Edit/Write/Read use 'file_path', Grep/Glob use 'path'
 file_path = tool_input.get('file_path') or tool_input.get('path') or ''
-
-# For Glob, check if pattern targets .asm files
 pattern = tool_input.get('pattern', '')
+
+# For Glob with .asm pattern - inject all gotchas
 if pattern and '.asm' in pattern and not file_path:
-    # Glob searching for asm files - show general context
-    script_dir = Path(__file__).parent
-    sys.path.insert(0, str(script_dir))
-    from context import get_all_gotchas
-    gotchas = get_all_gotchas()
-    if gotchas and 'not built' not in gotchas:
-        print(gotchas)
-    sys.exit(0)
+    gotchas = inject_all_gotchas()
+    if gotchas:
+        output_parts.append(gotchas)
 
-if not file_path:
-    sys.exit(0)
+# For specific .asm file operations
+elif file_path and file_path.endswith('.asm') and 'uhma-asm' in file_path:
+    filename = Path(file_path).name
+    file_ctx = inject_file_context(filename)
+    if file_ctx:
+        output_parts.append(file_ctx)
 
-# Only process .asm files
-if not file_path.endswith('.asm'):
-    sys.exit(0)
-
-# Only process files in uhma-asm directory
-if 'uhma-asm' not in file_path:
-    sys.exit(0)
-
-# Get filename
-filename = Path(file_path).name
-
-# Import and run context
-script_dir = Path(__file__).parent
-sys.path.insert(0, str(script_dir))
-
-from context import context_before_edit
-
-context = context_before_edit(filename)
-if context and 'Unknown file' not in context and 'not built' not in context:
-    print(context)
+# Output all collected context
+if output_parts:
+    print('\n\n'.join(output_parts))

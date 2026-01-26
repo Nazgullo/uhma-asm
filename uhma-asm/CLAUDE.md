@@ -27,8 +27,14 @@ This is O(1) per item. The holographic memory IS the index. Don't build separate
 
 ## Hard-Learned Lessons
 
+### Debugging (Use Built-in Tools)
+- **`why`** - explains last prediction failure via unified trace
+- **`misses N`** - shows last N misses with predicted vs actual
+- **`status`** - shows HIT ratio, region count, drives
+- **`receipts N`** - raw trace entries
+- No need for external log streaming - trace system captures everything
+
 ### Testing
-- **ALWAYS stream logs** - use `tee`, never run blind waiting for completion
 - **Short test FIRST** - verify with tiny_test.txt (8 tokens), THEN scale up
 - **Check ALL code paths** - digest_file and process_input had different behavior (abstraction was missing in digest)
 
@@ -179,20 +185,30 @@ Auto-spawns UHMA on MCP initialization. Bidirectional stdin/stdout pipe.
 - Full dependency graph
 - Rebuilt via: `python3 tools/rag/build.py`
 
+### Semantic Memory (Cross-Session Persistence)
+`tools/rag/memory.py` - structured memory for findings, failures, insights:
+- **Categories**: finding, hypothesis, failed, success, insight, location, question, todo
+- **Features**: TF-IDF search, theme clustering, session tracking
+- **Files**: `tools/rag/memory/entries.json`, `current_state.md`
+- Hooks auto-inject recent memory at session start, auto-save at session end
+
 ## Common Commands
 ```bash
-# Quick test
-rm -f uhma.surface && ./uhma < /tmp/tiny_cmd.txt 2>&1 | grep -E "HIT|NEW"
-
-# Streaming test
-./uhma < commands.txt 2>&1 | tee /tmp/test.log
-
-# Check HIT ratio
-grep -c "HIT" /tmp/test.log && grep -c "NEW" /tmp/test.log
-
-# Debug a miss
+# Interactive session
 ./uhma
-> some failing input
-> why
-> misses 5
+> hello world          # process text
+> status               # see HIT ratio, regions, drives
+> why                  # explain last miss
+> misses 5             # show recent misses
+> dream                # consolidation cycle
+> observe              # self-observation
+> save mystate         # persist
+> quit                 # exit (auto-saves)
+
+# Digest a file
+./uhma
+> eat /path/to/file.txt
+
+# Fresh start
+rm -f uhma.surface && ./uhma
 ```
