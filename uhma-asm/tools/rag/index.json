@@ -341,7 +341,7 @@
         "Callee-saved regs (rbx, r12-r15) must be preserved across gfx_* calls",
         "ecx is caller-saved: reload h from memory before each gfx call, don't push/pop"
       ],
-      "content_hash": "e254474dbaf2",
+      "content_hash": "e875a263f553",
       "line_count": 2905
     },
     "gui/viz_main.asm": {
