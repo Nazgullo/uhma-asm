@@ -148,6 +148,37 @@ Every .asm file should have this at top:
 ;   - specific pitfalls for this file
 ```
 
+## Claude Code Integration
+
+### Automatic Context Injection (Hooks)
+Pre-tool hooks automatically inject relevant context before Read/Edit/Write/Grep/Glob operations on `.asm` files:
+- **File operations** → file description, entry points, gotchas, dependencies
+- **Glob for *.asm** → all gotchas across the codebase
+
+This prevents repeating past mistakes by surfacing gotchas at edit time.
+
+### MCP Server (UHMA Control Interface)
+Full command/control/communication with UHMA via MCP tools:
+
+| Tool | Description |
+|------|-------------|
+| `input` | Send text for processing/prediction |
+| `status`, `self`, `metacog` | System state inspection |
+| `why`, `misses`, `receipts` | Debug via unified trace |
+| `dream`, `observe`, `compact` | Trigger consolidation cycles |
+| `eat`, `save`, `load` | File I/O |
+| `web_fetch` | Fetch URL, optionally digest into UHMA |
+| `raw` | Escape hatch for any REPL command |
+
+Auto-spawns UHMA on MCP initialization. Bidirectional stdin/stdout pipe.
+
+### RAG Index
+`tools/rag/index.json` contains:
+- 29 files with descriptions, entry points, gotchas
+- 40 functions with signatures
+- Full dependency graph
+- Rebuilt via: `python3 tools/rag/build.py`
+
 ## Common Commands
 ```bash
 # Quick test
