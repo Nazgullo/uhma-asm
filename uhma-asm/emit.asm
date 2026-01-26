@@ -23,6 +23,7 @@ extern sym_observe_mod
 extern verify_modification
 extern region_condemn
 extern emit_receipt_simple
+extern emit_receipt_full
 extern holo_gen_vec
 extern holo_dot_f64
 extern holo_superpose_f64
@@ -156,16 +157,26 @@ emit_dispatch_pattern:
     jmp .emit_done
 .verify_passed:
 
-    ; === EMIT RECEIPT: EVENT_EMIT ===
+    ; === EMIT RECEIPT: EVENT_EMIT (with region and emit address) ===
     push rbx
     push r12
     push r13
-    mov edi, EVENT_EMIT       ; event_type
-    mov esi, r12d             ; ctx_hash
-    mov edx, r13d             ; token_id
-    mov eax, 0x3F800000       ; 1.0f confidence (we just emitted, so confidence is 1)
+    mov edi, EVENT_EMIT               ; event_type
+    mov esi, r12d                     ; ctx_hash
+    mov edx, r13d                     ; actual_token
+    xor ecx, ecx                      ; predicted = 0
+    ; Hash the region pointer
+    mov rax, rbx
+    shr rax, 4
+    mov r8d, eax                      ; region_hash
+    ; Use emit address (rbx + RHDR_SIZE) as aux
+    lea rax, [rbx + RHDR_SIZE]
+    shr rax, 4
+    mov r9d, eax                      ; aux = emit_addr_hash
+    mov eax, 0x3F800000               ; 1.0f confidence
     movd xmm0, eax
-    call emit_receipt_simple
+    xorpd xmm1, xmm1                  ; valence = 0
+    call emit_receipt_full
     pop r13
     pop r12
     pop rbx

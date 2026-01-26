@@ -566,6 +566,16 @@ holo_bind_f64:
     ret
 
 ;; ============================================================
+;; holo_unbind_f64(a, b, out)
+;; rdi=a, rsi=b, rdx=out — all f64[1024]
+;; For HRR: unbind = bind (self-inverse property)
+;; unbind(bind(A, B), A) ≈ B
+;; ============================================================
+global holo_unbind_f64
+holo_unbind_f64:
+    jmp holo_bind_f64         ; same operation for HRR
+
+;; ============================================================
 ;; holo_superpose_f64(a, b)
 ;; rdi=a (modified: a += b), rsi=b — f64[1024]
 ;; Vector addition (bundling) in f64.

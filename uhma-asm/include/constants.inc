@@ -955,18 +955,31 @@
 %define ST_RECEIPT_WORK_POS (ST_RECEIPT_WORKING + ST_RECEIPT_WORK_SIZE)  ; u32 position
 %define ST_RECEIPT_TOTAL    (ST_RECEIPT_WORK_POS + 4)     ; u64 total emitted
 %define ST_RECEIPT_LISTENER (ST_RECEIPT_TOTAL + 8)        ; u32 listener bitmask
-%define ST_RECEIPT_END      (ST_RECEIPT_LISTENER + 4)
+%define ST_ACTIVE_TRACER    (ST_RECEIPT_LISTENER + 4)     ; u32 active tracer ID (0=none)
+%define ST_RECEIPT_END      (ST_ACTIVE_TRACER + 4)
 
-; Receipt holographic trace indices (within main HOLO_OFFSET area)
-; We use dedicated trace slots for receipt types, enabling targeted queries
-; These are indices into the holographic trace array
-%define RCPT_TRACE_HIT      240   ; trace index for HIT events
-%define RCPT_TRACE_MISS     241   ; trace index for MISS events
-%define RCPT_TRACE_NEW      242   ; trace index for NEW events
-%define RCPT_TRACE_LEARN    243   ; trace index for LEARN events
-%define RCPT_TRACE_EMIT     244   ; trace index for EMIT events
-%define RCPT_TRACE_COMBINED 245   ; combined trace (all events superposed)
-%define RCPT_TRACE_COUNT    6     ; number of receipt traces
+; Unified holographic trace for ALL receipts (replaces separate per-event traces)
+; Query any dimension via unbind - event type is just another bound dimension
+%define UNIFIED_TRACE_IDX   240   ; single trace index for all receipts
+
+; Legacy aliases for backward compatibility (all map to unified trace now)
+; The "separate buckets" are now virtual views via unbind
+%define RCPT_TRACE_HIT      UNIFIED_TRACE_IDX
+%define RCPT_TRACE_MISS     UNIFIED_TRACE_IDX
+%define RCPT_TRACE_NEW      UNIFIED_TRACE_IDX
+%define RCPT_TRACE_LEARN    UNIFIED_TRACE_IDX
+%define RCPT_TRACE_EMIT     UNIFIED_TRACE_IDX
+%define RCPT_TRACE_COMBINED UNIFIED_TRACE_IDX
+%define RCPT_TRACE_COUNT    1     ; now just one unified trace
+
+; Seeds for deterministic vector generation (bind dimensions)
+%define TRACE_EVENT_SEED    0x45564E54  ; "EVNT" - event type dimension
+%define TRACE_TRACER_SEED   0x54524143  ; "TRAC" - tracer ID dimension
+%define TRACE_TIME_SEED     0x54494D45  ; "TIME" - time bucket dimension
+%define TRACE_TIME_BUCKET   1000        ; steps per time bucket
+%define TRACE_PREDICTED_SEED 0x50524544 ; "PRED" - predicted token dimension
+%define TRACE_REGION_SEED   0x5245474E  ; "REGN" - region/pattern dimension
+%define TRACE_AUX_SEED      0x41555831  ; "AUX1" - auxiliary data dimension
 
 ;; Holographic Suffix Factoring — detect similar suffixes via resonance
 %define SUFFIX_TRACE_IDX    246   ; trace index for suffix resonance

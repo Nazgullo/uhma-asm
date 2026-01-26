@@ -81,6 +81,7 @@ extern resonant_match
 extern resonant_get_threshold
 extern resonant_extract_token
 extern emit_receipt_simple
+extern emit_receipt_full
 extern receipt_resonate
 
 ;; ============================================================
@@ -540,13 +541,21 @@ process_token:
     jz .holo_hit              ; holo prediction — still count as hit
     inc dword [rcx + RHDR_HITS]
 
-    ; === EMIT RECEIPT: EVENT_HIT ===
+    ; === EMIT RECEIPT: EVENT_HIT (full context) ===
     push rcx                  ; save region ptr
-    mov edi, EVENT_HIT        ; event_type
-    mov esi, r13d             ; ctx_hash (lower 32 bits of context)
-    mov edx, r12d             ; token_id
-    movss xmm0, [rbx + STATE_OFFSET + ST_EXPECT_CONF]  ; confidence
-    call emit_receipt_simple
+    mov edi, EVENT_HIT                ; event_type
+    mov esi, r13d                     ; ctx_hash
+    mov edx, r12d                     ; actual_token (same as predicted for HIT)
+    mov ecx, r12d                     ; predicted_token (same as actual)
+    ; Hash the region pointer
+    mov rax, [rsp]                    ; get region ptr from stack
+    shr rax, 4
+    mov r8d, eax                      ; region_hash
+    mov r9d, [rbx + STATE_OFFSET + ST_RUNNER_UP_TOKEN] ; aux = runner-up
+    movss xmm0, [rbx + STATE_OFFSET + ST_EXPECT_CONF]
+    movss xmm1, [rbx + STATE_OFFSET + ST_PRESENCE + PRES_VALENCE * 4]
+    cvtss2sd xmm1, xmm1
+    call emit_receipt_full
     pop rcx
 
     ; STDP connection learning — strengthen temporal links
@@ -763,12 +772,21 @@ process_token:
     inc dword [rbx + STATE_OFFSET + ST_COUNTERFACT_WINS]
 .counterfact_done:
 
-    ; === EMIT RECEIPT: EVENT_MISS ===
-    mov edi, EVENT_MISS       ; event_type
-    mov esi, r13d             ; ctx_hash (lower 32 bits of context)
-    mov edx, r12d             ; token_id (actual)
-    movss xmm0, [rbx + STATE_OFFSET + ST_EXPECT_CONF]  ; confidence (was wrong)
-    call emit_receipt_simple
+    ; === EMIT RECEIPT: EVENT_MISS (full context for debugging) ===
+    mov edi, EVENT_MISS               ; event_type
+    mov esi, r13d                     ; ctx_hash
+    mov edx, r12d                     ; actual_token
+    mov ecx, [rbx + STATE_OFFSET + ST_EXPECT_TOKEN]   ; predicted_token (THE KEY!)
+    ; Hash the region pointer for region dimension
+    mov rax, [rbx + STATE_OFFSET + ST_PREDICT_REGION]
+    shr rax, 4                        ; simple hash: shift off alignment bits
+    mov r8d, eax                      ; region_hash
+    mov r9d, [rbx + STATE_OFFSET + ST_RUNNER_UP_TOKEN] ; aux = runner-up token
+    movss xmm0, [rbx + STATE_OFFSET + ST_EXPECT_CONF] ; confidence (was wrong)
+    ; Get valence from presence
+    movss xmm1, [rbx + STATE_OFFSET + ST_PRESENCE + PRES_VALENCE * 4]
+    cvtss2sd xmm1, xmm1
+    call emit_receipt_full
 
     ; Fire miss hook
     mov edi, HOOK_ON_MISS

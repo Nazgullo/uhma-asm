@@ -50,6 +50,7 @@ extern vsa_gen_valence_vec
 extern holo_superpose_f64
 extern holo_gen_vec
 extern emit_receipt_simple
+extern emit_receipt_full
 extern receipt_resonate
 
 ;; ============================================================
@@ -196,14 +197,21 @@ learn_pattern:
     mov edx, [rax]            ; birth_step (lower 32 of global step)
     call emit_dispatch_pattern
 
-    ; === EMIT RECEIPT: EVENT_LEARN ===
+    ; === EMIT RECEIPT: EVENT_LEARN (with region info) ===
     push rax                  ; save region ptr
-    mov edi, EVENT_LEARN      ; event_type
-    mov esi, r12d             ; ctx_hash
-    mov edx, r13d             ; token_id
+    mov edi, EVENT_LEARN              ; event_type
+    mov esi, r12d                     ; ctx_hash
+    mov edx, r13d                     ; actual_token (token being learned)
+    xor ecx, ecx                      ; predicted = 0 (no prediction, we're learning)
+    ; Hash the new region pointer
+    shr rax, 4
+    mov r8d, eax                      ; region_hash (newly created pattern)
+    xor r9d, r9d                      ; aux = 0
     movsd xmm0, [rsp + 8 + HOLO_VEC_BYTES]  ; reload energy_delta as confidence
-    cvtsd2ss xmm0, xmm0       ; convert f64 to f32
-    call emit_receipt_simple
+    cvtsd2ss xmm0, xmm0
+    movss xmm1, [rbx + STATE_OFFSET + ST_PRESENCE + PRES_VALENCE * 4]
+    cvtss2sd xmm1, xmm1
+    call emit_receipt_full
     pop rax
 
     ; Track recent emission count (for introspective state)

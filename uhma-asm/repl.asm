@@ -17,6 +17,8 @@ section .data
                     db "  genes         Show gene pool status (composted patterns)", 10
                     db "  subroutines   Show shared subroutines (recursive schemas)", 10
                     db "  receipts [n]  Show last n receipts (default 10)", 10
+                    db "  why           Explain last prediction failure (the answer!)", 10
+                    db "  misses [n]    Show last n misses with predicted vs actual", 10
                     db "  listen        Enable receipt stream (ring+print)", 10
                     db "  regions       List all regions with hit/miss stats", 10
                     db "  presence      Show presence field values", 10
@@ -138,6 +140,8 @@ extern subroutines_show       ; from factor.asm - show subroutine table
 extern receipt_dump           ; from receipt.asm - dump recent receipts
 extern receipt_listen         ; from receipt.asm - enable receipt listeners
 extern receipt_mute           ; from receipt.asm - disable receipt listeners
+extern receipt_why_miss       ; from receipt.asm - explain last miss
+extern receipt_show_misses    ; from receipt.asm - show last N misses
 
 ;; ============================================================
 ;; repl_run
@@ -529,6 +533,34 @@ repl_run:
     jmp .not_receipts
 .not_receipts:
 
+    ; "why" (explain last miss - THE ANSWER!)
+    cmp word [rbx], 'wh'
+    jne .not_why
+    cmp byte [rbx + 2], 'y'
+    jne .not_why
+    movzx eax, byte [rbx + 3]
+    test eax, eax
+    jz .cmd_why
+    cmp eax, 10
+    je .cmd_why
+    jmp .not_why
+.not_why:
+
+    ; "misses" (6-char match) or "misses N"
+    cmp dword [rbx], 'miss'
+    jne .not_misses
+    cmp word [rbx + 4], 'es'
+    jne .not_misses
+    movzx eax, byte [rbx + 6]
+    test eax, eax
+    jz .cmd_misses
+    cmp eax, ' '
+    je .cmd_misses_arg
+    cmp eax, 10
+    je .cmd_misses
+    jmp .not_misses
+.not_misses:
+
     ; "listen" (6-char match: l-i-s-t-e-n) - enable receipt listeners
     cmp dword [rbx], 'list'
     jne .not_listen
@@ -792,6 +824,27 @@ repl_run:
     jz .cmd_receipts          ; if 0 or invalid, use default
     mov edi, eax
     call receipt_dump
+    jmp .loop
+
+.cmd_why:
+    ; Explain last miss - THE ANSWER to "why did it fail?"
+    call receipt_why_miss
+    jmp .loop
+
+.cmd_misses:
+    ; Show last 5 misses (default)
+    mov edi, 5
+    call receipt_show_misses
+    jmp .loop
+
+.cmd_misses_arg:
+    ; Parse count from "misses <n>"
+    lea rdi, [rbx + 7]        ; skip "misses "
+    call parse_decimal        ; → eax = count
+    test eax, eax
+    jz .cmd_misses            ; if 0 or invalid, use default
+    mov edi, eax
+    call receipt_show_misses
     jmp .loop
 
 .cmd_listen:
