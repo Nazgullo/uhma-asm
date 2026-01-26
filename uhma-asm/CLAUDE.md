@@ -242,6 +242,23 @@ Full command/control/communication with UHMA via MCP tools:
 
 Auto-spawns UHMA on MCP initialization. Bidirectional stdin/stdout pipe.
 
+**MCP Configuration** (IMPORTANT):
+- Config file: `PROJECT_ROOT/.mcp.json` (NOT `~/.claude/mcp.json`)
+- Claude Code must be **restarted** after adding/modifying `.mcp.json`
+- Verify with `/mcp` command in Claude Code after restart
+- Example `.mcp.json`:
+```json
+{
+  "mcpServers": {
+    "uhma": {
+      "command": "python3",
+      "args": ["/path/to/uhma-asm/tools/rag/server.py"],
+      "cwd": "/path/to/uhma-asm"
+    }
+  }
+}
+```
+
 ### RAG Index
 `tools/rag/index.json` contains:
 - 29 files with descriptions, entry points, gotchas

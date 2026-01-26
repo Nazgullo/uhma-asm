@@ -1,11 +1,27 @@
 #!/usr/bin/env python3
 """
-MCP Server for UHMA - Complete Command/Control/Communication Interface.
+server.py — MCP Server for UHMA command/control/communication.
 
-Auto-spawns UHMA on startup, exposes all REPL commands as MCP tools,
-plus web_fetch for pulling content into UHMA.
+@entry main() -> runs MCP protocol loop
+@calls uhma binary via subprocess
 
-To use: Add to Claude Code MCP settings.
+FLOW: MCP client (Claude Code) → JSON-RPC → this server → UHMA stdin/stdout
+CONFIG: Project-level .mcp.json in uhma-asm root (NOT ~/.claude/mcp.json)
+
+TOOLS EXPOSED (27 total):
+  - Input: input, raw
+  - Status: help, status, self, metacog, debugger, genes, subroutines, regions, presence, drives
+  - Debug: why, misses, receipts, listen, trace
+  - Actions: dream, observe, compact, reset
+  - I/O: save, load, eat
+  - Hive: hive, share, colony, export, import_gene
+  - Other: geom, web_fetch, quit
+
+GOTCHAS:
+  - MCP config must be at PROJECT_ROOT/.mcp.json, not ~/.claude/mcp.json
+  - Claude Code must be restarted after adding/modifying .mcp.json
+  - eat command uses 60s timeout (large files take time)
+  - UHMA auto-spawns on first tool call if not running
 """
 
 import json

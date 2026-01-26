@@ -6,6 +6,19 @@ UHMA (Unified Holographic Memory Architecture) - self-modifying x86-64 assembly 
 
 ## Recent Sessions
 
+### Session 2 (2026-01-26) - MCP Config Fix
+**Done:**
+- Fixed MCP server not connecting - config was at wrong location
+- Moved from `~/.claude/mcp.json` to `PROJECT_ROOT/.mcp.json`
+- Updated file headers for server.py and hook.py
+- Updated CLAUDE.md with correct MCP configuration docs
+- Rebuilt RAG index
+
+**Key Insight:**
+- Claude Code expects `.mcp.json` at **project root**, not `~/.claude/`
+- Must **restart Claude Code** after modifying `.mcp.json`
+- Verify connection with `/mcp` command
+
 ### Session 1 (2026-01-26) - RAG + Memory Integration
 **Done:**
 - Fixed preToolUse hooks to read JSON from stdin

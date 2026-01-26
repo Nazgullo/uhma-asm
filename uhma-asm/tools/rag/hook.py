@@ -1,11 +1,25 @@
 #!/usr/bin/env python3
 """
-Hook script for Claude Code preToolUse.
+hook.py — Claude Code preToolUse hook for context injection.
 
-Called automatically before Edit/Write/Read/Grep/Glob operations.
-- Injects memory context on first operation of session
-- Injects file-specific context for .asm files
-- Injects all gotchas for .asm glob patterns
+@entry (main script execution via stdin JSON)
+@calls memory.py:Memory, context.py:context_before_edit, context.py:get_all_gotchas
+
+FLOW: Claude Code → PreToolUse event → this script → JSON additionalContext → Claude
+CONFIG: Configured in ~/.claude/settings.json hooks section
+
+INJECTION TYPES:
+  - Session context: Memory entries + current_state.md on first operation
+  - File context: File description, entry points, gotchas for .asm files
+  - All gotchas: Full gotcha list for *.asm glob patterns
+
+OUTPUT FORMAT:
+  {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": "..."}}
+
+GOTCHAS:
+  - Must read JSON from stdin (hook_data), not command-line args
+  - SESSION_MARKER (.session_active) tracks first-op-of-session
+  - Plain stdout only visible in verbose mode; must use additionalContext JSON
 """
 
 import sys

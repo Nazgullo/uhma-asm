@@ -806,7 +806,7 @@
         "rcx clobbered by calls, use r10-r15 in digest loop",
         "Restore r14 (SURFACE_BASE) after fault recovery in continue_loop"
       ],
-      "content_hash": "48ae494b2ab7",
+      "content_hash": "35d1d9684a2b",
       "line_count": 853
     },
     "learn.asm": {
