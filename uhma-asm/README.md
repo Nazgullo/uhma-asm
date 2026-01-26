@@ -185,6 +185,42 @@ Common issues:
 - Different contexts = different patterns ("hello" after "the" ≠ "hello" after "world")
 - Abstraction bugs: check if numbers/hex are being collapsed properly
 
+## Claude Code Integration (MCP)
+
+UHMA exposes 27 tools via MCP (Model Context Protocol) for full control from Claude Code.
+
+### Setup
+
+Create `.mcp.json` in project root:
+```json
+{
+  "mcpServers": {
+    "uhma": {
+      "command": "python3",
+      "env": {"PYTHONUNBUFFERED": "1"},
+      "args": ["/path/to/uhma-asm/tools/rag/server.py"],
+      "cwd": "/path/to/uhma-asm"
+    }
+  }
+}
+```
+
+**Important**: Restart Claude Code after creating/modifying `.mcp.json`. Verify with `/mcp` command.
+
+### Available MCP Tools
+
+| Category | Tools |
+|----------|-------|
+| Input | `input`, `raw` |
+| Status | `help`, `status`, `self`, `metacog`, `debugger`, `genes`, `subroutines`, `regions`, `presence`, `drives` |
+| Debug | `why`, `misses`, `receipts`, `listen`, `trace` |
+| Actions | `dream`, `observe`, `compact`, `reset` |
+| I/O | `save`, `load`, `eat` |
+| Hive | `hive`, `share`, `colony`, `export`, `import_gene` |
+| Other | `geom`, `web_fetch`, `quit` |
+
+UHMA auto-spawns when any tool is called.
+
 ## Building from Source
 
 ```bash

@@ -249,10 +249,10 @@ section .data
     energy_per_token:   dq 0.1     ; 0.1 energy per token extracted
 
 section .bss
-    ; File read buffer (64KB)
+    ; File read buffer (4MB - fits in L3 cache)
     align 16
-    digest_buffer:      resb 65536
-    digest_buffer_len:  equ 65536
+    digest_buffer:      resb 4194304
+    digest_buffer_len:  equ 4194304
 
 section .text
 

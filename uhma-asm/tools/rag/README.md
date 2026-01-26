@@ -1,59 +1,93 @@
-# UHMA RAG System
+# UHMA Tools
 
-Context injection for Claude Code. Automatically provides gotchas, dependencies, and entry points before editing files.
+Context injection and MCP control interface for Claude Code.
 
-## Setup
+## Components
 
-Add to `~/.claude/settings.json`:
+### 1. MCP Server (`server.py`)
+
+Full UHMA control interface via Model Context Protocol. Exposes 27 tools for command, control, and communication with UHMA.
+
+**Setup**: Create `.mcp.json` in project root (NOT `~/.claude/mcp.json`):
 
 ```json
 {
   "mcpServers": {
-    "uhma-rag": {
+    "uhma": {
       "command": "python3",
-      "args": ["/home/peter/Desktop/STARWARS/uhma-asm/tools/rag/server.py"],
-      "cwd": "/home/peter/Desktop/STARWARS/uhma-asm/tools/rag"
+      "env": {"PYTHONUNBUFFERED": "1"},
+      "args": ["/path/to/uhma-asm/tools/rag/server.py"],
+      "cwd": "/path/to/uhma-asm"
     }
   }
 }
 ```
 
-Or for project-specific, add to `.claude/settings.json` in the project root.
+**Important**: Restart Claude Code after modifying `.mcp.json`. Verify with `/mcp` command.
 
-## Tools Exposed
+**Tools Exposed**:
+| Category | Tools |
+|----------|-------|
+| Input | `input` (process text), `raw` (escape hatch) |
+| Status | `help`, `status`, `self`, `metacog`, `debugger`, `genes`, `subroutines`, `regions`, `presence`, `drives` |
+| Debug | `why`, `misses`, `receipts`, `listen`, `trace` |
+| Actions | `dream`, `observe`, `compact`, `reset` |
+| I/O | `save`, `load`, `eat` (digest file) |
+| Hive | `hive`, `share`, `colony`, `export`, `import_gene` |
+| Other | `geom`, `web_fetch`, `quit` |
 
-| Tool | Description |
-|------|-------------|
-| `uhma_before_edit` | Context before editing a .asm file (gotchas, deps, entries) |
-| `uhma_before_call` | Context for a function (signature, gotchas) |
-| `uhma_search` | Search files, functions, concepts |
-| `uhma_gotchas` | List all gotchas |
+UHMA auto-spawns on first tool call if not running.
 
-## Manual Usage (without MCP)
+### 2. PreToolUse Hook (`hook.py`)
 
-```bash
-# Before editing
-python context.py before-edit dispatch
+Injects context before Claude Code edits/reads `.asm` files:
+- File descriptions, entry points, gotchas
+- Dependency information
+- Session context and memory entries
 
-# List gotchas
-python context.py gotchas
-
-# Search
-python context.py search "token"
+**Config**: In `~/.claude/settings.json`:
+```json
+{
+  "hooks": {
+    "preToolUse": [
+      {
+        "matcher": {"toolName": "Edit|Write|Read|Grep|Glob"},
+        "hooks": [{"command": "python3 /path/to/tools/rag/hook.py"}]
+      }
+    ]
+  }
+}
 ```
 
-## Rebuilding Index
+### 3. RAG Index (`index.json`)
 
-After modifying file headers:
+Pre-built index of UHMA codebase:
+- 29 files with descriptions, entry points, gotchas
+- 223+ functions with signatures
+- Full dependency graph
 
+**Rebuild**:
 ```bash
-python build.py
+python3 build.py
 ```
 
-## Files
+### 4. Semantic Memory (`memory.py`)
 
-- `build.py` - Parses headers, generates index.json
-- `query.py` - CLI for querying
-- `context.py` - Context generation functions
-- `server.py` - MCP server for Claude Code integration
-- `index.json` - Generated index (29 files, 40 functions, 27 gotchas)
+Cross-session persistence for findings, failures, insights:
+- TF-IDF search
+- Theme clustering
+- Session tracking
+
+**Files**: `memory/entries.json`, `memory/current_state.md`
+
+## File Reference
+
+| File | Purpose |
+|------|---------|
+| `server.py` | MCP server (UHMA control interface) |
+| `hook.py` | PreToolUse hook (context injection) |
+| `build.py` | RAG index builder |
+| `context.py` | Context generation functions |
+| `query.py` | CLI for querying index |
+| `memory.py` | Semantic memory system |
+| `index.json` | Generated index |

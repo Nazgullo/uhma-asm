@@ -139,17 +139,29 @@ def web_fetch(url):
 
 
 # MCP protocol
+# Track whether client uses Content-Length framing (some use raw JSON lines)
+_use_content_length = True
+
 def send_response(id, result):
+    global _use_content_length
     response = {"jsonrpc": "2.0", "id": id, "result": result}
     msg = json.dumps(response)
-    sys.stdout.write(f"Content-Length: {len(msg)}\r\n\r\n{msg}")
+    if _use_content_length:
+        sys.stdout.write(f"Content-Length: {len(msg)}\r\n\r\n{msg}")
+    else:
+        sys.stdout.write(msg + "\n")
     sys.stdout.flush()
+    log(f"Sent response: {msg[:100]}...")
 
 
 def send_error(id, code, message):
+    global _use_content_length
     response = {"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}
     msg = json.dumps(response)
-    sys.stdout.write(f"Content-Length: {len(msg)}\r\n\r\n{msg}")
+    if _use_content_length:
+        sys.stdout.write(f"Content-Length: {len(msg)}\r\n\r\n{msg}")
+    else:
+        sys.stdout.write(msg + "\n")
     sys.stdout.flush()
 
 
@@ -471,10 +483,10 @@ def handle_request(request):
     params = request.get("params", {})
 
     if method == "initialize":
-        # Start UHMA on initialization
-        started = start_uhma()
+        # Echo back the client's protocol version for compatibility
+        client_version = params.get("protocolVersion", "2024-11-05")
         send_response(id, {
-            "protocolVersion": "2024-11-05",
+            "protocolVersion": client_version,
             "capabilities": {"tools": {}},
             "serverInfo": {
                 "name": "uhma-control",
@@ -498,32 +510,73 @@ def handle_request(request):
     elif method == "notifications/initialized":
         pass  # No response needed
 
+    elif method == "ping":
+        # Health check - respond immediately
+        send_response(id, {})
+
     else:
         if id is not None:
             send_error(id, -32601, f"Unknown method: {method}")
 
 
+def log(msg):
+    """Debug logging to file"""
+    with open("/tmp/uhma_mcp_debug.log", "a") as f:
+        f.write(f"{time.time()}: {msg}\n")
+        f.flush()
+
+
 def main():
+    sys.stderr.write("UHMA MCP server starting...\n")
+    sys.stderr.flush()
+    log("Server starting")
+
     while True:
-        # Read headers
-        headers = {}
-        while True:
+        try:
+            log("Waiting for input...")
             line = sys.stdin.readline()
+            log(f"Got line: {repr(line[:100] if len(line) > 100 else line)}")
             if not line:
+                log("EOF received")
                 return  # EOF
+
             line = line.strip()
             if not line:
-                break
-            if ":" in line:
-                key, value = line.split(":", 1)
-                headers[key.strip()] = value.strip()
+                continue  # Skip empty lines
 
-        # Read content
-        content_length = int(headers.get("Content-Length", 0))
-        if content_length > 0:
-            content = sys.stdin.read(content_length)
-            request = json.loads(content)
-            handle_request(request)
+            # Check if this is raw JSON (Claude Code sends JSON-RPC without Content-Length headers)
+            if line.startswith("{"):
+                global _use_content_length
+                _use_content_length = False  # Switch to raw JSON mode
+                log("Raw JSON detected, switching to JSON-line mode")
+                request = json.loads(line)
+                log(f"Parsed request: {request.get('method')}")
+                handle_request(request)
+                log("Request handled")
+                continue
+
+            # Otherwise try Content-Length header format
+            if line.startswith("Content-Length:"):
+                content_length = int(line.split(":", 1)[1].strip())
+                log(f"Content-Length: {content_length}")
+                # Read blank line
+                sys.stdin.readline()
+                # Read content
+                content = sys.stdin.read(content_length)
+                log(f"Got content: {content[:100]}...")
+                if content:
+                    request = json.loads(content)
+                    log(f"Parsed request: {request.get('method')}")
+                    handle_request(request)
+                    log("Request handled")
+        except json.JSONDecodeError as e:
+            # Log but don't crash on malformed JSON
+            sys.stderr.write(f"JSON decode error: {e}\n")
+            sys.stderr.flush()
+        except Exception as e:
+            # Log unexpected errors but keep running
+            sys.stderr.write(f"Server error: {e}\n")
+            sys.stderr.flush()
 
 
 if __name__ == "__main__":
