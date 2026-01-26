@@ -767,7 +767,9 @@
           "returns": "process regions with RFLAG_NEEDS_REPAIR (self-surprise)"
         }
       ],
-      "calls": [],
+      "calls": [
+        "receipt.asm:meta_recommend_strategy"
+      ],
       "called_by": [
         "dispatch.asm:after",
         "repl.asm:tick"
@@ -775,8 +777,8 @@
       "flow": "",
       "state": [],
       "gotchas": [],
-      "content_hash": "9ee19002b811",
-      "line_count": 1450
+      "content_hash": "58ac7dc26ae8",
+      "line_count": 1474
     },
     "io.asm": {
       "path": "io.asm",
@@ -965,13 +967,14 @@
         "drives.asm",
         "evolve.asm",
         "observe.asm",
-        "dreams.asm"
+        "dreams.asm",
+        "introspect.asm"
       ],
       "flow": "",
       "state": [],
       "gotchas": [],
-      "content_hash": "ac2735ffda0c",
-      "line_count": 507
+      "content_hash": "b7278fb69535",
+      "line_count": 611
     },
     "observe.asm": {
       "path": "observe.asm",
@@ -1094,7 +1097,7 @@
     },
     "receipt.asm": {
       "path": "receipt.asm",
-      "description": "Unified Holographic Receipt Layer",
+      "description": "Unified Holographic Receipt Layer + Cognitive Self-Model",
       "entries": [
         {
           "name": "emit_receipt_full",
@@ -1112,16 +1115,6 @@
           "returns": "xmm0=similarity"
         },
         {
-          "name": "receipt_why_miss",
-          "args": "",
-          "returns": "void ; REPL \"why\" command"
-        },
-        {
-          "name": "receipt_show_misses",
-          "args": "edi=n",
-          "returns": "void ; REPL \"misses N\""
-        },
-        {
           "name": "trace_region_performance",
           "args": "edi=region",
           "returns": "xmm0=ratio"
@@ -1135,6 +1128,61 @@
           "name": "trace_hit_miss_ratio",
           "args": "",
           "returns": "xmm0=ratio"
+        },
+        {
+          "name": "intro_query_confusion",
+          "args": "edi=ctx",
+          "returns": "xmm0=resonance ; MISS resonance"
+        },
+        {
+          "name": "intro_query_confidence",
+          "args": "edi=ctx",
+          "returns": "xmm0=resonance ; HIT resonance"
+        },
+        {
+          "name": "intro_query_learning",
+          "args": "edi=ctx",
+          "returns": "xmm0=resonance ; LEARN resonance"
+        },
+        {
+          "name": "intro_get_state",
+          "args": "edi=ctx",
+          "returns": "eax=state, xmm0=strength ; dominant state"
+        },
+        {
+          "name": "intro_report",
+          "args": "edi=ctx",
+          "returns": "void ; REPL \"intro\" command"
+        },
+        {
+          "name": "self_show_context_types",
+          "args": "",
+          "returns": "eax=strengths, edx=weaknesses"
+        },
+        {
+          "name": "causal_query_modification",
+          "args": "edi=event,esi=ctx",
+          "returns": "xmm0=resonance"
+        },
+        {
+          "name": "causal_report",
+          "args": "edi=ctx",
+          "returns": "void ; REPL \"causal\" command"
+        },
+        {
+          "name": "meta_recommend_strategy",
+          "args": "edi=ctx",
+          "returns": "eax=recommended_event_type"
+        },
+        {
+          "name": "receipt_why_miss",
+          "args": "",
+          "returns": "void ; REPL \"why\" command"
+        },
+        {
+          "name": "receipt_show_misses",
+          "args": "edi=n",
+          "returns": "void ; REPL \"misses N\""
         }
       ],
       "calls": [
@@ -1147,17 +1195,20 @@
         "learn.asm",
         "emit.asm",
         "observe.asm",
-        "dreams.asm"
+        "dreams.asm",
+        "repl.asm",
+        "introspect.asm"
       ],
       "flow": "",
       "state": [],
       "gotchas": [
         "emit_receipt_full for MISS must include predicted token (diagnostic key)",
         "receipt_resonate returns f64 similarity, not bool",
-        "Working buffer is ring, wraps at 16 entries"
+        "Working buffer is ring, wraps at 16 entries",
+        "Causal queries need receipts with aux=accuracy*1000 (emitted by modify.asm)"
       ],
-      "content_hash": "70f01bca4f03",
-      "line_count": 1364
+      "content_hash": "eb9f4a1205f3",
+      "line_count": 1982
     },
     "repl.asm": {
       "path": "repl.asm",
@@ -1175,6 +1226,9 @@
         "receipt.asm:receipt_why_miss",
         "receipt_show_misses",
         "receipt_dump",
+        "receipt.asm:intro_report",
+        "causal_report",
+        "self_show_context_types",
         "observe.asm:observe_cycle",
         "dreams.asm:dream_cycle",
         "surface.asm:surface_freeze"
@@ -1189,8 +1243,8 @@
         "New command = add string match + .not_X + .cmd_X handler",
         "quit must call surface_freeze before exit"
       ],
-      "content_hash": "f0b10044042d",
-      "line_count": 2215
+      "content_hash": "093b0a2d7052",
+      "line_count": 2266
     },
     "signal.asm": {
       "path": "signal.asm",
@@ -2112,12 +2166,6 @@
     "receipt_resonate": [
       "receipt.asm"
     ],
-    "receipt_why_miss": [
-      "receipt.asm"
-    ],
-    "receipt_show_misses": [
-      "receipt.asm"
-    ],
     "trace_region_performance": [
       "receipt.asm"
     ],
@@ -2125,6 +2173,39 @@
       "receipt.asm"
     ],
     "trace_hit_miss_ratio": [
+      "receipt.asm"
+    ],
+    "intro_query_confusion": [
+      "receipt.asm"
+    ],
+    "intro_query_confidence": [
+      "receipt.asm"
+    ],
+    "intro_query_learning": [
+      "receipt.asm"
+    ],
+    "intro_get_state": [
+      "receipt.asm"
+    ],
+    "intro_report": [
+      "receipt.asm"
+    ],
+    "self_show_context_types": [
+      "receipt.asm"
+    ],
+    "causal_query_modification": [
+      "receipt.asm"
+    ],
+    "causal_report": [
+      "receipt.asm"
+    ],
+    "meta_recommend_strategy": [
+      "receipt.asm"
+    ],
+    "receipt_why_miss": [
+      "receipt.asm"
+    ],
+    "receipt_show_misses": [
       "receipt.asm"
     ],
     "repl_run": [
@@ -2493,7 +2574,9 @@
       ]
     },
     "introspect.asm": {
-      "depends_on": [],
+      "depends_on": [
+        "receipt.asm"
+      ],
       "depended_by": [
         "decode.asm"
       ]
@@ -2554,6 +2637,7 @@
         "dispatch.asm",
         "dreams.asm",
         "emit.asm",
+        "introspect.asm",
         "learn.asm",
         "observe.asm",
         "repl.asm"
@@ -2614,7 +2698,7 @@
   },
   "meta": {
     "file_count": 33,
-    "function_count": 214,
-    "total_gotchas": 47
+    "function_count": 223,
+    "total_gotchas": 48
   }
 }
