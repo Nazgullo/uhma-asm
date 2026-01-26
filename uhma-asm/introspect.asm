@@ -31,7 +31,14 @@
 ;   SURPRISE_OUTCOME triggers dream_pressure (world unknown)
 ;   introspect_repair_cycle processes regions with RFLAG_NEEDS_REPAIR
 ;
+; META-STRATEGY INTEGRATION:
+;   introspect_repair_cycle() now calls meta_recommend_strategy() from receipt.asm
+;   This consults the causal model (receipts with aux=accuracy) before deciding
+;   whether to specialize vs generalize. Falls back to hits/misses heuristic if
+;   no causal data available for the context.
+;
 ; CALLED BY: dispatch.asm (after each token), repl.asm (tick command)
+; @calls receipt.asm:meta_recommend_strategy
 ;
 %include "syscalls.inc"
 %include "constants.inc"
@@ -85,6 +92,7 @@ extern drives_check
 extern journey_step
 extern modify_generalize
 extern modify_specialize
+extern meta_recommend_strategy  ; from receipt.asm - causal model guidance
 
 ;; ============================================================
 ;; introspect_region(region_ptr) → fills cache entry
@@ -1395,20 +1403,36 @@ introspect_repair_cycle:
     test rsi, rsi
     jz .clear_flag
 
-    ; Analyze performance: hits vs misses
+    ; First, consult causal model for guidance
+    xor edi, edi              ; use current context
+    call meta_recommend_strategy  ; eax = recommended event type
+
+    ; If causal model has data, use it
+    cmp eax, EVENT_GENERALIZE
+    je .do_generalize
+    cmp eax, EVENT_SPECIALIZE
+    je .do_specialize
+    ; No causal guidance - fall back to heuristic
+
+    ; Heuristic: Analyze performance: hits vs misses
+    imul rdi, r14, RTE_SIZE
+    add rdi, r12
+    mov rsi, [rdi + RTE_ADDR]
     mov eax, [rsi + RHDR_HITS]
     mov ecx, [rsi + RHDR_MISSES]
     cmp eax, ecx
-    jg .try_specialize
-    ; misses >= hits: try generalizing (too specific?)
+    jg .do_specialize
+    ; misses >= hits: generalize (too specific?)
+
+.do_generalize:
     push r14
     mov edi, r14d
     call modify_generalize
     pop r14
     jmp .clear_flag
 
-.try_specialize:
-    ; hits > misses but still violated: try specializing (conflating contexts?)
+.do_specialize:
+    ; hits > misses but violated: specialize (conflating contexts?)
     push r14
     mov edi, r14d
     call modify_specialize

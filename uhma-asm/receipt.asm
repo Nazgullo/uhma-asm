@@ -1,15 +1,38 @@
-; receipt.asm — Unified Holographic Receipt Layer
+; receipt.asm — Unified Holographic Receipt Layer + Cognitive Self-Model
 ;
+; RECEIPT EMISSION:
 ; @entry emit_receipt_full(edi=event,esi=ctx,edx=actual,ecx=pred,r8d=region,r9d=aux,xmm0=conf,xmm1=val)
 ; @entry emit_receipt_simple(edi=event,esi=ctx,edx=token,xmm0=conf) -> void
+;
+; TRACE QUERIES:
 ; @entry receipt_resonate(edi=event,esi=ctx,edx=token) -> xmm0=similarity
-; @entry receipt_why_miss() -> void ; REPL "why" command
-; @entry receipt_show_misses(edi=n) -> void ; REPL "misses N"
 ; @entry trace_region_performance(edi=region) -> xmm0=ratio
 ; @entry trace_context_confidence(edi=ctx) -> xmm0=ratio
 ; @entry trace_hit_miss_ratio() -> xmm0=ratio
+;
+; INTROSPECTIVE STATE (REPL "intro"):
+; @entry intro_query_confusion(edi=ctx) -> xmm0=resonance ; MISS resonance
+; @entry intro_query_confidence(edi=ctx) -> xmm0=resonance ; HIT resonance
+; @entry intro_query_learning(edi=ctx) -> xmm0=resonance ; LEARN resonance
+; @entry intro_get_state(edi=ctx) -> eax=state, xmm0=strength ; dominant state
+; @entry intro_report(edi=ctx) -> void ; REPL "intro" command
+;
+; SEMANTIC SELF-KNOWLEDGE (REPL "self"):
+; @entry self_show_context_types() -> eax=strengths, edx=weaknesses
+;
+; CAUSAL MODEL (REPL "causal"):
+; @entry causal_query_modification(edi=event,esi=ctx) -> xmm0=resonance
+; @entry causal_report(edi=ctx) -> void ; REPL "causal" command
+;
+; META-STRATEGY:
+; @entry meta_recommend_strategy(edi=ctx) -> eax=recommended_event_type
+;
+; DEBUG COMMANDS:
+; @entry receipt_why_miss() -> void ; REPL "why" command
+; @entry receipt_show_misses(edi=n) -> void ; REPL "misses N"
+;
 ; @calls vsa.asm:holo_gen_vec, holo_bind_f64, holo_superpose_f64
-; @calledby dispatch.asm, learn.asm, emit.asm, observe.asm, dreams.asm
+; @calledby dispatch.asm, learn.asm, emit.asm, observe.asm, dreams.asm, repl.asm, introspect.asm
 ;
 ; STORAGE: UNIFIED_TRACE_IDX=240, 8KB | Working buffer: 16×64 bytes
 ; 8 DIMENSIONS: time→tracer→aux→region→predicted→actual→ctx→event
@@ -18,6 +41,7 @@
 ;   - emit_receipt_full for MISS must include predicted token (diagnostic key)
 ;   - receipt_resonate returns f64 similarity, not bool
 ;   - Working buffer is ring, wraps at 16 entries
+;   - Causal queries need receipts with aux=accuracy*1000 (emitted by modify.asm)
 
 %include "syscalls.inc"
 %include "constants.inc"
@@ -53,6 +77,8 @@ section .data
     evt_holo_pred:      db "HOLOPRED ", 0
     evt_graph_pred:     db "GRAPHPRED", 0
     evt_journey:        db "JOURNEY  ", 0
+    evt_generalize:     db "GENERALIZE", 0
+    evt_specialize:     db "SPECIALIZE", 0
     evt_unknown:        db "UNKNOWN  ", 0
 
     ; Base fidelity table (f64) - indexed by event type
@@ -71,6 +97,8 @@ section .data
         dq 0x3FD3333333333333  ; EVENT_HOLO_PRED= 0.30
         dq 0x3FD3333333333333  ; EVENT_GRAPH_PRED=0.30
         dq 0x3FD3333333333333  ; EVENT_JOURNEY  = 0.30
+        dq 0x3FE6666666666666  ; EVENT_GENERALIZE=0.70 - important for causal
+        dq 0x3FE6666666666666  ; EVENT_SPECIALIZE=0.70 - important for causal
 
     ; Constants
     align 8
@@ -1060,6 +1088,596 @@ receipt_show_misses:
 
 .misses_done:
     pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; INTROSPECTIVE STATE - Query self-model via unified trace
+;; "How am I feeling in this context?"
+;; ============================================================
+
+section .data
+    intro_hdr:          db "[INTRO] Current context introspection:", 10, 0
+    intro_confused:     db "  CONFUSED:   ", 0
+    intro_confident:    db "  CONFIDENT:  ", 0
+    intro_learning:     db "  LEARNING:   ", 0
+    intro_state:        db "  STATE:      ", 0
+    intro_state_confused:   db "CONFUSED (high miss resonance)", 10, 0
+    intro_state_confident:  db "CONFIDENT (high hit resonance)", 10, 0
+    intro_state_learning:   db "LEARNING (high learn resonance)", 10, 0
+    intro_state_neutral:    db "NEUTRAL (no dominant pattern)", 10, 0
+
+section .text
+
+;; ============================================================
+;; intro_query_confusion(ctx) -> xmm0 (f64)
+;; How confused am I in this context? (MISS resonance)
+;; edi = ctx_hash
+;; ============================================================
+global intro_query_confusion
+intro_query_confusion:
+    mov esi, edi              ; ctx
+    mov edi, EVENT_MISS
+    xor edx, edx              ; any token
+    jmp receipt_resonate
+
+;; ============================================================
+;; intro_query_confidence(ctx) -> xmm0 (f64)
+;; How confident am I in this context? (HIT resonance)
+;; edi = ctx_hash
+;; ============================================================
+global intro_query_confidence
+intro_query_confidence:
+    mov esi, edi              ; ctx
+    mov edi, EVENT_HIT
+    xor edx, edx              ; any token
+    jmp receipt_resonate
+
+;; ============================================================
+;; intro_query_learning(ctx) -> xmm0 (f64)
+;; Am I actively learning in this context? (LEARN resonance)
+;; edi = ctx_hash
+;; ============================================================
+global intro_query_learning
+intro_query_learning:
+    mov esi, edi              ; ctx
+    mov edi, EVENT_LEARN
+    xor edx, edx              ; any token
+    jmp receipt_resonate
+
+;; ============================================================
+;; intro_get_state(ctx) -> eax=state_id, xmm0=strength
+;; Which introspective state dominates current context?
+;; edi = ctx_hash (or 0 to use ST_CTX_HASH)
+;; Returns: eax = INTRO_* enum, xmm0 = dominant resonance strength
+;; ============================================================
+global intro_get_state
+intro_get_state:
+    push rbx
+    push r12
+    push r13
+    push r14
+    sub rsp, 40               ; [0]=ctx, [8]=confused, [16]=confident, [24]=learning, [32]=padding
+
+    mov rbx, SURFACE_BASE
+
+    ; Get context hash (use current if not provided)
+    test edi, edi
+    jnz .have_ctx
+    mov edi, [rbx + STATE_OFFSET + ST_CTX_HASH]
+.have_ctx:
+    mov [rsp], edi            ; save ctx
+
+    ; Query confusion (MISS resonance)
+    call intro_query_confusion
+    movsd [rsp + 8], xmm0
+
+    ; Query confidence (HIT resonance)
+    mov edi, [rsp]
+    call intro_query_confidence
+    movsd [rsp + 16], xmm0
+
+    ; Query learning (LEARN resonance)
+    mov edi, [rsp]
+    call intro_query_learning
+    movsd [rsp + 24], xmm0
+
+    ; Find dominant state
+    movsd xmm0, [rsp + 8]     ; confused
+    movsd xmm1, [rsp + 16]    ; confident
+    movsd xmm2, [rsp + 24]    ; learning
+    mov eax, INTRO_CONFUSED
+    movsd xmm3, xmm0          ; max = confused
+
+    ucomisd xmm1, xmm3
+    jbe .check_learning
+    mov eax, INTRO_CONFIDENT
+    movsd xmm3, xmm1
+
+.check_learning:
+    ucomisd xmm2, xmm3
+    jbe .have_state
+    mov eax, INTRO_LEARNING
+    movsd xmm3, xmm2
+
+.have_state:
+    ; Check if any resonance is significant (> 0.01)
+    mov rcx, 0x3F847AE147AE147B  ; 0.01 f64
+    movq xmm4, rcx
+    ucomisd xmm3, xmm4
+    ja .state_done
+    mov eax, INTRO_IDLE       ; no significant pattern
+
+.state_done:
+    movsd xmm0, xmm3          ; return strength in xmm0
+    add rsp, 40
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; intro_report(ctx) -> void
+;; Print introspective state report for context.
+;; edi = ctx_hash (or 0 to use current)
+;; REPL "intro" command implementation.
+;; ============================================================
+global intro_report
+intro_report:
+    push rbx
+    push r12
+    push r13
+    push r14
+    sub rsp, 40
+
+    mov rbx, SURFACE_BASE
+
+    ; Get context hash
+    test edi, edi
+    jnz .have_ctx
+    mov edi, [rbx + STATE_OFFSET + ST_CTX_HASH]
+.have_ctx:
+    mov r12d, edi             ; save ctx
+    mov [rsp], edi
+
+    ; Print header
+    lea rdi, [rel intro_hdr]
+    call print_cstr
+
+    ; Query and print confusion
+    lea rdi, [rel intro_confused]
+    call print_cstr
+    mov edi, r12d
+    call intro_query_confusion
+    movsd [rsp + 8], xmm0
+    cvtsd2ss xmm0, xmm0
+    call print_f32
+    call print_newline
+
+    ; Query and print confidence
+    lea rdi, [rel intro_confident]
+    call print_cstr
+    mov edi, r12d
+    call intro_query_confidence
+    movsd [rsp + 16], xmm0
+    cvtsd2ss xmm0, xmm0
+    call print_f32
+    call print_newline
+
+    ; Query and print learning
+    lea rdi, [rel intro_learning]
+    call print_cstr
+    mov edi, r12d
+    call intro_query_learning
+    movsd [rsp + 24], xmm0
+    cvtsd2ss xmm0, xmm0
+    call print_f32
+    call print_newline
+
+    ; Get dominant state and print
+    lea rdi, [rel intro_state]
+    call print_cstr
+
+    mov edi, r12d
+    call intro_get_state      ; eax = state, xmm0 = strength
+
+    cmp eax, INTRO_CONFUSED
+    je .print_confused
+    cmp eax, INTRO_CONFIDENT
+    je .print_confident
+    cmp eax, INTRO_LEARNING
+    je .print_learning
+    lea rdi, [rel intro_state_neutral]
+    jmp .print_state
+
+.print_confused:
+    lea rdi, [rel intro_state_confused]
+    jmp .print_state
+.print_confident:
+    lea rdi, [rel intro_state_confident]
+    jmp .print_state
+.print_learning:
+    lea rdi, [rel intro_state_learning]
+.print_state:
+    call print_cstr
+
+    add rsp, 40
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; SEMANTIC SELF-KNOWLEDGE - Query trace for context-type strengths/weaknesses
+;; Context types = high 4 bits of ctx_hash (16 types)
+;; ============================================================
+
+section .data
+    self_ctx_hdr:       db "[SELF] Context-type confidence (from trace):", 10, 0
+    self_strength_lbl:  db "  STRENGTH: type 0x", 0
+    self_weakness_lbl:  db "  WEAKNESS: type 0x", 0
+    self_conf_lbl:      db " = ", 0
+    strength_thresh:    dq 0.7    ; above = strength
+    weakness_thresh:    dq 0.3    ; below = weakness
+
+section .text
+
+;; ============================================================
+;; self_show_context_types() -> void
+;; Scan 16 context types via trace_context_confidence, show strengths/weaknesses.
+;; Called by REPL "self" command.
+;; ============================================================
+global self_show_context_types
+self_show_context_types:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 8                ; 5 pushes (odd) + 8 = 16-aligned
+
+    xor r12d, r12d            ; ctx_type counter 0..15
+    xor r14d, r14d            ; strengths found
+    xor r15d, r15d            ; weaknesses found
+
+    ; Print header
+    lea rdi, [rel self_ctx_hdr]
+    call print_cstr
+
+.type_loop:
+    cmp r12d, 16
+    jge .done
+
+    ; Generate ctx_hash = (type << 28) | 0x0FFFFFFF (representative hash)
+    mov edi, r12d
+    shl edi, 28
+    or edi, 0x0FFFFFFF
+    mov r13d, edi             ; save ctx_hash
+
+    ; Query trace_context_confidence
+    call trace_context_confidence  ; xmm0 = confidence (f64)
+
+    ; Check if strength (> 0.7)
+    movsd xmm1, [rel strength_thresh]
+    ucomisd xmm0, xmm1
+    jbe .check_weakness
+
+    ; Print strength
+    push r12
+    movsd xmm2, xmm0          ; save confidence
+    lea rdi, [rel self_strength_lbl]
+    call print_cstr
+    mov edi, r12d             ; type
+    call print_hex32
+    lea rdi, [rel self_conf_lbl]
+    call print_cstr
+    movsd xmm0, xmm2
+    cvtsd2ss xmm0, xmm0
+    call print_f32
+    call print_newline
+    pop r12
+    inc r14d
+    jmp .next_type
+
+.check_weakness:
+    ; Check if weakness (< 0.3)
+    movsd xmm1, [rel weakness_thresh]
+    ucomisd xmm0, xmm1
+    jae .next_type
+
+    ; But only if there's actually signal (confidence > 0.01)
+    mov rax, 0x3F847AE147AE147B  ; 0.01 f64
+    movq xmm1, rax
+    ucomisd xmm0, xmm1
+    jbe .next_type            ; no signal = ignore
+
+    ; Print weakness
+    push r12
+    movsd xmm2, xmm0
+    lea rdi, [rel self_weakness_lbl]
+    call print_cstr
+    mov edi, r12d
+    call print_hex32
+    lea rdi, [rel self_conf_lbl]
+    call print_cstr
+    movsd xmm0, xmm2
+    cvtsd2ss xmm0, xmm0
+    call print_f32
+    call print_newline
+    pop r12
+    inc r15d
+
+.next_type:
+    inc r12d
+    jmp .type_loop
+
+.done:
+    ; Return counts: eax = strengths, edx = weaknesses
+    mov eax, r14d
+    mov edx, r15d
+
+    add rsp, 8
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; CAUSAL MODEL - Query what modifications work in which contexts
+;; Based on historical PRUNE/PROMOTE/GENERALIZE/SPECIALIZE receipts
+;; ============================================================
+
+section .data
+    causal_hdr:         db "[CAUSAL] Modification history from trace:", 10, 0
+    causal_prune_lbl:   db "  PRUNE:      ", 0
+    causal_promote_lbl: db "  PROMOTE:    ", 0
+    causal_general_lbl: db "  GENERALIZE: ", 0
+    causal_special_lbl: db "  SPECIALIZE: ", 0
+    causal_resonance:   db " resonance=", 0
+    causal_no_data:     db "(no history)", 10, 0
+    causal_helps:       db " (helps)", 10, 0
+    causal_hurts:       db " (hurts)", 10, 0
+    causal_neutral:     db " (neutral)", 10, 0
+    causal_signal_thresh: dq 0.01  ; below = no signal
+
+section .text
+
+;; ============================================================
+;; causal_query_modification(mod_type, ctx) -> xmm0=resonance
+;; Query trace for historical effect of modification type in context.
+;; edi = modification event type (EVENT_PRUNE, EVENT_PROMOTE, etc.)
+;; esi = ctx_hash (0 = use current)
+;; Returns: xmm0 = resonance strength (how much history for this mod+ctx)
+;; ============================================================
+global causal_query_modification
+causal_query_modification:
+    push rbx
+    sub rsp, 8
+
+    mov rbx, SURFACE_BASE
+
+    ; Use current context if not specified
+    test esi, esi
+    jnz .have_ctx
+    mov esi, [rbx + STATE_OFFSET + ST_CTX_HASH]
+.have_ctx:
+    xor edx, edx              ; token = 0 (any)
+    call receipt_resonate     ; xmm0 = resonance
+
+    add rsp, 8
+    pop rbx
+    ret
+
+;; ============================================================
+;; causal_report(ctx) -> void
+;; Print causal model report for context - what modifications have history.
+;; edi = ctx_hash (0 = use current)
+;; REPL "causal" command implementation.
+;; ============================================================
+global causal_report
+causal_report:
+    push rbx
+    push r12
+    push r13
+    sub rsp, 8                ; 3 pushes (odd) + 8 = 16-aligned
+
+    mov rbx, SURFACE_BASE
+
+    ; Get context hash
+    test edi, edi
+    jnz .have_ctx
+    mov edi, [rbx + STATE_OFFSET + ST_CTX_HASH]
+.have_ctx:
+    mov r12d, edi             ; save ctx
+
+    ; Print header
+    lea rdi, [rel causal_hdr]
+    call print_cstr
+
+    ; Query PRUNE
+    lea rdi, [rel causal_prune_lbl]
+    call print_cstr
+    mov edi, EVENT_PRUNE
+    mov esi, r12d
+    call causal_query_modification
+    movsd xmm1, xmm0          ; save resonance
+    call .print_resonance_result
+
+    ; Query PROMOTE
+    lea rdi, [rel causal_promote_lbl]
+    call print_cstr
+    mov edi, EVENT_PROMOTE
+    mov esi, r12d
+    call causal_query_modification
+    movsd xmm1, xmm0
+    call .print_resonance_result
+
+    ; Query GENERALIZE
+    lea rdi, [rel causal_general_lbl]
+    call print_cstr
+    mov edi, EVENT_GENERALIZE
+    mov esi, r12d
+    call causal_query_modification
+    movsd xmm1, xmm0
+    call .print_resonance_result
+
+    ; Query SPECIALIZE
+    lea rdi, [rel causal_special_lbl]
+    call print_cstr
+    mov edi, EVENT_SPECIALIZE
+    mov esi, r12d
+    call causal_query_modification
+    movsd xmm1, xmm0
+    call .print_resonance_result
+
+    add rsp, 8
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+; Helper: print resonance result with interpretation
+; xmm1 = resonance value
+.print_resonance_result:
+    push rbx
+    sub rsp, 16
+    movsd [rsp], xmm1
+
+    ; Check if significant signal
+    movsd xmm0, [rel causal_signal_thresh]
+    ucomisd xmm1, xmm0
+    ja .has_signal
+
+    ; No data
+    lea rdi, [rel causal_no_data]
+    call print_cstr
+    jmp .result_done
+
+.has_signal:
+    lea rdi, [rel causal_resonance]
+    call print_cstr
+    movsd xmm0, [rsp]
+    cvtsd2ss xmm0, xmm0
+    call print_f32
+
+    ; Interpret: high resonance = more history, interpret based on modification type
+    ; For now, just indicate presence of history
+    movsd xmm0, [rsp]
+    mov rax, 0x3FD0000000000000  ; 0.25 threshold
+    movq xmm1, rax
+    ucomisd xmm0, xmm1
+    jbe .neutral_result
+    lea rdi, [rel causal_helps]
+    jmp .print_interp
+.neutral_result:
+    lea rdi, [rel causal_neutral]
+.print_interp:
+    call print_cstr
+
+.result_done:
+    add rsp, 16
+    pop rbx
+    ret
+
+;; ============================================================
+;; META-STRATEGY - Use causal history to guide repair decisions
+;; ============================================================
+
+section .data
+    meta_strat_thresh:  dq 0.05   ; minimum resonance to consider
+
+section .text
+
+;; ============================================================
+;; meta_recommend_strategy(ctx) -> eax=strategy
+;; Based on causal history, what modification should we do here?
+;; edi = ctx_hash (0 = use current)
+;; Returns: eax = recommended event type (EVENT_GENERALIZE, EVENT_SPECIALIZE, or 0 if no data)
+;; ============================================================
+global meta_recommend_strategy
+meta_recommend_strategy:
+    push rbx
+    push r12
+    push r13
+    push r14
+    sub rsp, 40               ; [0]=ctx, [8]=gen_res, [16]=spec_res, [24]=prune_res, [32]=promote_res
+
+    mov rbx, SURFACE_BASE
+
+    ; Get context hash
+    test edi, edi
+    jnz .have_ctx
+    mov edi, [rbx + STATE_OFFSET + ST_CTX_HASH]
+.have_ctx:
+    mov [rsp], edi            ; save ctx
+    mov r12d, edi
+
+    ; Query GENERALIZE resonance
+    mov edi, EVENT_GENERALIZE
+    mov esi, r12d
+    call causal_query_modification
+    movsd [rsp + 8], xmm0
+
+    ; Query SPECIALIZE resonance
+    mov edi, EVENT_SPECIALIZE
+    mov esi, r12d
+    call causal_query_modification
+    movsd [rsp + 16], xmm0
+
+    ; Query PRUNE resonance
+    mov edi, EVENT_PRUNE
+    mov esi, r12d
+    call causal_query_modification
+    movsd [rsp + 24], xmm0
+
+    ; Query PROMOTE resonance
+    mov edi, EVENT_PROMOTE
+    mov esi, r12d
+    call causal_query_modification
+    movsd [rsp + 32], xmm0
+
+    ; Find highest resonance (most historical evidence)
+    movsd xmm0, [rsp + 8]     ; generalize
+    movsd xmm1, [rsp + 16]    ; specialize
+    movsd xmm2, [rsp + 24]    ; prune
+    movsd xmm3, [rsp + 32]    ; promote
+
+    mov eax, EVENT_GENERALIZE
+    movsd xmm4, xmm0          ; max = generalize
+
+    ucomisd xmm1, xmm4
+    jbe .check_prune
+    mov eax, EVENT_SPECIALIZE
+    movsd xmm4, xmm1
+
+.check_prune:
+    ucomisd xmm2, xmm4
+    jbe .check_promote
+    mov eax, EVENT_PRUNE
+    movsd xmm4, xmm2
+
+.check_promote:
+    ucomisd xmm3, xmm4
+    jbe .check_thresh
+    mov eax, EVENT_PROMOTE
+    movsd xmm4, xmm3
+
+.check_thresh:
+    ; Check if any resonance is significant
+    movsd xmm5, [rel meta_strat_thresh]
+    ucomisd xmm4, xmm5
+    ja .have_strategy
+    xor eax, eax              ; no significant history, return 0
+
+.have_strategy:
+    add rsp, 40
     pop r14
     pop r13
     pop r12

@@ -25,7 +25,12 @@
 ;   Mask low bits of context hash (broader matching)
 ;   Converts dispatch pattern toward schema-like behavior
 ;
-; CALLED BY: drives.asm, evolve.asm, observe.asm, dreams.asm
+; CAUSAL RECEIPTS:
+;   Each modification emits receipt with aux=accuracy*1000 for causal tracking
+;   EVENT_PRUNE, EVENT_PROMOTE, EVENT_SPECIALIZE, EVENT_GENERALIZE
+;   This allows meta_recommend_strategy() to learn which modifications help
+;
+; CALLED BY: drives.asm, evolve.asm, observe.asm, dreams.asm, introspect.asm
 ;
 %include "syscalls.inc"
 %include "constants.inc"
@@ -51,6 +56,7 @@ extern print_newline
 extern region_condemn
 extern fire_hook
 extern emit_dispatch_pattern
+extern emit_receipt_full
 
 ;; ============================================================
 ;; modify_prune(region_index)
@@ -104,6 +110,23 @@ modify_prune:
     mov edi, HOOK_ON_PRUNE
     mov esi, r12d
     call fire_hook
+
+    ; Emit receipt with accuracy in aux (for causal model)
+    ; aux = pre_accuracy * 1000 (integer encoding)
+    movss xmm0, [rbx + STATE_OFFSET + ST_CAUSAL_PRE_ACC]
+    mov eax, 1000
+    cvtsi2ss xmm1, eax
+    mulss xmm0, xmm1
+    cvtss2si r9d, xmm0        ; aux = accuracy * 1000
+
+    mov edi, EVENT_PRUNE      ; event
+    mov esi, [rbx + STATE_OFFSET + ST_CTX_HASH]  ; ctx
+    xor edx, edx              ; actual = 0
+    xor ecx, ecx              ; pred = 0
+    mov r8d, r12d             ; region index
+    xorpd xmm0, xmm0          ; conf = 0
+    xorpd xmm1, xmm1          ; val = 0
+    call emit_receipt_full
 
     ; Log modification
     call log_modification
@@ -176,6 +199,38 @@ modify_promote:
     mov esi, r12d
     call fire_hook
 
+    ; Emit receipt with accuracy in aux
+    ; Compute accuracy for this region
+    lea rax, [rbx + REGION_TABLE_OFFSET]
+    imul rcx, r12, RTE_SIZE
+    add rax, rcx
+    mov rsi, [rax + RTE_ADDR]
+    test rsi, rsi
+    jz .promote_done
+
+    mov eax, [rsi + RHDR_HITS]
+    mov edx, [rsi + RHDR_MISSES]
+    add edx, eax
+    test edx, edx
+    jz .promote_done           ; no data yet
+
+    cvtsi2ss xmm0, eax
+    cvtsi2ss xmm1, edx
+    divss xmm0, xmm1           ; accuracy
+    mov eax, 1000
+    cvtsi2ss xmm1, eax
+    mulss xmm0, xmm1
+    cvtss2si r9d, xmm0         ; aux = accuracy * 1000
+
+    mov edi, EVENT_PROMOTE     ; event
+    mov esi, [rbx + STATE_OFFSET + ST_CTX_HASH]  ; ctx
+    xor edx, edx               ; actual = 0
+    xor ecx, ecx               ; pred = 0
+    mov r8d, r12d              ; region index
+    xorpd xmm0, xmm0           ; conf = 0
+    xorpd xmm1, xmm1           ; val = 0
+    call emit_receipt_full
+
 .promote_done:
     pop r12
     pop rbx
@@ -224,6 +279,34 @@ modify_specialize:
     lea rdi, [rel specialize_msg]
     call print_cstr
 
+    ; Emit receipt for causal tracking
+    ; Get original region's accuracy before emitting receipt
+    lea rax, [rbx + REGION_TABLE_OFFSET]
+    imul rcx, r12, RTE_SIZE
+    add rax, rcx
+    mov rsi, [rax + RTE_ADDR]
+    mov eax, [rsi + RHDR_HITS]
+    mov edx, [rsi + RHDR_MISSES]
+    add edx, eax
+    test edx, edx
+    jz .fail                   ; no data
+    cvtsi2ss xmm0, eax
+    cvtsi2ss xmm1, edx
+    divss xmm0, xmm1           ; accuracy
+    mov eax, 1000
+    cvtsi2ss xmm1, eax
+    mulss xmm0, xmm1
+    cvtss2si r9d, xmm0         ; aux = accuracy * 1000
+
+    mov edi, EVENT_SPECIALIZE  ; event
+    mov esi, [rbx + STATE_OFFSET + ST_CTX_HASH]  ; ctx
+    xor edx, edx               ; actual = 0
+    xor ecx, ecx               ; pred = 0
+    mov r8d, r12d              ; region index
+    xorpd xmm0, xmm0           ; conf = 0
+    xorpd xmm1, xmm1           ; val = 0
+    call emit_receipt_full
+
 .fail:
     pop r12
     pop rbx
@@ -264,7 +347,28 @@ modify_generalize:
     lea rdi, [rel generalize_msg]
     call print_cstr
 
+    ; Emit receipt with pre-accuracy in aux (for causal tracking)
+    ; log_causal already stored pre-accuracy in ST_CAUSAL_PRE_ACC
+    movss xmm0, [rbx + STATE_OFFSET + ST_CAUSAL_PRE_ACC]
+    mov eax, 1000
+    cvtsi2ss xmm1, eax
+    mulss xmm0, xmm1
+    cvtss2si r9d, xmm0         ; aux = accuracy * 1000
+
+    mov edi, EVENT_GENERALIZE  ; event
+    mov esi, [rbx + STATE_OFFSET + ST_CTX_HASH]  ; ctx
+    xor edx, edx               ; actual = 0
+    xor ecx, ecx               ; pred = 0
+    mov r8d, r12d              ; region index
+    xorpd xmm0, xmm0           ; conf = 0
+    xorpd xmm1, xmm1           ; val = 0
+    call emit_receipt_full
+
     ; Reset counters (fresh start after generalization)
+    lea rax, [rbx + REGION_TABLE_OFFSET]
+    imul rcx, r12, RTE_SIZE
+    add rax, rcx
+    mov rsi, [rax + RTE_ADDR]
     mov dword [rsi + RHDR_HITS], 0
     mov dword [rsi + RHDR_MISSES], 0
 

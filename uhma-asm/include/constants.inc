@@ -925,7 +925,9 @@
 %define EVENT_HOLO_PRED     10    ; holographic prediction made
 %define EVENT_GRAPH_PRED    11    ; graph-based prediction made
 %define EVENT_JOURNEY       12    ; legacy journey_step compatibility
-%define EVENT_TYPE_COUNT    13    ; total event types
+%define EVENT_GENERALIZE    13    ; context was generalized (broader matching)
+%define EVENT_SPECIALIZE    14    ; context was specialized (narrower matching)
+%define EVENT_TYPE_COUNT    15    ; total event types
 
 ; Base fidelity by event type (f64 bit patterns)
 ; Higher fidelity = more persistent storage, less decay

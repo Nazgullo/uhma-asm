@@ -4,6 +4,7 @@
 ; @calls dispatch.asm:process_input
 ; @calls io.asm:digest_file
 ; @calls receipt.asm:receipt_why_miss, receipt_show_misses, receipt_dump
+; @calls receipt.asm:intro_report, causal_report, self_show_context_types
 ; @calls observe.asm:observe_cycle
 ; @calls dreams.asm:dream_cycle
 ; @calls surface.asm:surface_freeze
@@ -16,6 +17,7 @@
 ;
 ; COMMANDS:
 ;   Status:  help, status, regions, presence, drives, self, metacog
+;   Intro:   intro (introspective state), causal (modification history)
 ;   Actions: dream, observe, compact, eat <file>, trace on/off
 ;   Debug:   why, misses [n], receipts [n], listen, debugger, genes
 ;   Exit:    quit (syncs surface)
@@ -169,6 +171,9 @@ extern receipt_listen         ; from receipt.asm - enable receipt listeners
 extern receipt_mute           ; from receipt.asm - disable receipt listeners
 extern receipt_why_miss       ; from receipt.asm - explain last miss
 extern receipt_show_misses    ; from receipt.asm - show last N misses
+extern intro_report           ; from receipt.asm - introspective state report
+extern self_show_context_types ; from receipt.asm - trace-based context strengths
+extern causal_report          ; from receipt.asm - causal model report
 
 ;; ============================================================
 ;; repl_run
@@ -464,6 +469,21 @@ repl_run:
     jmp .cmd_self
 .not_self:
 
+    ; "causal" (6-char match: c-a-u-s-a-l)
+    cmp dword [rbx], 'caus'
+    jne .not_causal
+    cmp word [rbx + 4], 'al'
+    jne .not_causal
+    movzx eax, byte [rbx + 6]
+    test eax, eax
+    jz .cmd_causal
+    cmp eax, ' '
+    je .cmd_causal
+    cmp eax, 10
+    je .cmd_causal
+    jmp .not_causal
+.not_causal:
+
     ; "trace" (toggle tracing on/off)
     cmp dword [rbx], 'trac'
     jne .not_trace
@@ -602,6 +622,21 @@ repl_run:
     je .cmd_listen
     jmp .not_listen
 .not_listen:
+
+    ; "intro" (5-char match: i-n-t-r-o) - introspective state report
+    cmp dword [rbx], 'intr'
+    jne .not_intro
+    cmp byte [rbx + 4], 'o'
+    jne .not_intro
+    movzx eax, byte [rbx + 5]
+    test eax, eax
+    jz .cmd_intro
+    cmp eax, ' '
+    je .cmd_intro
+    cmp eax, 10
+    je .cmd_intro
+    jmp .not_intro
+.not_intro:
 
     ; Not a command → process as text input
     ; Compute string length (rbx is null-terminated)
@@ -872,6 +907,18 @@ repl_run:
     jz .cmd_misses            ; if 0 or invalid, use default
     mov edi, eax
     call receipt_show_misses
+    jmp .loop
+
+.cmd_intro:
+    ; Introspective state report - query trace for confusion/confidence/learning
+    xor edi, edi              ; 0 = use current context
+    call intro_report
+    jmp .loop
+
+.cmd_causal:
+    ; Causal model report - what modifications work in current context
+    xor edi, edi              ; 0 = use current context
+    call causal_report
     jmp .loop
 
 .cmd_listen:
@@ -2016,6 +2063,10 @@ repl_show_self:
     call print_newline
 
 .self_done:
+    ; Also show trace-based context type confidence
+    call print_newline
+    call self_show_context_types
+
     add rsp, 48
     pop r15
     pop r14

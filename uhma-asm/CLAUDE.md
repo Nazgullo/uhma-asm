@@ -99,6 +99,29 @@ This is O(1) per item. The holographic memory IS the index. Don't build separate
   - misses >= hits → generalize (too specific, over-fitted)
 - The boundary lets the system distinguish internal errors from external novelty
 
+### Cognitive Self-Model (via Receipt System)
+The receipt system IS the causal self-model. Key insight: don't create parallel structures - add QUERIES to the existing 8-dimensional trace.
+
+**Introspective State** (REPL `intro`):
+- `intro_query_confusion(ctx)` → MISS resonance in context
+- `intro_query_confidence(ctx)` → HIT resonance in context
+- `intro_query_learning(ctx)` → LEARN resonance in context
+- `intro_get_state(ctx)` → which state (confused/confident/learning) dominates
+
+**Semantic Self-Knowledge** (REPL `self`):
+- `self_show_context_types()` → scans 16 context types via trace_context_confidence
+- Reports strengths (>0.7) and weaknesses (<0.3)
+
+**Causal Model** (REPL `causal`):
+- Modifications emit receipts with `aux=accuracy*1000`
+- `causal_query_modification(event, ctx)` → expected effect of modification
+- Tracks EVENT_PRUNE, EVENT_PROMOTE, EVENT_SPECIALIZE, EVENT_GENERALIZE
+
+**Meta-Strategy**:
+- `meta_recommend_strategy(ctx)` → consults causal history
+- Used by `introspect_repair_cycle()` before falling back to hits/misses heuristic
+- Returns recommended event type (specialize vs generalize)
+
 ### Unified Trace System
 - One trace (UNIFIED_TRACE_IDX=240) replaces 6 separate traces
 - 8 dimensions: event, ctx, actual, predicted, region, aux, tracer, time
@@ -121,7 +144,7 @@ This is O(1) per item. The holographic memory IS the index. Don't build separate
 | learn.asm | Pattern learning | emit_dispatch_pattern, holo_store | dispatch |
 | emit.asm | x86 code generation | region_alloc, verify_code | learn, dreams |
 | vsa.asm | Holographic operations | (pure math) | dispatch, learn, receipt |
-| receipt.asm | Unified trace system | holo_bind, holo_superpose | dispatch, learn, observe |
+| receipt.asm | Unified trace + cognitive self-model | holo_bind, holo_superpose, intro_*, causal_*, meta_* | dispatch, learn, observe, introspect |
 
 ### Consolidation
 | File | Purpose | Calls | Called By |
@@ -233,6 +256,9 @@ Auto-spawns UHMA on MCP initialization. Bidirectional stdin/stdout pipe.
 > status               # see HIT ratio, regions, drives
 > why                  # explain last miss
 > misses 5             # show recent misses
+> intro                # introspective state (confused/confident/learning)
+> self                 # strengths/weaknesses by context type
+> causal               # modification effects history
 > dream                # consolidation cycle
 > observe              # self-observation
 > save mystate         # persist
