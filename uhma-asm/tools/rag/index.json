@@ -119,8 +119,8 @@
         "Token abstraction must match in BOTH process_input AND digest_file",
         "All struct_ctx operations use f64 (holo_*), not f32 (vsa_*)"
       ],
-      "content_hash": "df8fdd3f3803",
-      "line_count": 2968
+      "content_hash": "dad7935427ae",
+      "line_count": 2994
     },
     "dreams.asm": {
       "path": "dreams.asm",
@@ -729,7 +729,7 @@
         {
           "name": "update_organic_pressure",
           "args": "",
-          "returns": "manage dream/observe/evolve triggers"
+          "returns": "manage dream/observe/evolve/introspect triggers"
         },
         {
           "name": "update_oscillation",
@@ -760,6 +760,11 @@
           "name": "release_pheromone",
           "args": "type, val",
           "returns": "signal state to collective (if shared)"
+        },
+        {
+          "name": "introspect_repair_cycle",
+          "args": "",
+          "returns": "process regions with RFLAG_NEEDS_REPAIR (self-surprise)"
         }
       ],
       "calls": [],
@@ -770,8 +775,8 @@
       "flow": "",
       "state": [],
       "gotchas": [],
-      "content_hash": "39f47f5e69c9",
-      "line_count": 1304
+      "content_hash": "9ee19002b811",
+      "line_count": 1450
     },
     "io.asm": {
       "path": "io.asm",
@@ -1007,8 +1012,8 @@
         "Prune threshold (0.1) and age (PRUNE_MIN_AGE) are tunable",
         "receipt_resonate can veto prune if we've regretted before"
       ],
-      "content_hash": "163e980fc005",
-      "line_count": 1770
+      "content_hash": "9510f030870f",
+      "line_count": 1796
     },
     "persist.asm": {
       "path": "persist.asm",
@@ -1990,6 +1995,9 @@
     "release_pheromone": [
       "introspect.asm"
     ],
+    "introspect_repair_cycle": [
+      "introspect.asm"
+    ],
     "digest_file": [
       "io.asm"
     ],
@@ -2606,7 +2614,7 @@
   },
   "meta": {
     "file_count": 33,
-    "function_count": 213,
+    "function_count": 214,
     "total_gotchas": 47
   }
 }
