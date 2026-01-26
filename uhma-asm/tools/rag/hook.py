@@ -125,10 +125,18 @@ elif file_path and file_path.endswith('.asm') and 'uhma-asm' in file_path:
     if file_ctx:
         output_parts.append(file_ctx)
 
-# Output all collected context
+# Output all collected context as JSON with additionalContext
 if output_parts:
     output = '\n\n'.join(output_parts)
     log_debug(f"Outputting {len(output)} chars")
-    print(output)
+    # For PreToolUse hooks, must use JSON additionalContext to inject into Claude's context
+    # Plain stdout only shows in verbose mode, not visible to Claude
+    result = {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "additionalContext": output
+        }
+    }
+    print(json.dumps(result))
 else:
     log_debug("No output produced")

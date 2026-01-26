@@ -123,9 +123,12 @@ def build_index() -> Dict[str, FileEntry]:
     """Build index from all .asm files."""
     index = {}
 
-    for asm_file in sorted(ASM_DIR.glob('*.asm')):
+    # Scan root and gui/ directories
+    asm_files = list(ASM_DIR.glob('*.asm')) + list((ASM_DIR / 'gui').glob('*.asm'))
+
+    for asm_file in sorted(asm_files):
         # Skip test/scratch files
-        if asm_file.name.startswith('test_') or asm_file.name == 'visualizer.asm':
+        if asm_file.name.startswith('test_'):
             continue
 
         content = asm_file.read_text()
@@ -134,8 +137,11 @@ def build_index() -> Dict[str, FileEntry]:
 
         header = parse_header(content)
 
+        # Use relative path from ASM_DIR
+        rel_path = str(asm_file.relative_to(ASM_DIR))
+
         entry = FileEntry(
-            path=asm_file.name,
+            path=rel_path,
             description=header['description'],
             entries=header['entries'],
             calls=header['calls'],
@@ -147,7 +153,7 @@ def build_index() -> Dict[str, FileEntry]:
             line_count=line_count
         )
 
-        index[asm_file.name] = asdict(entry)
+        index[rel_path] = asdict(entry)
 
     return index
 
