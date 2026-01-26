@@ -74,8 +74,8 @@ receipt_show_misses:  ; Shows last N misses from working buffer
 
 | Command | Function | Output |
 |---------|----------|--------|
-| `:why` | `receipt_why_miss` | Last MISS: ctx, actual, predicted, confidence |
-| `:misses [n]` | `receipt_show_misses` | Last N misses with full context |
+| `why` | `receipt_why_miss` | Last MISS: ctx, actual, predicted, confidence |
+| `misses [n]` | `receipt_show_misses` | Last N misses with full context |
 
 ## Memory
 

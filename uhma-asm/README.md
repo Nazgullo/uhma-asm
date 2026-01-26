@@ -45,12 +45,13 @@ The system generates x86-64 code at runtime. Faults (SIGSEGV, SIGILL) are caught
 | `eat <file>` | Digest a text file (learn from it) |
 | `trace on/off` | Toggle execution tracing |
 
-### Diagnostics (New)
+### Diagnostics
 | Command | Description |
 |---------|-------------|
-| `:why` | Explain last MISS - shows context, actual vs predicted, confidence |
-| `:misses [n]` | Show last N misses (default 5) with full context |
-| `:receipts N` | Show last N event receipts |
+| `why` | Explain last MISS - shows context, actual vs predicted, confidence |
+| `misses [n]` | Show last N misses (default 5) with full context |
+| `receipts [n]` | Show last N event receipts |
+| `listen` | Enable verbose receipt logging |
 
 ### Hive
 | Command | Description |
@@ -61,7 +62,7 @@ The system generates x86-64 code at runtime. Faults (SIGSEGV, SIGILL) are caught
 ### Exit
 | Command | Description |
 |---------|-------------|
-| `:quit` | Clean exit (syncs surface to disk) |
+| `quit` | Clean exit (syncs surface to disk) |
 
 ## Text Input
 
@@ -93,7 +94,7 @@ Learning survives restarts via `uhma.surface` (sparse 200GB file, only touched p
 # Session 1
 ./uhma
 > the quick brown fox
-> :quit
+> quit
 
 # Session 2
 ./uhma
@@ -125,7 +126,7 @@ All events (HIT, MISS, LEARN, EMIT, etc.) are recorded in a single holographic t
 | tracer | Debug correlation ID |
 | time | Temporal bucket |
 
-Query any dimension via unbind. `:why` and `:misses` use this to show exactly what went wrong.
+Query any dimension via unbind. `why` and `misses` use this to show exactly what went wrong.
 
 ## File Layout
 
@@ -167,15 +168,15 @@ grep -c "HIT" /tmp/test.log && grep -c "NEW" /tmp/test.log
 # Debug a miss
 ./uhma
 > some input that fails
-> :why
+> why
 ```
 
 ## Debugging
 
 When something goes wrong:
 
-1. **`:why`** - Shows the last miss with full context
-2. **`:misses 10`** - Shows pattern of recent failures
+1. **`why`** - Shows the last miss with full context
+2. **`misses 10`** - Shows pattern of recent failures
 3. **`trace on`** - Verbose execution trace
 4. **`regions`** - Check if regions exist for context
 

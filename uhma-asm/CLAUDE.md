@@ -64,14 +64,14 @@ This is O(1) per item. The holographic memory IS the index. Don't build separate
 - One trace (UNIFIED_TRACE_IDX=240) replaces 6 separate traces
 - 8 dimensions: event, ctx, actual, predicted, region, aux, tracer, time
 - emit_receipt_full() captures full diagnostic context
-- `:why` and `:misses` commands query the trace for debugging
+- `why` and `misses` commands query the trace for debugging
 - See DESIGN_unified_trace.md for details
 
 ## Key Files
 - `dispatch.asm` - token processing, prediction, hit/miss logic
 - `io.asm` - digest_file for eating files
 - `dreams.asm` - consolidation, schema extraction
-- `receipt.asm` - unified trace system, `:why`/`:misses` queries
+- `receipt.asm` - unified trace system, `why`/`misses` queries
 - `signal.asm` - fault handling, recovery to REPL
 - `learn.asm` - pattern learning
 - `vsa.asm` - holographic vector operations
@@ -91,6 +91,6 @@ grep -c "HIT" /tmp/test.log && grep -c "NEW" /tmp/test.log
 # Debug a miss
 ./uhma
 > some failing input
-> :why
-> :misses 5
+> why
+> misses 5
 ```
