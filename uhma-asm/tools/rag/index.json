@@ -189,6 +189,147 @@
       "content_hash": "20512f31a109",
       "line_count": 602
     },
+    "gui/gfx.asm": {
+      "path": "gui/gfx.asm",
+      "description": "Graphics primitives for X11 visualization",
+      "entries": [
+        {
+          "name": "gfx_init",
+          "args": "edi=width, esi=height",
+          "returns": "eax=1 success, 0 fail"
+        },
+        {
+          "name": "gfx_shutdown",
+          "args": "",
+          "returns": "void"
+        },
+        {
+          "name": "gfx_clear",
+          "args": "edi=color",
+          "returns": "void"
+        },
+        {
+          "name": "gfx_fill_rect",
+          "args": "edi=x, esi=y, edx=w, ecx=h, r8d=color",
+          "returns": "void"
+        },
+        {
+          "name": "gfx_rect",
+          "args": "edi=x, esi=y, edx=w, ecx=h, r8d=color",
+          "returns": "void"
+        },
+        {
+          "name": "gfx_line",
+          "args": "edi=x0, esi=y0, edx=x1, ecx=y1, r8d=color",
+          "returns": "void"
+        },
+        {
+          "name": "gfx_text",
+          "args": "edi=x, esi=y, rdx=str, ecx=len, r8d=color",
+          "returns": "void"
+        },
+        {
+          "name": "gfx_flip",
+          "args": "",
+          "returns": "void"
+        },
+        {
+          "name": "gfx_poll_event",
+          "args": "",
+          "returns": "eax=event_type or 0"
+        },
+        {
+          "name": "gfx_get_mouse_pos",
+          "args": "",
+          "returns": "eax=x, edx=y"
+        }
+      ],
+      "calls": [],
+      "called_by": [
+        "visualizer.asm:draw_*",
+        "vis_init",
+        "vis_update"
+      ],
+      "flow": "",
+      "state": [],
+      "gotchas": [
+        "XFillRectangle/XDrawRectangle/XDrawLine take 7 args: 7th (height) goes on stack at [rsp]",
+        "XDrawString takes 7 args: 7th (length) goes on stack",
+        "All gfx_* functions do 5 pushes + sub rsp,8 for 16-byte alignment before X11 calls",
+        "display/gc/window are module-local BSS; must call gfx_init first",
+        "Colors are 0x00RRGGBB format"
+      ],
+      "content_hash": "db121f889f08",
+      "line_count": 590
+    },
+    "gui/visualizer.asm": {
+      "path": "gui/visualizer.asm",
+      "description": "UHMA Command & Control Center",
+      "entries": [
+        {
+          "name": "vis_init",
+          "args": "rdi=surface_ptr",
+          "returns": "eax=1 on success"
+        },
+        {
+          "name": "vis_update",
+          "args": "",
+          "returns": "eax=1 to continue, 0 to quit"
+        },
+        {
+          "name": "vis_shutdown",
+          "args": "",
+          "returns": "void"
+        }
+      ],
+      "calls": [
+        "gfx.asm:gfx_init",
+        "gfx.asm:gfx_fill_rect",
+        "gfx.asm:gfx_text"
+      ],
+      "called_by": [
+        "viz_main.asm:main"
+      ],
+      "flow": "",
+      "state": [],
+      "gotchas": [
+        "X11 calls need 16-byte aligned stack: count pushes + sub rsp carefully",
+        "gfx_fill_rect takes 5 args: edi=x, esi=y, edx=w, ecx=h, r8d=color",
+        "Callee-saved regs (rbx, r12-r15) must be preserved across gfx_* calls",
+        "ecx is caller-saved: reload h from memory before each gfx call, don't push/pop"
+      ],
+      "content_hash": "ad4f1e8c5c24",
+      "line_count": 2901
+    },
+    "gui/viz_main.asm": {
+      "path": "gui/viz_main.asm",
+      "description": "Main entry point for UHMA Visualizer",
+      "entries": [
+        {
+          "name": "main",
+          "args": "",
+          "returns": "exit code"
+        }
+      ],
+      "calls": [
+        "surface.asm:surface_init",
+        "dispatch.asm:dispatch_init",
+        "visualizer.asm:vis_init",
+        "vis_update",
+        "vis_shutdown"
+      ],
+      "called_by": [],
+      "flow": "main \u2192 surface_init \u2192 dispatch_init \u2192 vis_init \u2192 loop(vis_update, usleep) \u2192 vis_shutdown",
+      "state": [],
+      "gotchas": [
+        "Link with: gcc -lX11 -lc -no-pie (NOT ld directly)",
+        "Must pass surface_base (r12) to vis_init in rdi",
+        "vis_update returns 0 to quit, 1 to continue",
+        "16ms usleep \u2248 60fps frame rate"
+      ],
+      "content_hash": "3ce02b8a5c79",
+      "line_count": 102
+    },
     "hooks.asm": {
       "path": "hooks.asm",
       "description": "Event hook system: register callbacks, fire events",
@@ -582,6 +723,18 @@
       "content_hash": "6d1599ffad73",
       "line_count": 1692
     },
+    "visualizer.asm": {
+      "path": "visualizer.asm",
+      "description": "",
+      "entries": [],
+      "calls": [],
+      "called_by": [],
+      "flow": "",
+      "state": [],
+      "gotchas": [],
+      "content_hash": "d41d8cd98f00",
+      "line_count": 1
+    },
     "vsa.asm": {
       "path": "vsa.asm",
       "description": "Vector Symbolic Architecture: 1024-dim f64 holographic operations",
@@ -687,6 +840,48 @@
     ],
     "dream_consolidate": [
       "dreams.asm"
+    ],
+    "gfx_init": [
+      "gui/gfx.asm"
+    ],
+    "gfx_shutdown": [
+      "gui/gfx.asm"
+    ],
+    "gfx_clear": [
+      "gui/gfx.asm"
+    ],
+    "gfx_fill_rect": [
+      "gui/gfx.asm"
+    ],
+    "gfx_rect": [
+      "gui/gfx.asm"
+    ],
+    "gfx_line": [
+      "gui/gfx.asm"
+    ],
+    "gfx_text": [
+      "gui/gfx.asm"
+    ],
+    "gfx_flip": [
+      "gui/gfx.asm"
+    ],
+    "gfx_poll_event": [
+      "gui/gfx.asm"
+    ],
+    "gfx_get_mouse_pos": [
+      "gui/gfx.asm"
+    ],
+    "vis_init": [
+      "gui/visualizer.asm"
+    ],
+    "vis_update": [
+      "gui/visualizer.asm"
+    ],
+    "vis_shutdown": [
+      "gui/visualizer.asm"
+    ],
+    "main": [
+      "gui/viz_main.asm"
     ],
     "digest_file": [
       "io.asm"
@@ -811,6 +1006,7 @@
         "vsa.asm"
       ],
       "depended_by": [
+        "gui/viz_main.asm",
         "io.asm",
         "repl.asm"
       ]
@@ -858,6 +1054,22 @@
       "depended_by": [
         "observe.asm"
       ]
+    },
+    "gui/gfx.asm": {
+      "depends_on": [],
+      "depended_by": []
+    },
+    "gui/visualizer.asm": {
+      "depends_on": [],
+      "depended_by": []
+    },
+    "gui/viz_main.asm": {
+      "depends_on": [
+        "dispatch.asm",
+        "surface.asm",
+        "visualizer.asm"
+      ],
+      "depended_by": []
     },
     "hooks.asm": {
       "depends_on": [],
@@ -943,6 +1155,7 @@
     "surface.asm": {
       "depends_on": [],
       "depended_by": [
+        "gui/viz_main.asm",
         "repl.asm"
       ]
     },
@@ -957,6 +1170,12 @@
     "verify.asm": {
       "depends_on": [],
       "depended_by": []
+    },
+    "visualizer.asm": {
+      "depends_on": [],
+      "depended_by": [
+        "gui/viz_main.asm"
+      ]
     },
     "vsa.asm": {
       "depends_on": [],
@@ -973,8 +1192,8 @@
     }
   },
   "meta": {
-    "file_count": 29,
-    "function_count": 40,
-    "total_gotchas": 27
+    "file_count": 33,
+    "function_count": 54,
+    "total_gotchas": 40
   }
 }

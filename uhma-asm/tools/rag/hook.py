@@ -11,9 +11,16 @@ Called automatically before Edit/Write/Read/Grep/Glob operations.
 import sys
 import json
 from pathlib import Path
+from datetime import datetime
 
 SCRIPT_DIR = Path(__file__).parent
 SESSION_MARKER = SCRIPT_DIR / 'memory' / '.session_active'
+DEBUG_LOG = SCRIPT_DIR / 'hook_debug.log'
+
+def log_debug(msg):
+    """Append debug message to log file."""
+    with open(DEBUG_LOG, 'a') as f:
+        f.write(f"[{datetime.now().isoformat()}] {msg}\n")
 
 def inject_session_context():
     """Inject memory context at session start (first operation)."""
@@ -77,9 +84,12 @@ def inject_all_gotchas():
 
 
 # Main execution
+log_debug("Hook invoked")
 try:
-    tool_input = json.load(sys.stdin)
-except (json.JSONDecodeError, EOFError):
+    hook_data = json.load(sys.stdin)
+    log_debug(f"Received: {json.dumps(hook_data)[:500]}")
+except (json.JSONDecodeError, EOFError) as e:
+    log_debug(f"JSON parse error: {e}")
     sys.exit(0)
 
 output_parts = []
@@ -88,6 +98,9 @@ output_parts = []
 session_ctx = inject_session_context()
 if session_ctx:
     output_parts.append(session_ctx)
+
+# Extract tool_input (the nested structure from Claude Code)
+tool_input = hook_data.get('tool_input', hook_data)
 
 # Extract file path from various tool formats
 file_path = tool_input.get('file_path') or tool_input.get('path') or ''
@@ -101,11 +114,21 @@ if pattern and '.asm' in pattern and not file_path:
 
 # For specific .asm file operations
 elif file_path and file_path.endswith('.asm') and 'uhma-asm' in file_path:
-    filename = Path(file_path).name
-    file_ctx = inject_file_context(filename)
+    # Extract relative path from uhma-asm (e.g., "gui/visualizer.asm" or "dispatch.asm")
+    p = Path(file_path)
+    try:
+        idx = p.parts.index('uhma-asm')
+        rel_path = '/'.join(p.parts[idx + 1:])
+    except ValueError:
+        rel_path = p.name
+    file_ctx = inject_file_context(rel_path)
     if file_ctx:
         output_parts.append(file_ctx)
 
 # Output all collected context
 if output_parts:
-    print('\n\n'.join(output_parts))
+    output = '\n\n'.join(output_parts)
+    log_debug(f"Outputting {len(output)} chars")
+    print(output)
+else:
+    log_debug("No output produced")

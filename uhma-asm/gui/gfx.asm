@@ -1,6 +1,25 @@
 ; gfx.asm — Graphics primitives for X11 visualization
 ; Pure assembly graphics library using direct X11 drawing
 ;
+; @entry gfx_init(edi=width, esi=height) -> eax=1 success, 0 fail
+; @entry gfx_shutdown()
+; @entry gfx_clear(edi=color)
+; @entry gfx_fill_rect(edi=x, esi=y, edx=w, ecx=h, r8d=color)
+; @entry gfx_rect(edi=x, esi=y, edx=w, ecx=h, r8d=color)
+; @entry gfx_line(edi=x0, esi=y0, edx=x1, ecx=y1, r8d=color)
+; @entry gfx_text(edi=x, esi=y, rdx=str, ecx=len, r8d=color)
+; @entry gfx_flip()
+; @entry gfx_poll_event() -> eax=event_type or 0
+; @entry gfx_get_mouse_pos() -> eax=x, edx=y
+; @calledby visualizer.asm:draw_*, vis_init, vis_update
+;
+; GOTCHAS:
+;   - XFillRectangle/XDrawRectangle/XDrawLine take 7 args: 7th (height) goes on stack at [rsp]
+;   - XDrawString takes 7 args: 7th (length) goes on stack
+;   - All gfx_* functions do 5 pushes + sub rsp,8 for 16-byte alignment before X11 calls
+;   - display/gc/window are module-local BSS; must call gfx_init first
+;   - Colors are 0x00RRGGBB format
+;
 ; Link with: -lX11 -lc
 
 section .data

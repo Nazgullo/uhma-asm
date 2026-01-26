@@ -15,7 +15,7 @@ UHMA_OBJS = ../io.o ../format.o ../signal.o ../surface.o ../repl.o \
             ../observe.o ../modify.o ../gate.o ../decode.o ../drives.o \
             ../evolve.o ../dreams.o ../persist.o ../introspect.o \
             ../trace.o ../symbolic.o ../genes.o ../factor.o ../verify.o \
-            ../presence.o
+            ../presence.o ../receipt.o ../maturity.o
 
 .PHONY: all clean
 

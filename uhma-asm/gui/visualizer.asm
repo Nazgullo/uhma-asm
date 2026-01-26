@@ -1,6 +1,18 @@
 ; visualizer.asm — UHMA Command & Control Center
 ; Real interactive GUI with clickable regions, live token stream, and system control
 ;
+; @entry vis_init(rdi=surface_ptr) -> eax=1 on success
+; @entry vis_update() -> eax=1 to continue, 0 to quit
+; @entry vis_shutdown()
+; @calls gfx.asm:gfx_init, gfx.asm:gfx_fill_rect, gfx.asm:gfx_text
+; @calledby viz_main.asm:main
+;
+; GOTCHAS:
+;   - X11 calls need 16-byte aligned stack: count pushes + sub rsp carefully
+;   - gfx_fill_rect takes 5 args: edi=x, esi=y, edx=w, ecx=h, r8d=color
+;   - Callee-saved regs (rbx, r12-r15) must be preserved across gfx_* calls
+;   - ecx is caller-saved: reload h from memory before each gfx call, don't push/pop
+;
 ; Layout:
 ;   ┌─────────────────────────────────────────────────────────────────────┐
 ;   │ Menu Bar: [DREAM] [OBSERVE] [EVOLVE] [STEP] [RUN] [SAVE] [LOAD]... │
@@ -1294,11 +1306,10 @@ draw_buttons:
     cmp r12d, [rel num_buttons]
     jge .done
 
-    ; Get rect
+    ; Get rect (h loaded directly before each gfx call since ecx is caller-saved)
     mov r13d, [rbx]         ; x
     mov r14d, [rbx + 4]     ; y
     mov r15d, [rbx + 8]     ; w
-    mov ecx, [rbx + 12]     ; h
 
     ; Color
     mov r8d, [rel col_btn]
@@ -1307,18 +1318,18 @@ draw_buttons:
     mov r8d, [rel col_btn_hover]
 .not_hover:
 
-    ; Fill
+    ; Fill - args: edi=x, esi=y, edx=w, ecx=h, r8d=color
     mov edi, r13d
     mov esi, r14d
     mov edx, r15d
-    push rcx
+    mov ecx, [rbx + 12]         ; reload h (don't use push - breaks alignment!)
     call gfx_fill_rect
-    pop rcx
 
-    ; Border
+    ; Border - args: edi=x, esi=y, edx=w, ecx=h, r8d=color
     mov edi, r13d
     mov esi, r14d
     mov edx, r15d
+    mov ecx, [rbx + 12]         ; reload h
     mov r8d, [rel col_border]
     call gfx_rect
 
