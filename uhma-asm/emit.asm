@@ -23,6 +23,9 @@ extern sym_observe_mod
 extern verify_modification
 extern region_condemn
 extern emit_receipt_simple
+extern holo_gen_vec
+extern holo_dot_f64
+extern holo_superpose_f64
 
 ;; ============================================================
 ;; emit_dispatch_pattern(ctx_hash_32, token_id, birth_step)
@@ -196,6 +199,68 @@ emit_dispatch_pattern:
     mov esi, r13d             ; token_id (for finding same-token regions)
     call wire_new_region
 
+    ; === Holographic suffix detection ===
+    ; Hash suffix → generate vector via holo_gen_vec → query trace → if resonance, signal factoring
+    movzx ecx, word [rbx + RHDR_CODE_LEN]
+    cmp ecx, SUFFIX_HASH_LEN
+    jl .no_suffix_detect
+
+    ; Hash last SUFFIX_HASH_LEN bytes
+    lea rdi, [rbx + RHDR_SIZE]
+    add rdi, rcx
+    sub rdi, SUFFIX_HASH_LEN
+    xor eax, eax
+    mov ecx, SUFFIX_HASH_LEN
+.hash_suffix:
+    imul eax, eax, 31
+    movzx edx, byte [rdi]
+    add eax, edx
+    inc rdi
+    dec ecx
+    jnz .hash_suffix
+    ; eax = suffix hash
+
+    ; Allocate temp vector on stack for suffix vector (HOLO_VEC_BYTES = 8192)
+    push rbx
+    sub rsp, HOLO_VEC_BYTES
+    mov r14, rsp              ; r14 = suffix vector (on stack)
+
+    ; Generate suffix vector using holo_gen_vec (handles arbitrary hashes correctly)
+    mov edi, eax              ; suffix hash
+    mov rsi, r14              ; output = stack vector
+    call holo_gen_vec
+
+    ; Get suffix trace address
+    ; NOTE: Cannot do "add rdi, HOLO_OFFSET" - 0xC0000000 sign-extends to negative!
+    ; Use single 64-bit immediate to avoid sign-extension bug.
+    mov rdi, SURFACE_BASE + HOLO_OFFSET + (SUFFIX_TRACE_IDX * HOLO_VEC_BYTES)
+
+    ; Query: dot product for similarity
+    push rdi                  ; save trace addr
+    mov rsi, r14              ; suffix vec (on stack)
+    call holo_dot_f64         ; xmm0 = similarity
+
+    ; Check threshold (0.7 f64)
+    mov rax, 0x3FE6666666666666
+    movq xmm1, rax
+    ucomisd xmm0, xmm1
+    jb .no_resonance
+
+    ; Resonance detected - increment pending factor count
+    mov rdi, SURFACE_BASE
+    inc dword [rdi + STATE_OFFSET + ST_FACTOR_PENDING]
+
+.no_resonance:
+    ; Superpose suffix vec into trace (accumulate for future resonance detection)
+    pop rdi                   ; trace addr
+    mov rsi, r14              ; suffix vec (on stack)
+    call holo_superpose_f64
+
+    ; Clean up stack
+    add rsp, HOLO_VEC_BYTES
+    pop rbx
+
+.no_suffix_detect:
     mov rax, rbx              ; return header ptr
 .emit_done:
     pop r14

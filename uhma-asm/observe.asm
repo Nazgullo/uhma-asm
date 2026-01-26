@@ -572,14 +572,13 @@ observe_cycle:
     ; This makes the Presence system a steering wheel, not just a dashboard.
     call trigger_presence_regions
 
-    ; --- Recursive Schema Hierarchy: periodic suffix factoring ---
-    ; Every 256 steps with >10 regions, scan for common suffixes to factor
-    ; into shared subroutines. This is the system discovering reusable patterns.
-    mov eax, r12d                     ; global step
-    and eax, 0xFF                     ; step % 256
-    jnz .no_factoring
-    cmp r13d, 10                      ; need enough regions to factor
+    ; --- Recursive Schema Hierarchy: holographic-triggered factoring ---
+    ; Only factor when suffix resonance has been detected (ST_FACTOR_PENDING).
+    ; This is the system telling us factoring is needed, not a timer.
+    mov eax, [rbx + STATE_OFFSET + ST_FACTOR_PENDING]
+    cmp eax, SUFFIX_MIN_CALLERS
     jl .no_factoring
+
     push r12
     push r13
     push r15
@@ -587,6 +586,9 @@ observe_cycle:
     pop r15
     pop r13
     pop r12
+
+    ; Reset pending count after factoring
+    mov dword [rbx + STATE_OFFSET + ST_FACTOR_PENDING], 0
 .no_factoring:
 
     ; Fire observe hook

@@ -655,8 +655,11 @@
 %define ST_OBS_INTERVAL     (ST_DRIVE_THRESH + 16)          ; u32
 %define ST_OBS_LAST_STEP    (ST_OBS_INTERVAL + 4)           ; u64
 
+; Factor triggering - incremented when suffix resonance detected
+%define ST_FACTOR_PENDING   (ST_OBS_LAST_STEP + 8)          ; u32 count of suffix matches
+
 ; Introspective state (computed from metrics each observation)
-%define ST_INTRO_STATE      (ST_OBS_LAST_STEP + 8)          ; u32 enum
+%define ST_INTRO_STATE      (ST_FACTOR_PENDING + 4)         ; u32 enum
 %define ST_SURPRISE_TYPE    (ST_INTRO_STATE + 4)            ; u32 (per-step)
 %define ST_META_FEELING     (ST_SURPRISE_TYPE + 4)          ; u32 FEELING_* enum (per-context feeling)
 %define ST_META_CONFIDENCE  (ST_META_FEELING + 4)           ; f64 raw confidence score for current context
@@ -965,7 +968,7 @@
 %define RCPT_TRACE_COMBINED 245   ; combined trace (all events superposed)
 %define RCPT_TRACE_COUNT    6     ; number of receipt traces
 
-;; Holographic Suffix Factoring — O(1) suffix similarity via resonance
+;; Holographic Suffix Factoring — detect similar suffixes via resonance
 %define SUFFIX_TRACE_IDX    246   ; trace index for suffix resonance
 %define SUFFIX_HASH_LEN     8     ; bytes of suffix to hash for encoding
 %define SUFFIX_MATCH_THRESH 0.7   ; dot product threshold for "same suffix"
