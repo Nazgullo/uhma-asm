@@ -1204,11 +1204,11 @@
       "gotchas": [
         "emit_receipt_full for MISS must include predicted token (diagnostic key)",
         "receipt_resonate returns f64 similarity, not bool",
-        "Working buffer is ring, wraps at 16 entries",
+        "No working buffer - all history is holographic, only last miss stored for \"why\"",
         "Causal queries need receipts with aux=accuracy*1000 (emitted by modify.asm)"
       ],
-      "content_hash": "eb9f4a1205f3",
-      "line_count": 1982
+      "content_hash": "2e4307d598e1",
+      "line_count": 1902
     },
     "repl.asm": {
       "path": "repl.asm",
@@ -1241,10 +1241,11 @@
       "gotchas": [
         "Commands are plain words, NOT :prefixed",
         "New command = add string match + .not_X + .cmd_X handler",
-        "quit must call surface_freeze before exit"
+        "quit must call surface_freeze before exit",
+        "listen command uses LISTENER_HOLO | LISTENER_PRINT only (working buffer removed)"
       ],
-      "content_hash": "093b0a2d7052",
-      "line_count": 2266
+      "content_hash": "ecfa88220e91",
+      "line_count": 2269
     },
     "signal.asm": {
       "path": "signal.asm",
@@ -2699,6 +2700,6 @@
   "meta": {
     "file_count": 33,
     "function_count": 223,
-    "total_gotchas": 48
+    "total_gotchas": 49
   }
 }

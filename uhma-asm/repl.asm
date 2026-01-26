@@ -24,10 +24,13 @@
 ;
 ; TEXT: non-command → process_input() → tokenize → process_token
 ;
+; LISTENER FLAGS: LISTENER_HOLO | LISTENER_PRINT (no LISTENER_WORKING - removed)
+;
 ; GOTCHAS:
 ;   - Commands are plain words, NOT :prefixed
 ;   - New command = add string match + .not_X + .cmd_X handler
 ;   - quit must call surface_freeze before exit
+;   - listen command uses LISTENER_HOLO | LISTENER_PRINT only (working buffer removed)
 %include "syscalls.inc"
 %include "constants.inc"
 
@@ -922,8 +925,8 @@ repl_run:
     jmp .loop
 
 .cmd_listen:
-    ; Enable receipt listeners (HOLO | PRINT | WORKING for interactive use)
-    mov edi, (LISTENER_HOLO | LISTENER_PRINT | LISTENER_WORKING)
+    ; Enable receipt listeners (HOLO | PRINT for interactive use)
+    mov edi, (LISTENER_HOLO | LISTENER_PRINT)
     call receipt_listen
     lea rdi, [rel listen_enabled_msg]
     call print_cstr

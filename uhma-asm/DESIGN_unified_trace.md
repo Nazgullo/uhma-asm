@@ -59,16 +59,24 @@ emit_receipt_simple:
 ### Query Functions
 
 ```asm
-receipt_why_miss:     ; Explains last MISS (actual vs predicted, confidence)
-receipt_show_misses:  ; Shows last N misses from working buffer
+receipt_why_miss:     ; Explains last MISS using ST_LAST_MISS_* record
+receipt_show_misses:  ; Queries holographic trace for MISS events
+receipt_dump:         ; Shows trace resonance by event type
+receipt_resonate:     ; Query trace by (event, ctx, token) → similarity
 ```
 
-## Working Buffer
+## Last-Miss State (ST_LAST_MISS_*)
 
-16-entry ring buffer for recent receipts (human-readable debugging):
-- `receipt_buffer`: 16 × 64 bytes
-- `receipt_buffer_idx`: current write position
-- Stores: event, ctx, actual, predicted, region, aux, confidence, valence
+Minimal 32-byte record for immediate `why` command (not holographic):
+- `ST_LAST_MISS_CTX`: u32 context hash
+- `ST_LAST_MISS_ACTUAL`: u32 actual token
+- `ST_LAST_MISS_PRED`: u32 predicted token
+- `ST_LAST_MISS_REGION`: u32 region that predicted
+- `ST_LAST_MISS_AUX`: u32 aux data (runner-up)
+- `ST_LAST_MISS_CONF`: f32 confidence
+- `ST_LAST_MISS_STEP`: u64 step when it happened
+
+All historical queries use the holographic trace via `receipt_resonate()`.
 
 ## REPL Commands
 

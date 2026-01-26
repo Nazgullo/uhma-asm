@@ -949,15 +949,19 @@
 %define LISTENER_PRINT      0x0002  ; print to stdout (debug)
 %define LISTENER_HOOK       0x0004  ; fire hook handlers
 %define LISTENER_GUI        0x0008  ; notify GUI visualizer
-%define LISTENER_WORKING    0x0010  ; write to tiny working buffer
 
-; Working buffer - tiny ring for immediate/debug access (NOT primary storage)
-; Primary storage is holographic. This is just for "show me last few" debugging.
-%define ST_RECEIPT_WORKING  (ST_CURRENT_TOKEN + 4)        ; tiny working buffer
-%define ST_RECEIPT_WORK_CAP 16                            ; just 16 entries
-%define ST_RECEIPT_WORK_SIZE (ST_RECEIPT_WORK_CAP * 64)   ; 1KB (64 bytes each)
-%define ST_RECEIPT_WORK_POS (ST_RECEIPT_WORKING + ST_RECEIPT_WORK_SIZE)  ; u32 position
-%define ST_RECEIPT_TOTAL    (ST_RECEIPT_WORK_POS + 4)     ; u64 total emitted
+; Last-miss state - minimal record for "why" command (everything else is holographic)
+%define ST_LAST_MISS        (ST_CURRENT_TOKEN + 4)        ; last miss record
+%define ST_LAST_MISS_CTX    (ST_LAST_MISS + 0)            ; u32 context hash
+%define ST_LAST_MISS_ACTUAL (ST_LAST_MISS + 4)            ; u32 actual token
+%define ST_LAST_MISS_PRED   (ST_LAST_MISS + 8)            ; u32 predicted token
+%define ST_LAST_MISS_REGION (ST_LAST_MISS + 12)           ; u32 region that predicted
+%define ST_LAST_MISS_AUX    (ST_LAST_MISS + 16)           ; u32 aux data (runner-up)
+%define ST_LAST_MISS_CONF   (ST_LAST_MISS + 20)           ; f32 confidence
+%define ST_LAST_MISS_STEP   (ST_LAST_MISS + 24)           ; u64 step when it happened
+%define ST_LAST_MISS_SIZE   32                            ; 32 bytes total
+
+%define ST_RECEIPT_TOTAL    (ST_LAST_MISS + ST_LAST_MISS_SIZE) ; u64 total emitted
 %define ST_RECEIPT_LISTENER (ST_RECEIPT_TOTAL + 8)        ; u32 listener bitmask
 %define ST_ACTIVE_TRACER    (ST_RECEIPT_LISTENER + 4)     ; u32 active tracer ID (0=none)
 %define ST_RECEIPT_END      (ST_ACTIVE_TRACER + 4)

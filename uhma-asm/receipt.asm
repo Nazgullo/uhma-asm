@@ -34,13 +34,13 @@
 ; @calls vsa.asm:holo_gen_vec, holo_bind_f64, holo_superpose_f64
 ; @calledby dispatch.asm, learn.asm, emit.asm, observe.asm, dreams.asm, repl.asm, introspect.asm
 ;
-; STORAGE: UNIFIED_TRACE_IDX=240, 8KB | Working buffer: 16×64 bytes
+; STORAGE: UNIFIED_TRACE_IDX=240, 8KB | ST_LAST_MISS_* for "why" command
 ; 8 DIMENSIONS: time→tracer→aux→region→predicted→actual→ctx→event
 ;
 ; GOTCHAS:
 ;   - emit_receipt_full for MISS must include predicted token (diagnostic key)
 ;   - receipt_resonate returns f64 similarity, not bool
-;   - Working buffer is ring, wraps at 16 entries
+;   - No working buffer - all history is holographic, only last miss stored for "why"
 ;   - Causal queries need receipts with aux=accuracy*1000 (emitted by modify.asm)
 
 %include "syscalls.inc"
@@ -56,8 +56,14 @@ section .data
     rcpt_fid_lbl:       db " fid=", 0
     rcpt_nl:            db 10, 0
 
-    rcpt_dump_hdr:      db "[RECEIPTS] Working buffer (last ", 0
+    rcpt_dump_hdr:      db "[RECEIPTS] Holographic trace query:", 10, 0
     rcpt_dump_mid:      db "):", 10, 0
+    rcpt_dump_trace_hdr: db "[RECEIPTS] Holographic trace resonance by event:", 10, 0
+    rcpt_dump_evt_lbl:  db "  ", 0
+    rcpt_dump_res_lbl:  db " = ", 0
+    rcpt_dump_ratio:    db "  HIT/MISS ratio: ", 0
+    rcpt_dump_trace_mag: db "  Trace magnitude: ", 0
+    rcpt_dump_last_miss: db "  Last miss: ctx=0x", 0
     rcpt_resonate_hdr:  db "[RESONATE] ", 0
     rcpt_resonate_sim:  db " similarity=", 0
 
@@ -135,6 +141,7 @@ extern holo_superpose_f64
 extern holo_dot_f64
 extern holo_magnitude_f64
 extern holo_scale_f64
+extern vsa_normalize
 
 ;; ============================================================
 ;; emit_receipt_full(event, ctx, actual, predicted, region, aux, confidence, valence)
@@ -260,41 +267,25 @@ emit_receipt_full:
     call print_newline
 
 .skip_print:
-    ; === CHECK LISTENER_WORKING (tiny debug buffer) ===
-    mov eax, [rbx + STATE_OFFSET + ST_RECEIPT_LISTENER]
-    test eax, LISTENER_WORKING
-    jz .skip_working
+    ; === UPDATE LAST-MISS STATE (for "why" command) ===
+    cmp r12w, EVENT_MISS
+    jne .skip_last_miss
 
-    ; Write to working buffer (extended 64-byte record)
-    mov ecx, [rbx + STATE_OFFSET + ST_RECEIPT_WORK_POS]
-    imul eax, ecx, 64
-    lea rdi, [rbx + STATE_OFFSET + ST_RECEIPT_WORKING]
-    add rdi, rax
-    ; Store all fields
-    mov rax, [rbx + STATE_OFFSET + ST_GLOBAL_STEP]
-    mov [rdi + 0], rax            ; timestamp
-    mov [rdi + 8], r12w           ; event_type
-    mov word [rdi + 10], 0        ; padding
-    mov [rdi + 12], r13d          ; ctx_hash
-    mov [rdi + 16], r14d          ; actual_token
+    ; Store last miss info
+    mov [rbx + STATE_OFFSET + ST_LAST_MISS_CTX], r13d      ; ctx_hash
+    mov [rbx + STATE_OFFSET + ST_LAST_MISS_ACTUAL], r14d   ; actual_token
     mov eax, [rsp + 36]
-    mov [rdi + 20], eax           ; predicted_token (NEW!)
-    movss xmm0, [rsp + 8]
-    movss [rdi + 24], xmm0        ; confidence
-    movsd xmm0, [rsp]
-    movsd [rdi + 28], xmm0        ; fidelity
+    mov [rbx + STATE_OFFSET + ST_LAST_MISS_PRED], eax      ; predicted_token
     mov eax, [rsp + 40]
-    mov [rdi + 36], eax           ; region_hash (NEW!)
+    mov [rbx + STATE_OFFSET + ST_LAST_MISS_REGION], eax    ; region_hash
     mov eax, [rsp + 44]
-    mov [rdi + 40], eax           ; aux_data (NEW!)
-    mov eax, [rbx + STATE_OFFSET + ST_ACTIVE_TRACER]
-    mov [rdi + 44], eax           ; tracer_id
-    ; Advance position
-    inc ecx
-    and ecx, (ST_RECEIPT_WORK_CAP - 1)
-    mov [rbx + STATE_OFFSET + ST_RECEIPT_WORK_POS], ecx
+    mov [rbx + STATE_OFFSET + ST_LAST_MISS_AUX], eax       ; aux_data
+    movss xmm0, [rsp + 8]
+    movss [rbx + STATE_OFFSET + ST_LAST_MISS_CONF], xmm0   ; confidence
+    mov rax, [rbx + STATE_OFFSET + ST_RECEIPT_TOTAL]       ; use receipt count (guaranteed > 0)
+    mov [rbx + STATE_OFFSET + ST_LAST_MISS_STEP], rax      ; step
 
-.skip_working:
+.skip_last_miss:
     ; === CHECK LISTENER_HOLO (main holographic storage) ===
     mov eax, [rbx + STATE_OFFSET + ST_RECEIPT_LISTENER]
     test eax, LISTENER_HOLO
@@ -391,6 +382,10 @@ emit_receipt_full:
     lea rdx, [rel scratch_result_vec]
     call holo_bind_f64
 
+    ; NORMALIZE: Multiple bindings cause magnitude decay - restore to unit length
+    lea rdi, [rel scratch_result_vec]
+    call vsa_normalize
+
     ; === SCALE BY FIDELITY * LEARNING_RATE ===
     movsd xmm0, [rsp]
     mulsd xmm0, [rel learning_rate]
@@ -400,8 +395,9 @@ emit_receipt_full:
     ; === SUPERPOSE TO UNIFIED TRACE ===
     mov eax, UNIFIED_TRACE_IDX
     imul rax, rax, HOLO_VEC_BYTES
-    mov rdi, HOLO_OFFSET
-    add rdi, rbx
+    mov rdi, rbx
+    mov rcx, HOLO_OFFSET              ; use register to avoid sign-extend of 0xC0000000
+    add rdi, rcx
     add rdi, rax
     lea rsi, [rel scratch_result_vec]
     call holo_superpose_f64
@@ -653,118 +649,118 @@ receipt_mute:
 
 ;; ============================================================
 ;; receipt_dump(count)
-;; edi = number of recent entries from working buffer to show
+;; Query holographic trace and show event resonance levels.
+;; edi = ignored (kept for API compat)
+;; Shows: event type resonance, hit/miss ratio, last miss
 ;; ============================================================
 global receipt_dump
 receipt_dump:
     push rbx
     push r12
-    push r13
-    push r14
+    sub rsp, 8                ; 2 pushes (even) + 8 = aligned
 
-    mov r12d, edi             ; count
     mov rbx, SURFACE_BASE
 
     ; Print header
-    lea rdi, [rel rcpt_dump_hdr]
+    lea rdi, [rel rcpt_dump_trace_hdr]
+    call print_cstr
+
+    ; Query and print resonance for each event type
+    xor r12d, r12d            ; event counter
+
+.event_loop:
+    cmp r12d, EVENT_TYPE_COUNT
+    jge .event_done
+
+    ; Print event name
+    lea rdi, [rel rcpt_dump_evt_lbl]
     call print_cstr
     mov edi, r12d
-    call print_u64
-    lea rdi, [rel rcpt_dump_mid]
-    call print_cstr
-
-    ; Clamp count to buffer size
-    cmp r12d, ST_RECEIPT_WORK_CAP
-    jle .count_ok
-    mov r12d, ST_RECEIPT_WORK_CAP
-.count_ok:
-
-    ; Get current position
-    mov r13d, [rbx + STATE_OFFSET + ST_RECEIPT_WORK_POS]
-
-    ; Calculate start position (pos - count, with wrap)
-    mov ecx, r13d
-    sub ecx, r12d
-    jns .no_wrap
-    add ecx, ST_RECEIPT_WORK_CAP
-.no_wrap:
-
-.dump_loop:
-    test r12d, r12d
-    jz .dump_done
-
-    push rcx
-    push r12
-
-    ; Calculate entry address
-    imul eax, ecx, 64
-    lea rdi, [rbx + STATE_OFFSET + ST_RECEIPT_WORKING]
-    add rdi, rax
-    push rdi
-
-    ; Print: #timestamp event ctx=X tok=Y fid=Z
-    lea rdi, [rel rcpt_emit_msg]
-    call print_cstr
-    pop rdi
-    push rdi
-    mov rdi, [rdi + 0]            ; timestamp
-    call print_u64
-    lea rdi, [rel rcpt_event_lbl]
-    call print_cstr
-    pop rdi
-    push rdi
-    movzx edi, word [rdi + 8]     ; event_type
     call get_event_name
     mov rdi, rax
     call print_cstr
-    lea rdi, [rel rcpt_ctx_lbl]
+
+    ; Query trace_event_count for this event type
+    mov edi, r12d
+    call trace_event_count    ; xmm0 = resonance magnitude
+    lea rdi, [rel rcpt_dump_res_lbl]
     call print_cstr
-    pop rdi
-    push rdi
-    mov edi, [rdi + 12]           ; ctx_hash
-    call print_hex32
-    lea rdi, [rel rcpt_tok_lbl]
-    call print_cstr
-    pop rdi
-    push rdi
-    mov edi, [rdi + 16]           ; token_id
-    call print_hex32
-    lea rdi, [rel rcpt_fid_lbl]
-    call print_cstr
-    pop rdi
-    movsd xmm0, [rdi + 24]        ; fidelity
     cvtsd2ss xmm0, xmm0
     call print_f32
     call print_newline
 
-    pop r12
-    pop rcx
+    inc r12d
+    jmp .event_loop
 
-    ; Next
-    inc ecx
-    and ecx, (ST_RECEIPT_WORK_CAP - 1)
-    dec r12d
-    jmp .dump_loop
+.event_done:
+    ; Print separator
+    call print_newline
 
-.dump_done:
-    pop r14
-    pop r13
+    ; Show raw trace magnitude (diagnostic)
+    lea rdi, [rel rcpt_dump_trace_mag]
+    call print_cstr
+    mov eax, UNIFIED_TRACE_IDX
+    imul rax, rax, HOLO_VEC_BYTES
+    mov rdi, rbx
+    mov rcx, HOLO_OFFSET              ; use register to avoid sign-extend
+    add rdi, rcx
+    add rdi, rax
+    call holo_magnitude_f64
+    cvtsd2ss xmm0, xmm0
+    call print_f32
+    call print_newline
+
+    ; Show system hit/miss ratio
+    lea rdi, [rel rcpt_dump_ratio]
+    call print_cstr
+    call trace_hit_miss_ratio
+    cvtsd2ss xmm0, xmm0
+    call print_f32
+    call print_newline
+
+    ; Show last miss if any
+    mov rax, [rbx + STATE_OFFSET + ST_LAST_MISS_STEP]
+    test rax, rax
+    jz .no_last_miss
+
+    lea rdi, [rel rcpt_dump_last_miss]
+    call print_cstr
+    mov edi, [rbx + STATE_OFFSET + ST_LAST_MISS_CTX]
+    call print_hex32
+    lea rdi, [rel arrow_str]
+    call print_cstr
+    mov edi, [rbx + STATE_OFFSET + ST_LAST_MISS_PRED]
+    call print_hex32
+    lea rdi, [rel actual_str]
+    call print_cstr
+    mov edi, [rbx + STATE_OFFSET + ST_LAST_MISS_ACTUAL]
+    call print_hex32
+    lea rdi, [rel close_paren]
+    call print_cstr
+
+.no_last_miss:
+    add rsp, 8
     pop r12
     pop rbx
     ret
 
 ;; ============================================================
 ;; receipt_init
-;; Initialize receipt system
+;; Initialize receipt system (holographic trace + last-miss state)
 ;; ============================================================
 global receipt_init
 receipt_init:
     mov rax, SURFACE_BASE
-    mov dword [rax + STATE_OFFSET + ST_RECEIPT_WORK_POS], 0
+    ; Clear last-miss state
+    mov qword [rax + STATE_OFFSET + ST_LAST_MISS], 0
+    mov qword [rax + STATE_OFFSET + ST_LAST_MISS + 8], 0
+    mov qword [rax + STATE_OFFSET + ST_LAST_MISS + 16], 0
+    mov qword [rax + STATE_OFFSET + ST_LAST_MISS + 24], 0
+    ; Initialize counters
     mov qword [rax + STATE_OFFSET + ST_RECEIPT_TOTAL], 0
     mov dword [rax + STATE_OFFSET + ST_ACTIVE_TRACER], 0
-    ; Enable holographic storage, working buffer, AND print for observability
-    mov dword [rax + STATE_OFFSET + ST_RECEIPT_LISTENER], LISTENER_HOLO | LISTENER_WORKING | LISTENER_PRINT
+    ; Enable holographic storage and print (no working buffer)
+    mov dword [rax + STATE_OFFSET + ST_RECEIPT_LISTENER], LISTENER_HOLO | LISTENER_PRINT
     ret
 
 ;; ============================================================
@@ -855,6 +851,9 @@ section .data
     misses_hdr:     db "[MISSES] Last ", 0
     misses_mid:     db " prediction failures:", 10, 0
     misses_none:    db "[MISSES] No misses found.", 10, 0
+    misses_hdr_new: db "[MISSES] Last miss + trace resonance:", 10, 0
+    misses_trace_ctx: db "  Context confusion: ", 0
+    misses_trace_sys: db "  System confusion:  ", 0
     miss_line:      db "  ", 0
     arrow_str:      db " -> predicted ", 0
     actual_str:     db " (actual: ", 0
@@ -866,43 +865,19 @@ section .text
 ;; receipt_why_miss()
 ;; Explain the most recent MISS - what was predicted vs actual
 ;; The answer to "why did it fail?"
+;; Reads from ST_LAST_MISS_* (single record, no buffer scanning)
 ;; ============================================================
 global receipt_why_miss
 receipt_why_miss:
     push rbx
-    push r12
-    push r13
+    sub rsp, 8                    ; 1 push (odd) + 8 = aligned
 
     mov rbx, SURFACE_BASE
 
-    ; Scan working buffer backwards for most recent MISS
-    mov r12d, [rbx + STATE_OFFSET + ST_RECEIPT_WORK_POS]
-    mov r13d, ST_RECEIPT_WORK_CAP   ; max iterations
-
-.why_scan:
-    test r13d, r13d
+    ; Check if there's been a miss (step > 0)
+    mov rax, [rbx + STATE_OFFSET + ST_LAST_MISS_STEP]
+    test rax, rax
     jz .why_not_found
-
-    ; Move backwards (wrap)
-    dec r12d
-    and r12d, (ST_RECEIPT_WORK_CAP - 1)
-
-    ; Get entry
-    imul eax, r12d, 64
-    lea rdi, [rbx + STATE_OFFSET + ST_RECEIPT_WORKING]
-    add rdi, rax
-
-    ; Check if MISS event
-    movzx eax, word [rdi + 8]
-    cmp eax, EVENT_MISS
-    je .why_found
-
-    dec r13d
-    jmp .why_scan
-
-.why_found:
-    ; rdi points to the MISS entry
-    push rdi
 
     ; Print header
     lea rdi, [rel why_hdr]
@@ -911,53 +886,42 @@ receipt_why_miss:
     ; Context
     lea rdi, [rel why_ctx]
     call print_cstr
-    pop rdi
-    push rdi
-    mov edi, [rdi + 12]           ; ctx_hash
+    mov edi, [rbx + STATE_OFFSET + ST_LAST_MISS_CTX]
     call print_hex32
     call print_newline
 
     ; Actual token
     lea rdi, [rel why_actual]
     call print_cstr
-    pop rdi
-    push rdi
-    mov edi, [rdi + 16]           ; actual_token
+    mov edi, [rbx + STATE_OFFSET + ST_LAST_MISS_ACTUAL]
     call print_hex32
     call print_newline
 
     ; Predicted token (THE KEY!)
     lea rdi, [rel why_predicted]
     call print_cstr
-    pop rdi
-    push rdi
-    mov edi, [rdi + 20]           ; predicted_token
+    mov edi, [rbx + STATE_OFFSET + ST_LAST_MISS_PRED]
     call print_hex32
     call print_newline
 
     ; Region hash
     lea rdi, [rel why_region]
     call print_cstr
-    pop rdi
-    push rdi
-    mov edi, [rdi + 36]           ; region_hash
+    mov edi, [rbx + STATE_OFFSET + ST_LAST_MISS_REGION]
     call print_hex32
     call print_newline
 
     ; Runner-up (aux)
     lea rdi, [rel why_runner]
     call print_cstr
-    pop rdi
-    push rdi
-    mov edi, [rdi + 40]           ; aux (runner-up)
+    mov edi, [rbx + STATE_OFFSET + ST_LAST_MISS_AUX]
     call print_hex32
     call print_newline
 
     ; Confidence
     lea rdi, [rel why_conf]
     call print_cstr
-    pop rdi
-    movss xmm0, [rdi + 24]        ; confidence
+    movss xmm0, [rbx + STATE_OFFSET + ST_LAST_MISS_CONF]
     call print_f32
     call print_newline
 
@@ -968,128 +932,84 @@ receipt_why_miss:
     call print_cstr
 
 .why_done:
-    pop r13
-    pop r12
+    add rsp, 8
     pop rbx
     ret
 
 ;; ============================================================
 ;; receipt_show_misses(count)
-;; Show last N misses with predicted vs actual
-;; edi = count
+;; Show last miss + holographic trace resonance for context
+;; edi = count (ignored - only last miss tracked, trace has history)
 ;; ============================================================
 global receipt_show_misses
 receipt_show_misses:
     push rbx
     push r12
-    push r13
-    push r14
-    push r15
+    sub rsp, 8                    ; 2 pushes (even) + 8 = aligned
 
     mov rbx, SURFACE_BASE
-    mov r14d, edi                 ; requested count
-    xor r15d, r15d                ; found count
 
     ; Print header
-    lea rdi, [rel misses_hdr]
-    call print_cstr
-    mov edi, r14d
-    call print_u64
-    lea rdi, [rel misses_mid]
+    lea rdi, [rel misses_hdr_new]
     call print_cstr
 
-    ; Scan working buffer backwards
-    mov r12d, [rbx + STATE_OFFSET + ST_RECEIPT_WORK_POS]
-    mov r13d, ST_RECEIPT_WORK_CAP   ; max iterations
+    ; Check if we have a last miss
+    mov rax, [rbx + STATE_OFFSET + ST_LAST_MISS_STEP]
+    test rax, rax
+    jz .misses_none_found
 
-.misses_scan:
-    test r13d, r13d
-    jz .misses_done_scan
-    cmp r15d, r14d                ; found enough?
-    jge .misses_done_scan
+    ; Save last miss ctx for trace query
+    mov r12d, [rbx + STATE_OFFSET + ST_LAST_MISS_CTX]
 
-    ; Move backwards (wrap)
-    dec r12d
-    and r12d, (ST_RECEIPT_WORK_CAP - 1)
-
-    ; Get entry
-    imul eax, r12d, 64
-    lea rdi, [rbx + STATE_OFFSET + ST_RECEIPT_WORKING]
-    add rdi, rax
-
-    ; Check if MISS event
-    movzx eax, word [rdi + 8]
-    cmp eax, EVENT_MISS
-    jne .misses_next
-
-    ; Found a MISS - print it
-    push rdi
-    push r12
-    push r13
-
-    ; Print: "  ctx -> predicted 0x... (actual: 0x...)"
+    ; Print last miss: "  ctx -> predicted 0x... (actual: 0x...)"
     lea rdi, [rel miss_line]
     call print_cstr
-
-    ; Context
-    pop r13
-    pop r12
-    pop rdi
-    push rdi
-    push r12
-    push r13
-    mov edi, [rdi + 12]           ; ctx_hash
+    mov edi, r12d
     call print_hex32
-
     lea rdi, [rel arrow_str]
     call print_cstr
-
-    ; Predicted
-    pop r13
-    pop r12
-    pop rdi
-    push rdi
-    push r12
-    push r13
-    mov edi, [rdi + 20]           ; predicted
+    mov edi, [rbx + STATE_OFFSET + ST_LAST_MISS_PRED]
     call print_hex32
-
     lea rdi, [rel actual_str]
     call print_cstr
-
-    ; Actual
-    pop r13
-    pop r12
-    pop rdi
-    push rdi
-    push r12
-    push r13
-    mov edi, [rdi + 16]           ; actual
+    mov edi, [rbx + STATE_OFFSET + ST_LAST_MISS_ACTUAL]
     call print_hex32
-
     lea rdi, [rel close_paren]
     call print_cstr
 
-    pop r13
-    pop r12
-    pop rdi
+    ; Query trace for MISS resonance at this context
+    lea rdi, [rel misses_trace_ctx]
+    call print_cstr
+    mov edi, r12d                 ; last miss ctx
+    call trace_context_confidence ; xmm0 = HIT/(HIT+MISS) ratio
+    ; Invert to get confusion: 1 - confidence
+    mov rax, 0x3FF0000000000000   ; 1.0 f64
+    movq xmm1, rax
+    subsd xmm1, xmm0              ; confusion = 1 - confidence
+    cvtsd2ss xmm0, xmm1
+    call print_f32
+    call print_newline
 
-    inc r15d                      ; count found
+    ; Query system-wide MISS resonance
+    lea rdi, [rel misses_trace_sys]
+    call print_cstr
+    call trace_hit_miss_ratio     ; xmm0 = system HIT/(HIT+MISS)
+    ; Invert to get confusion
+    mov rax, 0x3FF0000000000000
+    movq xmm1, rax
+    subsd xmm1, xmm0
+    cvtsd2ss xmm0, xmm1
+    call print_f32
+    call print_newline
 
-.misses_next:
-    dec r13d
-    jmp .misses_scan
+    jmp .misses_done
 
-.misses_done_scan:
-    test r15d, r15d
-    jnz .misses_done
+.misses_none_found:
     lea rdi, [rel misses_none]
     call print_cstr
 
 .misses_done:
-    pop r15
-    pop r14
-    pop r13
+    add rsp, 8
     pop r12
     pop rbx
     ret

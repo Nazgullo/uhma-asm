@@ -126,8 +126,16 @@ The receipt system IS the causal self-model. Key insight: don't create parallel 
 - One trace (UNIFIED_TRACE_IDX=240) replaces 6 separate traces
 - 8 dimensions: event, ctx, actual, predicted, region, aux, tracer, time
 - emit_receipt_full() captures full diagnostic context
-- `why` and `misses` commands query the trace for debugging
+- `why` uses ST_LAST_MISS_* (32-byte state), `misses` queries holographic trace
+- **No working buffer** - all history is holographic, only last miss stored for immediate `why`
 - See DESIGN_unified_trace.md for details
+
+### VSA Binding Gotcha
+- Element-wise multiplication binding causes **exponential magnitude decay**
+- After N bindings: magnitude ≈ (1/√1024)^N = (1/32)^N
+- 8 bindings → magnitude ≈ 10^-12 → underflows to 0
+- **MUST call vsa_normalize after binding chain** to restore unit length
+- HOLO_OFFSET (0xC0000000) sign-extends when used as immediate → use register: `mov rcx, HOLO_OFFSET; add rdi, rcx`
 
 ## File Index
 
