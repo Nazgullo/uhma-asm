@@ -238,10 +238,9 @@ process_input:
     jmp .token_ready
 
 .not_hex:
-    ; Check if word is all digits (len > 1) → abstract to class token
+    ; Check if word is all digits → abstract to class token
+    ; (zero-length already rejected at .word_done, so ecx >= 1 here)
     pop rcx
-    cmp ecx, 2
-    jl .no_abstract
     xor edx, edx
 .num_scan:
     cmp edx, ecx
