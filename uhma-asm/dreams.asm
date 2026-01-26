@@ -2,9 +2,11 @@
 ;
 ; @entry dream_cycle() -> void ; replay miss buffer, emit speculative
 ; @entry dream_consolidate() -> void ; review NURSERY, promote/condemn
+; @entry dream_extract_schemas() -> void ; holographic schema extraction
 ; @calls emit.asm:emit_dispatch_pattern
-; @calls vsa.asm:holo_store
+; @calls vsa.asm:holo_store, vsa.asm:holo_dot_f64, vsa.asm:holo_scale_f64
 ; @calls receipt.asm:receipt_resonate, emit_receipt_simple
+; @calls dispatch.asm:schema_learn_from_context
 ; @calledby repl.asm:cmd_dream
 ;
 ; FLOW (dream_cycle):
@@ -12,12 +14,16 @@
 ; FLOW (consolidate):
 ;   NURSERY aged>50 → no hits=condemn, hits=promote+reinforce
 ;
-; SCHEMA (~dream_extract_schemas):
-;   Same token, different ctx → emit masked (ctx & 0xFFFFFFF0)
+; SCHEMA EXTRACTION (holographic approach):
+;   1. Query: holo_dot_f64(struct_ctx, schema_trace) → resonance
+;   2. If resonance > 0.6: call schema_learn_from_context
+;   3. Decay trace by 0.5 to prevent saturation
+;   The schema trace accumulates struct_ctx on every MISS (in dispatch.asm)
+;   High resonance = recurring structural pattern worth generalizing
 ;
 ; GOTCHAS:
 ;   - NURSERY patterns need 50+ steps before judgment
-;   - Schema masks low 4 bits of ctx (generalizes 16 contexts)
+;   - Schema trace decays each dream (0.5x) to allow new patterns
 ;   - Promoted patterns must be reinforced via holo_store
 %include "syscalls.inc"
 %include "constants.inc"
@@ -35,6 +41,10 @@ section .data
     align 8
     ; Reinforcement strength for proven patterns (counteracts decay)
     reinforce_strength: dq 2.0
+    ; Schema resonance threshold - structural pattern must resonate above this
+    schema_resonate_thresh: dq 0.6
+    ; Schema trace decay factor - prevents saturation
+    schema_trace_decay: dq 0.5
 
 section .text
 
@@ -48,8 +58,11 @@ extern gate_test_modification
 extern journey_step
 extern sym_scan_for_discoveries
 extern holo_store
+extern holo_dot_f64
+extern holo_scale_f64
 extern receipt_resonate
 extern emit_receipt_simple
+extern schema_learn_from_context
 
 ;; ============================================================
 ;; dream_cycle
@@ -253,122 +266,54 @@ dream_cycle:
 
 ;; ============================================================
 ;; dream_extract_schemas
-;; Scan miss buffer for entries with same token but different contexts.
-;; When found, compute a generalized context (mask out differing bits)
-;; and emit a schema pattern. This is how the system discovers
-;; "token X follows ANY context that looks like Y".
+;; Uses holographic resonance to detect recurring structural patterns.
+;;
+;; The schema trace (ST_SCHEMA_TRACE_VEC) accumulates structural contexts
+;; from every miss. When we dream, we query: does the current struct_ctx
+;; resonate with this accumulated trace? High resonance = recurring pattern
+;; that should become a schema.
+;;
+;; This replaces the O(n²) miss buffer scan with O(1) resonance query.
+;; The holographic memory IS the index.
 ;; ============================================================
 dream_extract_schemas:
     push rbx
     push r12
-    push r13
-    push r14
-    push r15
-    sub rsp, 32               ; locals: [0]=outer_idx, [4]=inner_idx,
-                              ;         [8]=token_i, [12]=ctx_i, [16]=limit
+    sub rsp, 8                ; align stack (2 pushes = even, need 8 mod 16)
 
     mov rbx, SURFACE_BASE
-    lea r12, [rbx + STATE_OFFSET + ST_MISS_BUF]
-    lea rax, [rbx + STATE_OFFSET + ST_MISS_POS]
-    mov r13d, [rax]           ; entries written
-    cmp r13d, 4               ; need at least 4 entries
-    jl .schema_done
 
-    ; Limit search window
-    mov eax, r13d
-    cmp eax, 32
-    jle .schema_lim_ok
-    mov eax, 32
-.schema_lim_ok:
-    mov r14d, r13d
-    sub r14d, eax             ; start index
-    test r14d, r14d
-    jns .schema_start_ok
-    xor r14d, r14d
-.schema_start_ok:
-    mov [rsp + 16], r13d      ; limit = miss_pos
-    xor r15d, r15d            ; schemas emitted
+    ; Check if structural context is valid
+    cmp dword [rbx + STATE_OFFSET + ST_STRUCT_CTX_VALID], 0
+    je .no_schema
 
-.schema_outer:
-    cmp r14d, [rsp + 16]
-    jge .schema_done
-    ; Load entry i
-    imul eax, r14d, ST_MISS_ENTRY_SIZE
-    mov ecx, [r12 + rax + 8]  ; token_id_i
-    mov edx, [r12 + rax]      ; ctx_hash_i (lower 32)
-    mov [rsp + 8], ecx         ; save token_i
-    mov [rsp + 12], edx        ; save ctx_i
+    ; Query: does current struct_ctx resonate with accumulated schema trace?
+    ; High similarity = we've seen this structural pattern many times on misses
+    lea rdi, [rbx + STATE_OFFSET + ST_STRUCT_CTX_VEC]
+    lea rsi, [rbx + STATE_OFFSET + ST_SCHEMA_TRACE_VEC]
+    call holo_dot_f64           ; xmm0 = similarity
 
-    ; Inner loop
-    lea eax, [r14d + 1]
-    mov [rsp + 4], eax         ; inner_idx
+    ; If resonance > threshold, create schema from current struct_ctx
+    movsd xmm1, [rel schema_resonate_thresh]  ; 0.6
+    ucomisd xmm0, xmm1
+    jbe .decay_trace            ; below threshold, just decay
 
-.schema_inner:
-    mov eax, [rsp + 4]
-    cmp eax, [rsp + 16]
-    jge .schema_next_outer
+    ; High resonance detected - create schema using existing function
+    ; schema_learn_from_context uses current struct_ctx as template
+    call schema_learn_from_context
 
-    ; Load entry j
-    imul ecx, eax, ST_MISS_ENTRY_SIZE
-    mov edi, [r12 + rcx + 8]  ; token_id_j
-    mov esi, [r12 + rcx]      ; ctx_hash_j
-
-    ; Same token?
-    cmp edi, [rsp + 8]
-    jne .schema_adv_inner
-
-    ; Different context?
-    cmp esi, [rsp + 12]
-    je .schema_adv_inner
-
-    ; Same token in different contexts — generalize
-    mov eax, [rsp + 12]        ; ctx_i
-
-    ; Generalize: mask out low 4 bits of ctx_i
-    and eax, 0xFFFFFFF0
-
-    ; Check if schema already exists
-    mov edi, eax              ; masked context
-    mov esi, [rsp + 8]        ; token_id
-    push rax                  ; save masked context
-    call find_existing_pattern
-    pop rcx                   ; restore masked context → rcx
-    test rax, rax
-    jnz .schema_adv_inner     ; already exists
-
-    ; Check capacity
-    lea rax, [rbx + STATE_OFFSET + ST_REGION_COUNT]
-    cmp dword [rax], REGION_TABLE_MAX - 8
-    jge .schema_done
-
-    ; Emit generalized pattern
-    mov edi, ecx              ; masked context
-    mov esi, [rsp + 8]        ; token_id
-    lea rax, [rbx + STATE_OFFSET + ST_GLOBAL_STEP]
-    mov edx, [rax]
-    call emit_dispatch_pattern
-
-    inc r15d
     lea rdi, [rel schema_msg]
     call print_cstr
 
-    ; Limit: max 4 schemas per dream
-    cmp r15d, 4
-    jge .schema_done
+.decay_trace:
+    ; Decay trace to prevent saturation (even if no schema created)
+    ; This ensures old patterns fade and new ones can emerge
+    lea rdi, [rbx + STATE_OFFSET + ST_SCHEMA_TRACE_VEC]
+    movsd xmm0, [rel schema_trace_decay]  ; 0.5 decay factor
+    call holo_scale_f64
 
-.schema_adv_inner:
-    inc dword [rsp + 4]
-    jmp .schema_inner
-
-.schema_next_outer:
-    inc r14d
-    jmp .schema_outer
-
-.schema_done:
-    add rsp, 32
-    pop r15
-    pop r14
-    pop r13
+.no_schema:
+    add rsp, 8
     pop r12
     pop rbx
     ret

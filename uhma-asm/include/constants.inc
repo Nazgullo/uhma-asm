@@ -1072,6 +1072,11 @@
 ; End of structural context section
 %define ST_STRUCT_END       (ST_STRUCT_CTX_STEP + 8)
 
+; Schema trace vector: accumulates structural contexts from misses
+; Used by dream_extract_schemas to detect recurring structural patterns via resonance
+%define ST_SCHEMA_TRACE_VEC (ST_STRUCT_END)                   ; 1024 x f64 = 8KB
+%define ST_SCHEMA_TRACE_END (ST_SCHEMA_TRACE_VEC + HOLO_VEC_BYTES)
+
 ;; ============================================================
 ;; Schema Table (Phase 3: Parameterized Patterns)
 ;;
@@ -1128,7 +1133,7 @@
 %define SCHEF_PROVEN        0x08                          ; high accuracy confirmed
 
 ; Schema state tracking
-%define ST_SCHEMA_COUNT     ST_STRUCT_END                 ; u32 active schemas
+%define ST_SCHEMA_COUNT     ST_SCHEMA_TRACE_END           ; u32 active schemas
 %define ST_SCHEMA_MATCHES   (ST_SCHEMA_COUNT + 4)         ; u32 total schema matches
 %define ST_SCHEMA_EXTRACTS  (ST_SCHEMA_MATCHES + 4)       ; u32 total variable extractions
 %define ST_SCHEMA_END       (ST_SCHEMA_EXTRACTS + 4)

@@ -42,6 +42,11 @@
           "name": "dispatch_predict",
           "args": "edi=ctx_hash",
           "returns": "eax=token, xmm0=conf"
+        },
+        {
+          "name": "schema_learn_from_context",
+          "args": "",
+          "returns": "void ; create schema from struct_ctx"
         }
       ],
       "calls": [
@@ -50,11 +55,13 @@
         "receipt.asm:emit_receipt_full",
         "receipt.asm:receipt_resonate",
         "vsa.asm:holo_predict",
-        "vsa.asm:holo_query_valence"
+        "vsa.asm:holo_query_valence",
+        "vsa.asm:holo_superpose_f64"
       ],
       "called_by": [
         "repl.asm:repl_run",
-        "io.asm:digest_file"
+        "io.asm:digest_file",
+        "dreams.asm:dream_extract_schemas"
       ],
       "flow": "token \u2192 ctx=hash(prev) \u2192 predict \u2192 HIT/MISS \u2192 learn on miss",
       "state": [
@@ -68,8 +75,8 @@
         "rcx is caller-saved, use r10-r15 in loops that call functions",
         "Token abstraction must match in BOTH process_input AND digest_file"
       ],
-      "content_hash": "291b6978934b",
-      "line_count": 2944
+      "content_hash": "dea496a2837c",
+      "line_count": 2957
     },
     "dreams.asm": {
       "path": "dreams.asm",
@@ -84,13 +91,21 @@
           "name": "dream_consolidate",
           "args": "",
           "returns": "void ; review NURSERY, promote/condemn"
+        },
+        {
+          "name": "dream_extract_schemas",
+          "args": "",
+          "returns": "void ; holographic schema extraction"
         }
       ],
       "calls": [
         "emit.asm:emit_dispatch_pattern",
         "vsa.asm:holo_store",
+        "vsa.asm:holo_dot_f64",
+        "vsa.asm:holo_scale_f64",
         "receipt.asm:receipt_resonate",
-        "emit_receipt_simple"
+        "emit_receipt_simple",
+        "dispatch.asm:schema_learn_from_context"
       ],
       "called_by": [
         "repl.asm:cmd_dream"
@@ -99,11 +114,11 @@
       "state": [],
       "gotchas": [
         "NURSERY patterns need 50+ steps before judgment",
-        "Schema masks low 4 bits of ctx (generalizes 16 contexts)",
+        "Schema trace decays each dream (0.5x) to allow new patterns",
         "Promoted patterns must be reinforced via holo_store"
       ],
-      "content_hash": "f861cbc3d492",
-      "line_count": 513
+      "content_hash": "f00b9631826c",
+      "line_count": 458
     },
     "drives.asm": {
       "path": "drives.asm",
@@ -879,10 +894,16 @@
     "dispatch_predict": [
       "dispatch.asm"
     ],
+    "schema_learn_from_context": [
+      "dispatch.asm"
+    ],
     "dream_cycle": [
       "dreams.asm"
     ],
     "dream_consolidate": [
+      "dreams.asm"
+    ],
+    "dream_extract_schemas": [
       "dreams.asm"
     ],
     "gfx_init": [
@@ -1065,12 +1086,14 @@
         "vsa.asm"
       ],
       "depended_by": [
+        "dreams.asm",
         "io.asm",
         "repl.asm"
       ]
     },
     "dreams.asm": {
       "depends_on": [
+        "dispatch.asm",
         "emit.asm",
         "receipt.asm",
         "vsa.asm"
@@ -1252,7 +1275,7 @@
   },
   "meta": {
     "file_count": 34,
-    "function_count": 59,
+    "function_count": 61,
     "total_gotchas": 45
   }
 }

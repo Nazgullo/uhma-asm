@@ -71,10 +71,14 @@ This is O(1) per item. The holographic memory IS the index. Don't build separate
 - Single-digit numbers ARE abstracted (removed length>1 check)
 - This abstraction MUST happen in both process_input AND digest_file
 
-### Schema System
-- Schemas generalize CONTEXT (same token, similar contexts)
-- They mask low bits of context hash to match broader patterns
-- Dreams extract schemas from miss buffer
+### Schema System (Holographic Approach)
+- Schemas generalize STRUCTURAL CONTEXT (8-token positional patterns)
+- **On MISS** (dispatch.asm): struct_ctx superposed into ST_SCHEMA_TRACE_VEC
+- **On DREAM** (dreams.asm): query trace via holo_dot_f64
+  - If resonance > 0.6 threshold → call schema_learn_from_context
+  - Decay trace by 0.5 to prevent saturation
+- This is O(1) resonance query, not O(n²) buffer scan
+- The holographic memory IS the index
 
 ### Unified Trace System
 - One trace (UNIFIED_TRACE_IDX=240) replaces 6 separate traces
@@ -103,7 +107,7 @@ This is O(1) per item. The holographic memory IS the index. Don't build separate
 ### Consolidation
 | File | Purpose | Calls | Called By |
 |------|---------|-------|-----------|
-| dreams.asm | Offline consolidation | emit_dispatch_pattern, holo_store | repl (dream cmd) |
+| dreams.asm | Offline consolidation | emit_dispatch_pattern, holo_store, holo_dot_f64, schema_learn_from_context | repl (dream cmd) |
 | observe.asm | Self-observation, metrics | receipt_resonate, gene_extract | repl (observe cmd) |
 | genes.asm | Gene pool for condemned regions | (storage) | observe, dreams |
 

@@ -3,10 +3,11 @@
 ; @entry process_input(rdi=buf, rsi=len) -> void
 ; @entry process_token(edi=token_id) -> void
 ; @entry dispatch_predict(edi=ctx_hash) -> eax=token, xmm0=conf
+; @entry schema_learn_from_context() -> void ; create schema from struct_ctx
 ; @calls learn.asm:learn_pattern, emit.asm:emit_dispatch_pattern
 ; @calls receipt.asm:emit_receipt_full, receipt.asm:receipt_resonate
-; @calls vsa.asm:holo_predict, vsa.asm:holo_query_valence
-; @calledby repl.asm:repl_run, io.asm:digest_file
+; @calls vsa.asm:holo_predict, vsa.asm:holo_query_valence, vsa.asm:holo_superpose_f64
+; @calledby repl.asm:repl_run, io.asm:digest_file, dreams.asm:dream_extract_schemas
 ;
 ; FLOW: token → ctx=hash(prev) → predict → HIT/MISS → learn on miss
 ; STATE: ST_CTX_HASH, ST_EXPECT_TOKEN, ST_EXPECT_CONF, ST_PREDICT_REGION
@@ -17,6 +18,10 @@
 ;
 ; TRACE QUERY (~line 1020):
 ;   receipt_resonate(HIT/MISS, ctx) → modulate confidence
+;
+; SCHEMA TRACE (~line 816):
+;   On MISS: superpose ST_STRUCT_CTX_VEC into ST_SCHEMA_TRACE_VEC
+;   Accumulates structural patterns for holographic schema learning
 ;
 ; GOTCHAS:
 ;   - ctx = hash(prev_token) ONLY, no somatic XOR (breaks pattern identity)
@@ -74,6 +79,7 @@ extern learn_pattern
 extern fire_hook
 extern vsa_get_token_vec
 extern vsa_superpose
+extern holo_superpose_f64
 extern vsa_bind
 extern vsa_unbind
 extern vsa_gen_role_pos
@@ -811,6 +817,13 @@ process_token:
     movss xmm1, [rbx + STATE_OFFSET + ST_PRESENCE + PRES_VALENCE * 4]
     cvtss2sd xmm1, xmm1
     call emit_receipt_full
+
+    ; --- Superpose structural context into schema trace ---
+    ; This accumulates structural patterns from misses for schema learning
+    ; Schema trace = Σ struct_ctx on each miss
+    lea rdi, [rbx + STATE_OFFSET + ST_SCHEMA_TRACE_VEC]  ; dst = schema trace
+    lea rsi, [rbx + STATE_OFFSET + ST_STRUCT_CTX_VEC]    ; src = current struct_ctx
+    call holo_superpose_f64
 
     ; Fire miss hook
     mov edi, HOOK_ON_MISS
