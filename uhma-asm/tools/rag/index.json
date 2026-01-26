@@ -1,0 +1,980 @@
+{
+  "files": {
+    "boot.asm": {
+      "path": "boot.asm",
+      "description": "System startup: mmap surface, install handlers, enter REPL",
+      "entries": [],
+      "calls": [],
+      "called_by": [],
+      "flow": "",
+      "state": [],
+      "gotchas": [],
+      "content_hash": "258e166461b6",
+      "line_count": 86
+    },
+    "decode.asm": {
+      "path": "decode.asm",
+      "description": "x86 instruction decoder for self-reading and verification",
+      "entries": [],
+      "calls": [],
+      "called_by": [],
+      "flow": "",
+      "state": [],
+      "gotchas": [],
+      "content_hash": "b4e35493e935",
+      "line_count": 731
+    },
+    "dispatch.asm": {
+      "path": "dispatch.asm",
+      "description": "Token processing, prediction, hit/miss handling",
+      "entries": [
+        {
+          "name": "process_input",
+          "args": "rdi=buf, rsi=len",
+          "returns": "void"
+        },
+        {
+          "name": "process_token",
+          "args": "edi=token_id",
+          "returns": "void"
+        },
+        {
+          "name": "dispatch_predict",
+          "args": "edi=ctx_hash",
+          "returns": "eax=token, xmm0=conf"
+        }
+      ],
+      "calls": [
+        "learn.asm:learn_pattern",
+        "emit.asm:emit_dispatch_pattern",
+        "receipt.asm:emit_receipt_full",
+        "receipt.asm:receipt_resonate",
+        "vsa.asm:holo_predict",
+        "vsa.asm:holo_query_valence"
+      ],
+      "called_by": [
+        "repl.asm:repl_run",
+        "io.asm:digest_file"
+      ],
+      "flow": "token \u2192 ctx=hash(prev) \u2192 predict \u2192 HIT/MISS \u2192 learn on miss",
+      "state": [
+        "ST_CTX_HASH",
+        "ST_EXPECT_TOKEN",
+        "ST_EXPECT_CONF",
+        "ST_PREDICT_REGION"
+      ],
+      "gotchas": [
+        "ctx = hash(prev_token) ONLY, no somatic XOR (breaks pattern identity)",
+        "rcx is caller-saved, use r10-r15 in loops that call functions",
+        "Token abstraction must match in BOTH process_input AND digest_file"
+      ],
+      "content_hash": "291b6978934b",
+      "line_count": 2944
+    },
+    "dreams.asm": {
+      "path": "dreams.asm",
+      "description": "Offline consolidation: replay misses, speculate, commit",
+      "entries": [
+        {
+          "name": "dream_cycle",
+          "args": "",
+          "returns": "void ; replay miss buffer, emit speculative"
+        },
+        {
+          "name": "dream_consolidate",
+          "args": "",
+          "returns": "void ; review NURSERY, promote/condemn"
+        }
+      ],
+      "calls": [
+        "emit.asm:emit_dispatch_pattern",
+        "vsa.asm:holo_store",
+        "receipt.asm:receipt_resonate",
+        "emit_receipt_simple"
+      ],
+      "called_by": [
+        "repl.asm:cmd_dream"
+      ],
+      "flow": "",
+      "state": [],
+      "gotchas": [
+        "NURSERY patterns need 50+ steps before judgment",
+        "Schema masks low 4 bits of ctx (generalizes 16 contexts)",
+        "Promoted patterns must be reinforced via holo_store"
+      ],
+      "content_hash": "f861cbc3d492",
+      "line_count": 513
+    },
+    "drives.asm": {
+      "path": "drives.asm",
+      "description": "Homeostatic drive system: thresholds, goals, actions",
+      "entries": [],
+      "calls": [],
+      "called_by": [],
+      "flow": "",
+      "state": [],
+      "gotchas": [],
+      "content_hash": "4527c8aaf9fa",
+      "line_count": 270
+    },
+    "emit.asm": {
+      "path": "emit.asm",
+      "description": "Code emission: write x86 dispatch patterns to surface",
+      "entries": [],
+      "calls": [],
+      "called_by": [],
+      "flow": "",
+      "state": [],
+      "gotchas": [],
+      "content_hash": "4ee1043ab0b0",
+      "line_count": 520
+    },
+    "evolve.asm": {
+      "path": "evolve.asm",
+      "description": "Genetic evolution: reproduce, mutate, crossover regions",
+      "entries": [],
+      "calls": [],
+      "called_by": [],
+      "flow": "",
+      "state": [],
+      "gotchas": [],
+      "content_hash": "435bf9ddf17b",
+      "line_count": 532
+    },
+    "factor.asm": {
+      "path": "factor.asm",
+      "description": "Subroutine extraction: find common suffixes, create shared code",
+      "entries": [],
+      "calls": [],
+      "called_by": [],
+      "flow": "",
+      "state": [],
+      "gotchas": [],
+      "content_hash": "8fccaab1f850",
+      "line_count": 825
+    },
+    "format.asm": {
+      "path": "format.asm",
+      "description": "Output formatting: integers, floats, hex, strings",
+      "entries": [],
+      "calls": [],
+      "called_by": [],
+      "flow": "",
+      "state": [],
+      "gotchas": [],
+      "content_hash": "5363aece80fc",
+      "line_count": 387
+    },
+    "gate.asm": {
+      "path": "gate.asm",
+      "description": "Predictive gating: test modifications in sandbox before commit",
+      "entries": [],
+      "calls": [],
+      "called_by": [],
+      "flow": "",
+      "state": [],
+      "gotchas": [],
+      "content_hash": "ba774f20b5d3",
+      "line_count": 272
+    },
+    "genes.asm": {
+      "path": "genes.asm",
+      "description": "Gene Pool: metabolic recycling of condemned regions",
+      "entries": [],
+      "calls": [],
+      "called_by": [],
+      "flow": "",
+      "state": [],
+      "gotchas": [],
+      "content_hash": "20512f31a109",
+      "line_count": 602
+    },
+    "hooks.asm": {
+      "path": "hooks.asm",
+      "description": "Event hook system: register callbacks, fire events",
+      "entries": [],
+      "calls": [],
+      "called_by": [],
+      "flow": "",
+      "state": [],
+      "gotchas": [],
+      "content_hash": "4155e2e3beb5",
+      "line_count": 269
+    },
+    "introspect.asm": {
+      "path": "introspect.asm",
+      "description": "Self-reading and organic regulation (homoiconic core)",
+      "entries": [],
+      "calls": [],
+      "called_by": [],
+      "flow": "",
+      "state": [],
+      "gotchas": [],
+      "content_hash": "39f47f5e69c9",
+      "line_count": 1304
+    },
+    "io.asm": {
+      "path": "io.asm",
+      "description": "Syscall wrappers, file digestion, motor system",
+      "entries": [
+        {
+          "name": "digest_file",
+          "args": "rdi=path",
+          "returns": "void ; read file, tokenize, process"
+        }
+      ],
+      "calls": [
+        "dispatch.asm:process_token",
+        "maturity.asm:gate_fd_write",
+        "gate_fd_read"
+      ],
+      "called_by": [
+        "repl.asm:cmd_eat"
+      ],
+      "flow": "",
+      "state": [],
+      "gotchas": [
+        "Token abstraction MUST match dispatch.asm:process_input exactly",
+        "Fault handler longjmps to REPL - save fault_safe_rsp/rip before process_token",
+        "rcx clobbered by calls, use r10-r15 in digest loop",
+        "Restore r14 (SURFACE_BASE) after fault recovery in continue_loop"
+      ],
+      "content_hash": "48ae494b2ab7",
+      "line_count": 853
+    },
+    "learn.asm": {
+      "path": "learn.asm",
+      "description": "Learning: emit new patterns, strengthen/weaken existing",
+      "entries": [
+        {
+          "name": "learn_pattern",
+          "args": "edi=ctx, esi=token, xmm0=energy_delta",
+          "returns": "void"
+        },
+        {
+          "name": "find_existing_pattern",
+          "args": "edi=ctx, esi=token",
+          "returns": "rax=region_ptr|0"
+        },
+        {
+          "name": "strengthen_region",
+          "args": "rdi=header_ptr",
+          "returns": "void ; +2 hits"
+        },
+        {
+          "name": "weaken_region",
+          "args": "rdi=header_ptr",
+          "returns": "void ; +1 misses"
+        },
+        {
+          "name": "wire_new_region",
+          "args": "rdi=region_ptr",
+          "returns": "void"
+        },
+        {
+          "name": "learn_connections",
+          "args": "rdi=region_ptr",
+          "returns": "void ; STDP wiring"
+        }
+      ],
+      "calls": [
+        "emit.asm:emit_dispatch_pattern",
+        "receipt.asm:receipt_resonate",
+        "emit_receipt_simple",
+        "vsa.asm:holo_store"
+      ],
+      "called_by": [
+        "dispatch.asm:process_token (on MISS)"
+      ],
+      "flow": "holo_store \u2192 check redundant \u2192 find_existing \u2192 emit \u2192 wire \u2192 STDP",
+      "state": [
+        "miss buffer via dispatch",
+        "region table"
+      ],
+      "gotchas": [
+        "Always holo_store first (never fails, just gets denser)",
+        "Check receipt trace BEFORE emitting (avoid redundant patterns)"
+      ],
+      "content_hash": "5146a8ae3986",
+      "line_count": 838
+    },
+    "maturity.asm": {
+      "path": "maturity.asm",
+      "description": "Developmental stage gating: earn capabilities through stability",
+      "entries": [],
+      "calls": [],
+      "called_by": [],
+      "flow": "",
+      "state": [],
+      "gotchas": [],
+      "content_hash": "78df5cc45640",
+      "line_count": 487
+    },
+    "modify.asm": {
+      "path": "modify.asm",
+      "description": "Self-modification primitives: prune, promote, specialize, generalize",
+      "entries": [],
+      "calls": [],
+      "called_by": [],
+      "flow": "",
+      "state": [],
+      "gotchas": [],
+      "content_hash": "ac2735ffda0c",
+      "line_count": 507
+    },
+    "observe.asm": {
+      "path": "observe.asm",
+      "description": "Self-observation: scan regions, compute metrics, update presence",
+      "entries": [
+        {
+          "name": "observe_cycle",
+          "args": "",
+          "returns": "void ; main pass"
+        },
+        {
+          "name": "presence_show",
+          "args": "",
+          "returns": "void ; REPL \"presence\""
+        },
+        {
+          "name": "decay_connection_weights",
+          "args": "",
+          "returns": "void ; STDP decay"
+        },
+        {
+          "name": "repair_routing",
+          "args": "",
+          "returns": "void ; fix table links"
+        }
+      ],
+      "calls": [
+        "receipt.asm:receipt_resonate",
+        "emit_receipt_simple",
+        "genes.asm:gene_extract"
+      ],
+      "called_by": [
+        "repl.asm:cmd_observe"
+      ],
+      "flow": "walk regions \u2192 compute accuracy \u2192 prune/promote \u2192 update presence/drives",
+      "state": [],
+      "gotchas": [
+        "Prune threshold (0.1) and age (PRUNE_MIN_AGE) are tunable",
+        "receipt_resonate can veto prune if we've regretted before"
+      ],
+      "content_hash": "163e980fc005",
+      "line_count": 1770
+    },
+    "persist.asm": {
+      "path": "persist.asm",
+      "description": "Save/restore surface state to/from file",
+      "entries": [],
+      "calls": [],
+      "called_by": [],
+      "flow": "",
+      "state": [],
+      "gotchas": [],
+      "content_hash": "12e46b6ba087",
+      "line_count": 767
+    },
+    "presence.asm": {
+      "path": "presence.asm",
+      "description": "Hormonal modulator: presence regions for emotional reflexes",
+      "entries": [],
+      "calls": [],
+      "called_by": [],
+      "flow": "",
+      "state": [],
+      "gotchas": [],
+      "content_hash": "a6588951a3c3",
+      "line_count": 548
+    },
+    "receipt.asm": {
+      "path": "receipt.asm",
+      "description": "Unified Holographic Receipt Layer",
+      "entries": [
+        {
+          "name": "emit_receipt_full",
+          "args": "edi=event,esi=ctx,edx=actual,ecx=pred,r8d=region,r9d=aux,xmm0=conf,xmm1=val",
+          "returns": "void"
+        },
+        {
+          "name": "emit_receipt_simple",
+          "args": "edi=event,esi=ctx,edx=token,xmm0=conf",
+          "returns": "void"
+        },
+        {
+          "name": "receipt_resonate",
+          "args": "edi=event,esi=ctx,edx=token",
+          "returns": "xmm0=similarity"
+        },
+        {
+          "name": "receipt_why_miss",
+          "args": "",
+          "returns": "void ; REPL \"why\" command"
+        },
+        {
+          "name": "receipt_show_misses",
+          "args": "edi=n",
+          "returns": "void ; REPL \"misses N\""
+        },
+        {
+          "name": "trace_region_performance",
+          "args": "edi=region",
+          "returns": "xmm0=ratio"
+        },
+        {
+          "name": "trace_context_confidence",
+          "args": "edi=ctx",
+          "returns": "xmm0=ratio"
+        },
+        {
+          "name": "trace_hit_miss_ratio",
+          "args": "",
+          "returns": "xmm0=ratio"
+        }
+      ],
+      "calls": [
+        "vsa.asm:holo_gen_vec",
+        "holo_bind_f64",
+        "holo_superpose_f64"
+      ],
+      "called_by": [
+        "dispatch.asm",
+        "learn.asm",
+        "emit.asm",
+        "observe.asm",
+        "dreams.asm"
+      ],
+      "flow": "",
+      "state": [],
+      "gotchas": [
+        "emit_receipt_full for MISS must include predicted token (diagnostic key)",
+        "receipt_resonate returns f64 similarity, not bool",
+        "Working buffer is ring, wraps at 16 entries"
+      ],
+      "content_hash": "70f01bca4f03",
+      "line_count": 1364
+    },
+    "repl.asm": {
+      "path": "repl.asm",
+      "description": "Interactive command loop",
+      "entries": [
+        {
+          "name": "repl_run",
+          "args": "",
+          "returns": "never returns (exits via quit/EOF)"
+        }
+      ],
+      "calls": [
+        "dispatch.asm:process_input",
+        "io.asm:digest_file",
+        "receipt.asm:receipt_why_miss",
+        "receipt_show_misses",
+        "receipt_dump",
+        "observe.asm:observe_cycle",
+        "dreams.asm:dream_cycle",
+        "surface.asm:surface_freeze"
+      ],
+      "called_by": [
+        "boot.asm:_start"
+      ],
+      "flow": "",
+      "state": [],
+      "gotchas": [
+        "Commands are plain words, NOT :prefixed",
+        "New command = add string match + .not_X + .cmd_X handler",
+        "quit must call surface_freeze before exit"
+      ],
+      "content_hash": "f0b10044042d",
+      "line_count": 2215
+    },
+    "signal.asm": {
+      "path": "signal.asm",
+      "description": "Fault handling: SIGSEGV/SIGFPE/SIGBUS recovery to REPL",
+      "entries": [
+        {
+          "name": "install_fault_handlers",
+          "args": "",
+          "returns": "void"
+        },
+        {
+          "name": "get_fault_count",
+          "args": "",
+          "returns": "rax=count"
+        },
+        {
+          "name": "bp_inject",
+          "args": "rdi=addr, rsi=handler",
+          "returns": "void"
+        },
+        {
+          "name": "bp_remove",
+          "args": "rdi=addr",
+          "returns": "void"
+        }
+      ],
+      "calls": [],
+      "called_by": [
+        "boot.asm:_start (install)",
+        "io.asm:digest_file (safe point setup)"
+      ],
+      "flow": "fault \u2192 handler \u2192 check fault_safe_rsp \u2192 longjmp to REPL",
+      "state": [
+        "fault_safe_rsp",
+        "fault_safe_rip",
+        "fault_count",
+        "bp_table"
+      ],
+      "gotchas": [
+        "MUST save fault_safe_rsp/rip BEFORE calling code that might fault",
+        "After fault recovery, r14 (SURFACE_BASE) may be clobbered - reload it",
+        "Max 3 consecutive faults before forced return (anti-loop)",
+        "Breakpoint handler must preserve all regs except rax"
+      ],
+      "content_hash": "56cd8b2e146c",
+      "line_count": 734
+    },
+    "surface.asm": {
+      "path": "surface.asm",
+      "description": "Surface memory: mmap, region allocation, compaction",
+      "entries": [],
+      "calls": [],
+      "called_by": [],
+      "flow": "",
+      "state": [],
+      "gotchas": [],
+      "content_hash": "f73cc88dd8a8",
+      "line_count": 1096
+    },
+    "symbolic.asm": {
+      "path": "symbolic.asm",
+      "description": "Symbolic observation: log modifications, block only crashes",
+      "entries": [],
+      "calls": [],
+      "called_by": [],
+      "flow": "",
+      "state": [],
+      "gotchas": [],
+      "content_hash": "222cdff82594",
+      "line_count": 549
+    },
+    "trace.asm": {
+      "path": "trace.asm",
+      "description": "Token journey tracing: record token path through system",
+      "entries": [],
+      "calls": [],
+      "called_by": [],
+      "flow": "",
+      "state": [],
+      "gotchas": [],
+      "content_hash": "28f3f73a0f7c",
+      "line_count": 325
+    },
+    "verify.asm": {
+      "path": "verify.asm",
+      "description": "Runtime verification: validate self-modifications before commit",
+      "entries": [],
+      "calls": [],
+      "called_by": [],
+      "flow": "",
+      "state": [],
+      "gotchas": [],
+      "content_hash": "6d1599ffad73",
+      "line_count": 1692
+    },
+    "vsa.asm": {
+      "path": "vsa.asm",
+      "description": "Vector Symbolic Architecture: 1024-dim f64 holographic operations",
+      "entries": [
+        {
+          "name": "holo_bind_f64",
+          "args": "rdi=a, rsi=b, rdx=out",
+          "returns": "void ; XOR-like binding"
+        },
+        {
+          "name": "holo_unbind_f64",
+          "args": "rdi=a, rsi=b, rdx=out",
+          "returns": "void ; = bind (HRR self-inverse)"
+        },
+        {
+          "name": "holo_superpose_f64",
+          "args": "rdi=dst, rsi=src",
+          "returns": "void ; element-wise add"
+        },
+        {
+          "name": "holo_dot_f64",
+          "args": "rdi=a, rsi=b",
+          "returns": "xmm0=similarity"
+        },
+        {
+          "name": "holo_gen_vec",
+          "args": "edi=seed, rsi=out",
+          "returns": "void ; deterministic from hash"
+        },
+        {
+          "name": "holo_store",
+          "args": "edi=ctx, esi=token, xmm0=strength",
+          "returns": "void"
+        },
+        {
+          "name": "holo_predict",
+          "args": "edi=ctx",
+          "returns": "eax=token, xmm0=conf"
+        },
+        {
+          "name": "holo_decay_all",
+          "args": "",
+          "returns": "void"
+        },
+        {
+          "name": "vocab_register",
+          "args": "edi=token",
+          "returns": "void"
+        },
+        {
+          "name": "confidence_update",
+          "args": "edi=ctx, esi=is_hit",
+          "returns": "void"
+        },
+        {
+          "name": "confidence_query",
+          "args": "edi=ctx",
+          "returns": "xmm0=conf"
+        }
+      ],
+      "calls": [],
+      "called_by": [
+        "dispatch.asm",
+        "learn.asm",
+        "receipt.asm",
+        "dreams.asm"
+      ],
+      "flow": "",
+      "state": [],
+      "gotchas": [
+        "All holo_* funcs use f64[1024], legacy vsa_* use f32[1024]",
+        "holo_gen_vec is deterministic: same seed = same vector",
+        "Superposition accumulates - trace gets denser, needs decay"
+      ],
+      "content_hash": "abd670e275c7",
+      "line_count": 1512
+    },
+    "vsa_ops.asm": {
+      "path": "vsa_ops.asm",
+      "description": "Code-to-Vector: geometric safety via high-dim embeddings",
+      "entries": [],
+      "calls": [],
+      "called_by": [],
+      "flow": "",
+      "state": [],
+      "gotchas": [],
+      "content_hash": "cd518917eb5b",
+      "line_count": 750
+    }
+  },
+  "functions": {
+    "process_input": [
+      "dispatch.asm"
+    ],
+    "process_token": [
+      "dispatch.asm"
+    ],
+    "dispatch_predict": [
+      "dispatch.asm"
+    ],
+    "dream_cycle": [
+      "dreams.asm"
+    ],
+    "dream_consolidate": [
+      "dreams.asm"
+    ],
+    "digest_file": [
+      "io.asm"
+    ],
+    "learn_pattern": [
+      "learn.asm"
+    ],
+    "find_existing_pattern": [
+      "learn.asm"
+    ],
+    "strengthen_region": [
+      "learn.asm"
+    ],
+    "weaken_region": [
+      "learn.asm"
+    ],
+    "wire_new_region": [
+      "learn.asm"
+    ],
+    "learn_connections": [
+      "learn.asm"
+    ],
+    "observe_cycle": [
+      "observe.asm"
+    ],
+    "presence_show": [
+      "observe.asm"
+    ],
+    "decay_connection_weights": [
+      "observe.asm"
+    ],
+    "repair_routing": [
+      "observe.asm"
+    ],
+    "emit_receipt_full": [
+      "receipt.asm"
+    ],
+    "emit_receipt_simple": [
+      "receipt.asm"
+    ],
+    "receipt_resonate": [
+      "receipt.asm"
+    ],
+    "receipt_why_miss": [
+      "receipt.asm"
+    ],
+    "receipt_show_misses": [
+      "receipt.asm"
+    ],
+    "trace_region_performance": [
+      "receipt.asm"
+    ],
+    "trace_context_confidence": [
+      "receipt.asm"
+    ],
+    "trace_hit_miss_ratio": [
+      "receipt.asm"
+    ],
+    "repl_run": [
+      "repl.asm"
+    ],
+    "install_fault_handlers": [
+      "signal.asm"
+    ],
+    "get_fault_count": [
+      "signal.asm"
+    ],
+    "bp_inject": [
+      "signal.asm"
+    ],
+    "bp_remove": [
+      "signal.asm"
+    ],
+    "holo_bind_f64": [
+      "vsa.asm"
+    ],
+    "holo_unbind_f64": [
+      "vsa.asm"
+    ],
+    "holo_superpose_f64": [
+      "vsa.asm"
+    ],
+    "holo_dot_f64": [
+      "vsa.asm"
+    ],
+    "holo_gen_vec": [
+      "vsa.asm"
+    ],
+    "holo_store": [
+      "vsa.asm"
+    ],
+    "holo_predict": [
+      "vsa.asm"
+    ],
+    "holo_decay_all": [
+      "vsa.asm"
+    ],
+    "vocab_register": [
+      "vsa.asm"
+    ],
+    "confidence_update": [
+      "vsa.asm"
+    ],
+    "confidence_query": [
+      "vsa.asm"
+    ]
+  },
+  "dependencies": {
+    "boot.asm": {
+      "depends_on": [],
+      "depended_by": []
+    },
+    "decode.asm": {
+      "depends_on": [],
+      "depended_by": []
+    },
+    "dispatch.asm": {
+      "depends_on": [
+        "emit.asm",
+        "learn.asm",
+        "receipt.asm",
+        "vsa.asm"
+      ],
+      "depended_by": [
+        "io.asm",
+        "repl.asm"
+      ]
+    },
+    "dreams.asm": {
+      "depends_on": [
+        "emit.asm",
+        "receipt.asm",
+        "vsa.asm"
+      ],
+      "depended_by": [
+        "repl.asm"
+      ]
+    },
+    "drives.asm": {
+      "depends_on": [],
+      "depended_by": []
+    },
+    "emit.asm": {
+      "depends_on": [],
+      "depended_by": [
+        "dispatch.asm",
+        "dreams.asm",
+        "learn.asm"
+      ]
+    },
+    "evolve.asm": {
+      "depends_on": [],
+      "depended_by": []
+    },
+    "factor.asm": {
+      "depends_on": [],
+      "depended_by": []
+    },
+    "format.asm": {
+      "depends_on": [],
+      "depended_by": []
+    },
+    "gate.asm": {
+      "depends_on": [],
+      "depended_by": []
+    },
+    "genes.asm": {
+      "depends_on": [],
+      "depended_by": [
+        "observe.asm"
+      ]
+    },
+    "hooks.asm": {
+      "depends_on": [],
+      "depended_by": []
+    },
+    "introspect.asm": {
+      "depends_on": [],
+      "depended_by": []
+    },
+    "io.asm": {
+      "depends_on": [
+        "dispatch.asm",
+        "maturity.asm"
+      ],
+      "depended_by": [
+        "repl.asm"
+      ]
+    },
+    "learn.asm": {
+      "depends_on": [
+        "emit.asm",
+        "receipt.asm",
+        "vsa.asm"
+      ],
+      "depended_by": [
+        "dispatch.asm"
+      ]
+    },
+    "maturity.asm": {
+      "depends_on": [],
+      "depended_by": [
+        "io.asm"
+      ]
+    },
+    "modify.asm": {
+      "depends_on": [],
+      "depended_by": []
+    },
+    "observe.asm": {
+      "depends_on": [
+        "genes.asm",
+        "receipt.asm"
+      ],
+      "depended_by": [
+        "repl.asm"
+      ]
+    },
+    "persist.asm": {
+      "depends_on": [],
+      "depended_by": []
+    },
+    "presence.asm": {
+      "depends_on": [],
+      "depended_by": []
+    },
+    "receipt.asm": {
+      "depends_on": [
+        "vsa.asm"
+      ],
+      "depended_by": [
+        "dispatch.asm",
+        "dreams.asm",
+        "learn.asm",
+        "observe.asm",
+        "repl.asm"
+      ]
+    },
+    "repl.asm": {
+      "depends_on": [
+        "dispatch.asm",
+        "dreams.asm",
+        "io.asm",
+        "observe.asm",
+        "receipt.asm",
+        "surface.asm"
+      ],
+      "depended_by": []
+    },
+    "signal.asm": {
+      "depends_on": [],
+      "depended_by": []
+    },
+    "surface.asm": {
+      "depends_on": [],
+      "depended_by": [
+        "repl.asm"
+      ]
+    },
+    "symbolic.asm": {
+      "depends_on": [],
+      "depended_by": []
+    },
+    "trace.asm": {
+      "depends_on": [],
+      "depended_by": []
+    },
+    "verify.asm": {
+      "depends_on": [],
+      "depended_by": []
+    },
+    "vsa.asm": {
+      "depends_on": [],
+      "depended_by": [
+        "dispatch.asm",
+        "dreams.asm",
+        "learn.asm",
+        "receipt.asm"
+      ]
+    },
+    "vsa_ops.asm": {
+      "depends_on": [],
+      "depended_by": []
+    }
+  },
+  "meta": {
+    "file_count": 29,
+    "function_count": 40,
+    "total_gotchas": 27
+  }
+}
