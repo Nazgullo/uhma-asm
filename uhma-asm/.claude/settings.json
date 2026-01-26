@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "uhma-rag": {
+      "command": "python3",
+      "args": ["server.py"],
+      "cwd": "/home/peter/Desktop/STARWARS/uhma-asm/tools/rag"
+    }
+  }
+}
