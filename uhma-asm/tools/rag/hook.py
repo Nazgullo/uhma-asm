@@ -3,18 +3,26 @@
 Hook script for Claude Code preToolUse.
 
 Called automatically before Edit/Write operations.
-Outputs context if the file is a .asm file in UHMA.
+Reads tool input from stdin (JSON), extracts file_path,
+and outputs context if the file is a .asm file in UHMA.
 """
 
 import sys
-import os
+import json
 from pathlib import Path
 
-# Only process .asm files
-if len(sys.argv) < 2:
+# Read tool input from stdin (preToolUse provides JSON)
+try:
+    tool_input = json.load(sys.stdin)
+except (json.JSONDecodeError, EOFError):
     sys.exit(0)
 
-file_path = sys.argv[1]
+# Extract file_path from tool input
+file_path = tool_input.get('file_path', '')
+if not file_path:
+    sys.exit(0)
+
+# Only process .asm files
 if not file_path.endswith('.asm'):
     sys.exit(0)
 

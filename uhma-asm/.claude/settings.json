@@ -1,9 +1,14 @@
 {
   "hooks": {
-    "preToolUse": [
+    "PreToolUse": [
       {
         "matcher": "Edit|Write",
-        "command": "python3 /home/peter/Desktop/STARWARS/uhma-asm/tools/rag/hook.py \"$FILE_PATH\""
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /home/peter/Desktop/STARWARS/uhma-asm/tools/rag/hook.py"
+          }
+        ]
       }
     ]
   }
