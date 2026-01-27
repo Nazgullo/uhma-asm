@@ -2,15 +2,88 @@
   "files": {
     "boot.asm": {
       "path": "boot.asm",
-      "description": "System startup: mmap surface, install handlers, enter REPL",
+      "description": "System startup: surface, handlers, channels, REPL",
       "entries": [],
-      "calls": [],
+      "calls": [
+        "surface.asm:surface_init",
+        "signal.asm:install_fault_handlers",
+        "dispatch.asm:dispatch_init",
+        "vsa.asm:vsa_init_random",
+        "verify.asm:verify_init",
+        "maturity.asm:maturity_init",
+        "channels.asm:channels_init",
+        "repl.asm:repl_run"
+      ],
       "called_by": [],
       "flow": "",
       "state": [],
       "gotchas": [],
-      "content_hash": "258e166461b6",
-      "line_count": 86
+      "content_hash": "7d2b50bbec83",
+      "line_count": 95
+    },
+    "channels.asm": {
+      "path": "channels.asm",
+      "description": "6-channel paired TCP I/O for UHMA",
+      "entries": [
+        {
+          "name": "channels_init",
+          "args": "",
+          "returns": "eax=1 success, 0 failure"
+        },
+        {
+          "name": "channels_poll",
+          "args": "",
+          "returns": "eax=input channel (0,2,4), -1 stdin, -2 timeout"
+        },
+        {
+          "name": "channels_read",
+          "args": "edi=channel, rsi=buf, edx=len",
+          "returns": "eax=bytes read"
+        },
+        {
+          "name": "channels_write",
+          "args": "edi=channel, rsi=buf, edx=len",
+          "returns": "eax=bytes written"
+        },
+        {
+          "name": "channels_respond",
+          "args": "edi=input_ch, rsi=buf, edx=len",
+          "returns": "writes to input_ch+1"
+        },
+        {
+          "name": "channels_accept",
+          "args": "",
+          "returns": "accepts pending connection on channel r12d"
+        },
+        {
+          "name": "get_channel_fd",
+          "args": "edi=channel",
+          "returns": "eax=socket fd or -1"
+        },
+        {
+          "name": "channels_shutdown",
+          "args": "",
+          "returns": "closes all sockets"
+        }
+      ],
+      "calls": [
+        "format.asm:print_cstr",
+        "print_u64"
+      ],
+      "called_by": [
+        "boot.asm:_start",
+        "repl.asm:repl_run"
+      ],
+      "flow": "",
+      "state": [],
+      "gotchas": [
+        "channels_init() called from boot.asm before repl_run",
+        "stdin is channel -1 for backwards compat (headless: stdin_active=0)",
+        "get_channel_fd() returns socket fd, not channel number",
+        "Poll skips dead stdin (fd=-1) and output channels (odd numbers)"
+      ],
+      "content_hash": "2ac220848d76",
+      "line_count": 537
     },
     "decode.asm": {
       "path": "decode.asm",
@@ -83,8 +156,8 @@
       "flow": "token \u2192 ctx=hash(prev) \u2192 predict \u2192 HIT/MISS \u2192 learn on miss",
       "state": [],
       "gotchas": [],
-      "content_hash": "ec05741d6249",
-      "line_count": 3087
+      "content_hash": "ae1156910ae0",
+      "line_count": 3149
     },
     "dreams.asm": {
       "path": "dreams.asm",
@@ -314,66 +387,81 @@
     },
     "format.asm": {
       "path": "format.asm",
-      "description": "Output formatting: integers, floats, hex, strings",
+      "description": "Output formatting with channel routing",
       "entries": [
         {
+          "name": "set_output_channel",
+          "args": "edi=fd",
+          "returns": "routes output to socket fd"
+        },
+        {
+          "name": "reset_output_channel",
+          "args": "",
+          "returns": "resets output to stdout (fd=1)"
+        },
+        {
           "name": "print_str",
-          "args": "ptr, len",
-          "returns": "write raw bytes to stdout"
+          "args": "rdi=ptr, rsi=len",
+          "returns": "writes to output_fd"
         },
         {
           "name": "print_cstr",
-          "args": "ptr",
-          "returns": "write null-terminated string to stdout"
+          "args": "rdi=ptr",
+          "returns": "writes null-terminated string to output_fd"
         },
         {
           "name": "print_u64",
-          "args": "val",
-          "returns": "print u64 as decimal"
+          "args": "rdi=val",
+          "returns": "prints decimal to output_fd"
         },
         {
           "name": "print_i64",
-          "args": "val",
-          "returns": "print i64 as signed decimal"
+          "args": "rdi=val",
+          "returns": "prints signed decimal to output_fd"
         },
         {
           "name": "print_hex64",
-          "args": "val",
-          "returns": "print 16-digit hex (0-padded)"
+          "args": "rdi=val",
+          "returns": "prints 0x-prefixed 16-digit hex"
         },
         {
           "name": "print_hex32",
-          "args": "val",
-          "returns": "print 8-digit hex (0-padded)"
+          "args": "edi=val",
+          "returns": "prints 8-digit hex (no prefix)"
         },
         {
           "name": "print_f32",
-          "args": "val",
-          "returns": "print f32 with 3 decimal places"
+          "args": "xmm0=val",
+          "returns": "prints float with 3 decimals"
         },
         {
           "name": "print_f64",
-          "args": "val",
-          "returns": "print f64 with 6 decimal places"
+          "args": "xmm0=val",
+          "returns": "prints double with 4 decimals"
         },
         {
           "name": "print_newline",
           "args": "",
-          "returns": "write '\\n' to stdout"
+          "returns": "writes '\\n'"
         },
         {
           "name": "print_space",
           "args": "",
-          "returns": "write ' ' to stdout"
+          "returns": "writes ' '"
         }
       ],
       "calls": [],
-      "called_by": [],
+      "called_by": [
+        "nearly every module for debug/status output"
+      ],
       "flow": "",
       "state": [],
-      "gotchas": [],
-      "content_hash": "5363aece80fc",
-      "line_count": 387
+      "gotchas": [
+        "All print functions use output_fd, not hardcoded STDOUT",
+        "Caller must call reset_output_channel() after TCP response"
+      ],
+      "content_hash": "791d1d23875f",
+      "line_count": 411
     },
     "gate.asm": {
       "path": "gate.asm",
@@ -519,21 +607,26 @@
     },
     "gui/mcp_client.asm": {
       "path": "gui/mcp_client.asm",
-      "description": "MCP server communication for GUI via TCP",
+      "description": "GUI client for UHMA 6-channel TCP I/O",
       "entries": [
         {
           "name": "mcp_init",
           "args": "",
-          "returns": "eax=1 on success, 0 on failure"
+          "returns": "eax=1 success, 0 failure (connects to all 6 ports)"
         },
         {
           "name": "mcp_shutdown",
           "args": "",
-          "returns": "void"
+          "returns": "closes all sockets"
         },
         {
           "name": "mcp_call",
           "args": "rdi=tool_name, rsi=args_json",
+          "returns": "rax=response_ptr"
+        },
+        {
+          "name": "mcp_call_ch",
+          "args": "edi=channel, rsi=tool_name, rdx=args_json",
           "returns": "rax=response_ptr"
         },
         {
@@ -548,17 +641,17 @@
         }
       ],
       "calls": [],
-      "called_by": [],
-      "flow": "mcp_init connects to TCP:9999, mcp_call sends JSON-RPC, parses response",
+      "called_by": [
+        "gui/visualizer.asm"
+      ],
+      "flow": "",
       "state": [],
       "gotchas": [
         "Response buffer is static, overwritten each call",
-        "Uses raw JSON lines over TCP (no Content-Length)",
-        "MCP server spawns UHMA internally",
-        "Stack alignment (x86-64 ABI): ODD pushes \u2192 aligned \u2192 sub must be multiple of 16"
+        "Stack alignment: ODD pushes \u2192 sub rsp must be multiple of 16"
       ],
-      "content_hash": "88dbc315e4bd",
-      "line_count": 545
+      "content_hash": "8952666c6733",
+      "line_count": 700
     },
     "gui/visualizer.asm": {
       "path": "gui/visualizer.asm",
@@ -1149,7 +1242,7 @@
     },
     "repl.asm": {
       "path": "repl.asm",
-      "description": "Interactive command loop",
+      "description": "Interactive command loop with 6-channel TCP support",
       "entries": [
         {
           "name": "repl_run",
@@ -1168,7 +1261,12 @@
         "self_show_context_types",
         "observe.asm:observe_cycle",
         "dreams.asm:dream_cycle",
-        "surface.asm:surface_freeze"
+        "surface.asm:surface_freeze",
+        "channels.asm:channels_poll",
+        "channels_read",
+        "get_channel_fd",
+        "format.asm:set_output_channel",
+        "reset_output_channel"
       ],
       "called_by": [
         "boot.asm:_start"
@@ -1177,12 +1275,12 @@
       "state": [],
       "gotchas": [
         "Commands are plain words, NOT :prefixed",
-        "New command = add string match + .not_X + .cmd_X handler",
         "quit must call surface_freeze before exit",
-        "listen command uses LISTENER_HOLO | LISTENER_PRINT only (working buffer removed)"
+        "TCP input: get_channel_fd(ch+1) for output socket, then set_output_channel(fd)",
+        "stdin EOF sets stdin_active=0, does NOT quit (allows headless TCP-only)"
       ],
-      "content_hash": "0e1dce861431",
-      "line_count": 2270
+      "content_hash": "db4d345d969d",
+      "line_count": 2324
     },
     "signal.asm": {
       "path": "signal.asm",
@@ -1723,6 +1821,30 @@
     }
   },
   "functions": {
+    "channels_init": [
+      "channels.asm"
+    ],
+    "channels_poll": [
+      "channels.asm"
+    ],
+    "channels_read": [
+      "channels.asm"
+    ],
+    "channels_write": [
+      "channels.asm"
+    ],
+    "channels_respond": [
+      "channels.asm"
+    ],
+    "channels_accept": [
+      "channels.asm"
+    ],
+    "get_channel_fd": [
+      "channels.asm"
+    ],
+    "channels_shutdown": [
+      "channels.asm"
+    ],
     "decode_instruction_length": [
       "decode.asm"
     ],
@@ -1822,6 +1944,12 @@
     "garbage_collect_subroutines": [
       "factor.asm"
     ],
+    "set_output_channel": [
+      "format.asm"
+    ],
+    "reset_output_channel": [
+      "format.asm"
+    ],
     "print_str": [
       "format.asm"
     ],
@@ -1910,6 +2038,9 @@
       "gui/mcp_client.asm"
     ],
     "mcp_call": [
+      "gui/mcp_client.asm"
+    ],
+    "mcp_call_ch": [
       "gui/mcp_client.asm"
     ],
     "mcp_send_text": [
@@ -2368,8 +2499,26 @@
   },
   "dependencies": {
     "boot.asm": {
-      "depends_on": [],
+      "depends_on": [
+        "channels.asm",
+        "dispatch.asm",
+        "maturity.asm",
+        "repl.asm",
+        "signal.asm",
+        "surface.asm",
+        "verify.asm",
+        "vsa.asm"
+      ],
       "depended_by": []
+    },
+    "channels.asm": {
+      "depends_on": [
+        "format.asm"
+      ],
+      "depended_by": [
+        "boot.asm",
+        "repl.asm"
+      ]
     },
     "decode.asm": {
       "depends_on": [
@@ -2382,6 +2531,7 @@
     "dispatch.asm": {
       "depends_on": [],
       "depended_by": [
+        "boot.asm",
         "dreams.asm",
         "io.asm",
         "repl.asm"
@@ -2435,7 +2585,10 @@
     },
     "format.asm": {
       "depends_on": [],
-      "depended_by": []
+      "depended_by": [
+        "channels.asm",
+        "repl.asm"
+      ]
     },
     "gate.asm": {
       "depends_on": [
@@ -2507,6 +2660,7 @@
     "maturity.asm": {
       "depends_on": [],
       "depended_by": [
+        "boot.asm",
         "io.asm"
       ]
     },
@@ -2548,22 +2702,29 @@
     },
     "repl.asm": {
       "depends_on": [
+        "channels.asm",
         "dispatch.asm",
         "dreams.asm",
+        "format.asm",
         "io.asm",
         "observe.asm",
         "receipt.asm",
         "surface.asm"
       ],
-      "depended_by": []
+      "depended_by": [
+        "boot.asm"
+      ]
     },
     "signal.asm": {
       "depends_on": [],
-      "depended_by": []
+      "depended_by": [
+        "boot.asm"
+      ]
     },
     "surface.asm": {
       "depends_on": [],
       "depended_by": [
+        "boot.asm",
         "emit.asm",
         "genes.asm",
         "repl.asm"
@@ -2580,6 +2741,7 @@
     "verify.asm": {
       "depends_on": [],
       "depended_by": [
+        "boot.asm",
         "decode.asm",
         "emit.asm"
       ]
@@ -2587,6 +2749,7 @@
     "vsa.asm": {
       "depends_on": [],
       "depended_by": [
+        "boot.asm",
         "dreams.asm",
         "emit.asm",
         "learn.asm",
@@ -2601,8 +2764,8 @@
     }
   },
   "meta": {
-    "file_count": 33,
-    "function_count": 214,
-    "total_gotchas": 45
+    "file_count": 34,
+    "function_count": 225,
+    "total_gotchas": 49
   }
 }
