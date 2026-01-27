@@ -68,7 +68,8 @@
       ],
       "calls": [
         "format.asm:print_cstr",
-        "print_u64"
+        "print_u64",
+        "signal.asm:set_sigpipe_mode (enables TCP mode on init)"
       ],
       "called_by": [
         "boot.asm:_start",
@@ -77,13 +78,13 @@
       "flow": "",
       "state": [],
       "gotchas": [
-        "channels_init() called from boot.asm before repl_run",
+        "channels_init() sets SIGPIPE to ignore mode (survives client disconnect)",
         "stdin is channel -1 for backwards compat (headless: stdin_active=0)",
         "get_channel_fd() returns socket fd, not channel number",
         "Poll skips dead stdin (fd=-1) and output channels (odd numbers)"
       ],
-      "content_hash": "2ac220848d76",
-      "line_count": 537
+      "content_hash": "2ff621445709",
+      "line_count": 542
     },
     "decode.asm": {
       "path": "decode.asm",
@@ -762,8 +763,13 @@
     },
     "introspect.asm": {
       "path": "introspect.asm",
-      "description": "Semantic self-model and organic regulation",
+      "description": "Semantic self-model, bootstrap, and organic regulation",
       "entries": [
+        {
+          "name": "tick_workers",
+          "args": "",
+          "returns": "\u2192 autonomous idle processing (called by REPL on timeout)"
+        },
         {
           "name": "introspect_scan_regions",
           "args": "",
@@ -775,11 +781,6 @@
           "returns": "\u2192 processes RFLAG_NEEDS_REPAIR regions"
         },
         {
-          "name": "tick_workers",
-          "args": "",
-          "returns": "\u2192 per-step organic pressure regulation"
-        },
-        {
           "name": "metacog_report",
           "args": "",
           "returns": "\u2192 REPL 'intro' command output"
@@ -787,18 +788,19 @@
       ],
       "calls": [
         "vsa_ops.asm:encode_region_to_vector",
-        "receipt.asm:meta_recommend_strategy"
+        "receipt.asm:meta_recommend_strategy",
+        "intro_get_self_awareness",
+        "dreams.asm:dream_cycle",
+        "observe.asm:observe_cycle"
       ],
       "called_by": [
-        "observe.asm",
-        "dispatch.asm",
-        "repl.asm"
+        "repl.asm (on poll timeout)"
       ],
       "flow": "",
       "state": [],
       "gotchas": [],
-      "content_hash": "4d10ddd47300",
-      "line_count": 1482
+      "content_hash": "84cab1c5b55d",
+      "line_count": 1544
     },
     "io.asm": {
       "path": "io.asm",
@@ -1242,7 +1244,7 @@
     },
     "repl.asm": {
       "path": "repl.asm",
-      "description": "Interactive command loop with 6-channel TCP support",
+      "description": "Interactive command loop with autonomous idle processing",
       "entries": [
         {
           "name": "repl_run",
@@ -1251,22 +1253,15 @@
         }
       ],
       "calls": [
+        "introspect.asm:tick_workers (on poll timeout - autonomous behavior)",
         "dispatch.asm:process_input",
         "io.asm:digest_file",
-        "receipt.asm:receipt_why_miss",
-        "receipt_show_misses",
-        "receipt_dump",
-        "receipt.asm:intro_report",
-        "causal_report",
-        "self_show_context_types",
-        "observe.asm:observe_cycle",
         "dreams.asm:dream_cycle",
+        "observe.asm:observe_cycle",
         "surface.asm:surface_freeze",
         "channels.asm:channels_poll",
         "channels_read",
-        "get_channel_fd",
-        "format.asm:set_output_channel",
-        "reset_output_channel"
+        "get_channel_fd"
       ],
       "called_by": [
         "boot.asm:_start"
@@ -1276,10 +1271,9 @@
       "gotchas": [
         "Commands are plain words, NOT :prefixed",
         "quit must call surface_freeze before exit",
-        "TCP input: get_channel_fd(ch+1) for output socket, then set_output_channel(fd)",
         "stdin EOF sets stdin_active=0, does NOT quit (allows headless TCP-only)"
       ],
-      "content_hash": "db4d345d969d",
+      "content_hash": "f1406b666b5a",
       "line_count": 2324
     },
     "signal.asm": {
@@ -1297,6 +1291,11 @@
           "returns": "rax=count"
         },
         {
+          "name": "set_sigpipe_mode",
+          "args": "edi=mode",
+          "returns": "void  ; 0=exit, 1=ignore (TCP mode)"
+        },
+        {
           "name": "bp_inject",
           "args": "rdi=addr, rsi=handler",
           "returns": "void"
@@ -1310,6 +1309,7 @@
       "calls": [],
       "called_by": [
         "boot.asm:_start (install)",
+        "channels.asm:channels_init (set TCP mode)",
         "io.asm:digest_file (safe point setup)"
       ],
       "flow": "fault \u2192 handler \u2192 check fault_safe_rsp \u2192 longjmp to REPL",
@@ -1317,16 +1317,18 @@
         "fault_safe_rsp",
         "fault_safe_rip",
         "fault_count",
-        "bp_table"
+        "bp_table",
+        "sigpipe_mode"
       ],
       "gotchas": [
         "MUST save fault_safe_rsp/rip BEFORE calling code that might fault",
         "After fault recovery, r14 (SURFACE_BASE) may be clobbered - reload it",
         "Max 3 consecutive faults before forced return (anti-loop)",
-        "Breakpoint handler must preserve all regs except rax"
+        "Breakpoint handler must preserve all regs except rax",
+        "SIGPIPE: mode 0 exits (interactive), mode 1 ignores (TCP) - set by channels_init"
       ],
-      "content_hash": "56cd8b2e146c",
-      "line_count": 734
+      "content_hash": "198826dd9c99",
+      "line_count": 760
     },
     "surface.asm": {
       "path": "surface.asm",
@@ -1816,8 +1818,8 @@
       "flow": "",
       "state": [],
       "gotchas": [],
-      "content_hash": "cd518917eb5b",
-      "line_count": 750
+      "content_hash": "badbcd4e0de4",
+      "line_count": 752
     }
   },
   "functions": {
@@ -2076,13 +2078,13 @@
     "hook_get_count": [
       "hooks.asm"
     ],
+    "tick_workers": [
+      "introspect.asm"
+    ],
     "introspect_scan_regions": [
       "introspect.asm"
     ],
     "introspect_repair_cycle": [
-      "introspect.asm"
-    ],
-    "tick_workers": [
       "introspect.asm"
     ],
     "metacog_report": [
@@ -2257,6 +2259,9 @@
       "signal.asm"
     ],
     "get_fault_count": [
+      "signal.asm"
+    ],
+    "set_sigpipe_mode": [
       "signal.asm"
     ],
     "bp_inject": [
@@ -2513,7 +2518,8 @@
     },
     "channels.asm": {
       "depends_on": [
-        "format.asm"
+        "format.asm",
+        "signal.asm"
       ],
       "depended_by": [
         "boot.asm",
@@ -2545,6 +2551,7 @@
         "vsa.asm"
       ],
       "depended_by": [
+        "introspect.asm",
         "repl.asm"
       ]
     },
@@ -2586,8 +2593,7 @@
     "format.asm": {
       "depends_on": [],
       "depended_by": [
-        "channels.asm",
-        "repl.asm"
+        "channels.asm"
       ]
     },
     "gate.asm": {
@@ -2633,11 +2639,14 @@
     },
     "introspect.asm": {
       "depends_on": [
+        "dreams.asm",
+        "observe.asm",
         "receipt.asm",
         "vsa_ops.asm"
       ],
       "depended_by": [
-        "decode.asm"
+        "decode.asm",
+        "repl.asm"
       ]
     },
     "io.asm": {
@@ -2676,6 +2685,7 @@
         "receipt.asm"
       ],
       "depended_by": [
+        "introspect.asm",
         "repl.asm"
       ]
     },
@@ -2696,8 +2706,7 @@
         "emit.asm",
         "introspect.asm",
         "learn.asm",
-        "observe.asm",
-        "repl.asm"
+        "observe.asm"
       ]
     },
     "repl.asm": {
@@ -2705,10 +2714,9 @@
         "channels.asm",
         "dispatch.asm",
         "dreams.asm",
-        "format.asm",
+        "introspect.asm",
         "io.asm",
         "observe.asm",
-        "receipt.asm",
         "surface.asm"
       ],
       "depended_by": [
@@ -2718,7 +2726,8 @@
     "signal.asm": {
       "depends_on": [],
       "depended_by": [
-        "boot.asm"
+        "boot.asm",
+        "channels.asm"
       ]
     },
     "surface.asm": {
@@ -2765,7 +2774,7 @@
   },
   "meta": {
     "file_count": 34,
-    "function_count": 225,
+    "function_count": 226,
     "total_gotchas": 49
   }
 }
