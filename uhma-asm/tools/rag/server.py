@@ -1,40 +1,32 @@
 #!/usr/bin/env python3
 """
-server.py — MCP Server for UHMA command/control/communication.
+server.py — MCP Server for UHMA (Claude Code integration via stdio)
 
-@entry main() -> runs MCP protocol loop (stdio for Claude Code)
-@entry tcp_main() -> runs TCP server for GUI connections
-@calls uhma binary via subprocess
+@entry main() -> MCP protocol loop over stdin/stdout
+@calls uhma binary via subprocess (stdin/stdout pipe)
 
 ARCHITECTURE:
-  GUI (TCP:9999) ─┐
-                  ├──→ MCP Server ──→ UHMA (subprocess)
-  Claude Code ────┘     (stdio)
+  Claude Code ──(stdio JSON-RPC)──→ MCP Server ──(pipe)──→ UHMA subprocess
 
-FLOW:
-  - Claude Code: stdin/stdout JSON-RPC (standard MCP)
-  - GUI: TCP socket JSON-RPC on port 9999
-  - Both share the same UHMA instance
+NOTE: This is for Claude Code MCP integration only.
+      For 6-channel TCP I/O, connect directly to UHMA (ports 9999-9994).
 
-CONFIG: Project-level .mcp.json in uhma-asm root (NOT ~/.claude/mcp.json)
+CONFIG: PROJECT_ROOT/.mcp.json (restart Claude Code after changes)
 
-TOOLS EXPOSED (28 total):
-  - Input: input, raw
-  - Status: help, status, self, metacog, intro, debugger, genes, subroutines, regions, presence, drives
-  - Debug: why, misses, receipts, listen, trace
-  - Actions: dream, observe, compact, reset
-  - I/O: save, load, eat
-  - Hive: hive, share, colony, export, import_gene
-  - Other: geom, web_fetch, quit
-
-NOTE: intro shows SELF-AWARE reading (0.0-1.0). Run observe first to build semantic self-model.
+TOOLS (28):
+  Input:   input, raw
+  Status:  help, status, self, metacog, intro, debugger, genes, subroutines,
+           regions, presence, drives
+  Debug:   why, misses, receipts, listen, trace
+  Actions: dream, observe, compact, reset
+  I/O:     save, load, eat
+  Hive:    hive, share, colony, export, import_gene
+  Other:   geom, web_fetch, quit
 
 GOTCHAS:
-  - MCP config must be at PROJECT_ROOT/.mcp.json, not ~/.claude/mcp.json
-  - Claude Code must be restarted after adding/modifying .mcp.json
-  - eat command uses 60s timeout (large files take time)
-  - UHMA auto-spawns on first tool call if not running
-  - GUI connects via TCP:9999, Claude Code via stdio
+  - MCP config at PROJECT_ROOT/.mcp.json, not ~/.claude/mcp.json
+  - Restart Claude Code after .mcp.json changes
+  - UHMA auto-spawns on first tool call
 """
 
 import json
@@ -164,6 +156,32 @@ def send_to_uhma(text, timeout=10.0):
 
     log(f"Collected {len(output_lines)} lines")
     return "\n".join(output_lines)
+
+
+def send_to_uhma_async(text):
+    """Send text to UHMA without waiting for response (fire and forget)."""
+    global uhma_process
+
+    if uhma_process and uhma_process.poll() is not None:
+        uhma_process = None
+
+    if not uhma_process:
+        if not start_uhma():
+            return "Error: UHMA not running"
+        time.sleep(1.5)
+        while not uhma_output_queue.empty():
+            try:
+                uhma_output_queue.get_nowait()
+            except:
+                break
+
+    with uhma_lock:
+        try:
+            uhma_process.stdin.write(text + "\n")
+            uhma_process.stdin.flush()
+            return "sent"
+        except Exception as e:
+            return f"Error: {e}"
 
 
 def web_fetch(url):
@@ -803,11 +821,293 @@ def tcp_only_main(port=TCP_PORT):
         sys.stderr.write(f"TCP server error: {e}\n")
 
 
+def handle_feed_client(client_socket, addr):
+    """Handle feed port client - async send, no wait."""
+    log(f"Feed client connected from {addr}")
+    try:
+        client_socket.settimeout(5.0)
+        data = b""
+        while True:
+            chunk = client_socket.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+            if b"\n" in data:
+                break
+
+        for line in data.decode('utf-8', errors='replace').split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                request = json.loads(line)
+                method = request.get("method", "")
+                params = request.get("params", {})
+                req_id = request.get("id", 1)
+
+                if method == "tools/call":
+                    tool_name = params.get("name", "")
+                    args = params.get("arguments", {})
+
+                    if tool_name == "raw":
+                        cmd = args.get("command", "")
+                        result = send_to_uhma_async(cmd)
+                    elif tool_name in ["eat", "dream", "observe", "compact"]:
+                        if tool_name == "eat":
+                            cmd = f"eat {args.get('path', args.get('file', ''))}"
+                        else:
+                            cmd = tool_name
+                        result = send_to_uhma_async(cmd)
+                    else:
+                        result = f"Feed port only accepts: raw, eat, dream, observe, compact"
+
+                    response = {"jsonrpc": "2.0", "id": req_id, "result": {"content": [{"type": "text", "text": result}]}}
+                    client_socket.sendall((json.dumps(response) + "\n").encode())
+            except json.JSONDecodeError:
+                pass
+    except Exception as e:
+        log(f"Feed client error: {e}")
+    finally:
+        client_socket.close()
+
+
+def tcp_dual_main(feed_port, query_port):
+    """Run with two TCP ports: feed_port (async) for feeding, query_port (sync) for queries."""
+    start_uhma()
+
+    feed_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    feed_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    query_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    query_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+    try:
+        feed_server.bind(("127.0.0.1", feed_port))
+        feed_server.listen(5)
+        query_server.bind(("127.0.0.1", query_port))
+        query_server.listen(5)
+        log(f"Dual TCP: feed={feed_port} (async), query={query_port} (sync)")
+        sys.stderr.write(f"Dual TCP: feed={feed_port} (async), query={query_port} (sync)\n")
+
+        feed_server.setblocking(False)
+        query_server.setblocking(False)
+
+        while True:
+            readable, _, _ = select.select([feed_server, query_server], [], [], 1.0)
+            for sock in readable:
+                client_socket, addr = sock.accept()
+                if sock is feed_server:
+                    # Feed port: async, fire and forget
+                    client_thread = threading.Thread(
+                        target=handle_feed_client,
+                        args=(client_socket, addr),
+                        daemon=True
+                    )
+                else:
+                    # Query port: sync, wait for response
+                    client_thread = threading.Thread(
+                        target=handle_tcp_client,
+                        args=(client_socket, addr),
+                        daemon=True
+                    )
+                client_thread.start()
+    except KeyboardInterrupt:
+        log("Server shutting down")
+    except Exception as e:
+        log(f"Dual TCP error: {e}")
+        sys.stderr.write(f"Dual TCP error: {e}\n")
+
+
+def handle_trace_client(client_socket, addr):
+    """Handle trace channel - streams receipts/debug output."""
+    log(f"Trace client connected from {addr}")
+    trace_clients.append(client_socket)
+    try:
+        # Keep connection alive, just echo back any input
+        while True:
+            data = client_socket.recv(1024)
+            if not data:
+                break
+    except:
+        pass
+    finally:
+        if client_socket in trace_clients:
+            trace_clients.remove(client_socket)
+        client_socket.close()
+        log(f"Trace client disconnected from {addr}")
+
+
+def handle_stream_client(client_socket, addr):
+    """Handle stream channel - real-time event stream."""
+    log(f"Stream client connected from {addr}")
+    stream_clients.append(client_socket)
+    try:
+        while True:
+            data = client_socket.recv(1024)
+            if not data:
+                break
+    except:
+        pass
+    finally:
+        if client_socket in stream_clients:
+            stream_clients.remove(client_socket)
+        client_socket.close()
+        log(f"Stream client disconnected from {addr}")
+
+
+def handle_llm_client(client_socket, addr):
+    """Handle LLM channel - bidirectional with another UHMA or LLM."""
+    log(f"LLM client connected from {addr}")
+    try:
+        client_socket.settimeout(None)  # No timeout for LLM channel
+        buffer = ""
+        while True:
+            data = client_socket.recv(4096)
+            if not data:
+                break
+            buffer += data.decode('utf-8', errors='replace')
+
+            while "\n" in buffer:
+                line, buffer = buffer.split("\n", 1)
+                line = line.strip()
+                if not line:
+                    continue
+
+                try:
+                    request = json.loads(line)
+                    method = request.get("method", "")
+                    params = request.get("params", {})
+                    req_id = request.get("id", 1)
+
+                    if method == "tools/call":
+                        tool_name = params.get("name", "")
+                        args = params.get("arguments", {})
+                        result = handle_tool_call(tool_name, args)
+                        response = {"jsonrpc": "2.0", "id": req_id,
+                                    "result": {"content": [{"type": "text", "text": result}]}}
+                        client_socket.sendall((json.dumps(response) + "\n").encode())
+                    elif method == "initialize":
+                        response = {"jsonrpc": "2.0", "id": req_id,
+                                    "result": {"protocolVersion": "2024-11-05",
+                                               "capabilities": {"tools": {}},
+                                               "serverInfo": {"name": "uhma-llm", "version": "1.0"}}}
+                        client_socket.sendall((json.dumps(response) + "\n").encode())
+                except json.JSONDecodeError:
+                    pass
+    except Exception as e:
+        log(f"LLM client error: {e}")
+    finally:
+        client_socket.close()
+        log(f"LLM client disconnected from {addr}")
+
+
+# Channel client lists for broadcasting
+trace_clients = []
+stream_clients = []
+
+
+def broadcast_trace(msg):
+    """Send message to all trace channel clients."""
+    for client in trace_clients[:]:
+        try:
+            client.sendall((msg + "\n").encode())
+        except:
+            trace_clients.remove(client)
+
+
+def broadcast_stream(event):
+    """Send event to all stream channel clients."""
+    for client in stream_clients[:]:
+        try:
+            client.sendall((json.dumps(event) + "\n").encode())
+        except:
+            stream_clients.remove(client)
+
+
+def tcp_multi_main(num_channels, base_port):
+    """Run with 6 TCP channels:
+
+    Channel 0 (9999): FEED   - async fire-and-forget (eat, dream, observe)
+    Channel 1 (9998): QUERY  - sync request/response (status, why, misses)
+    Channel 2 (9997): TRACE  - receipts/debug output stream
+    Channel 3 (9996): STREAM - real-time event stream
+    Channel 4 (9995): LLM    - bidirectional UHMA↔LLM communication
+    Channel 5 (9994): RESERVED
+    """
+    start_uhma()
+
+    CHANNEL_NAMES = ['FEED', 'QUERY', 'TRACE', 'STREAM', 'LLM', 'RESERVED']
+
+    servers = []
+    for i in range(num_channels):
+        port = base_port - i
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind(("127.0.0.1", port))
+        server.listen(5)
+        server.setblocking(False)
+        name = CHANNEL_NAMES[i] if i < len(CHANNEL_NAMES) else f'CH{i}'
+        servers.append((server, port, i, name))
+        log(f"Channel {i} ({name}) listening on port {port}")
+
+    ports_str = ", ".join([f"{name}:{p}" for s, p, i, name in servers])
+    sys.stderr.write(f"6-channel MCP: {ports_str}\n")
+
+    # Channel handlers by index
+    channel_handlers = {
+        0: handle_feed_client,    # FEED - async
+        1: handle_tcp_client,     # QUERY - sync
+        2: handle_trace_client,   # TRACE - stream
+        3: handle_stream_client,  # STREAM - events
+        4: handle_llm_client,     # LLM - bidirectional
+        5: handle_tcp_client,     # RESERVED - default sync
+    }
+
+    try:
+        while True:
+            server_socks = [s for s, p, i, n in servers]
+            readable, _, _ = select.select(server_socks, [], [], 1.0)
+            for sock in readable:
+                # Find which channel this is
+                channel = None
+                for s, p, i, n in servers:
+                    if s is sock:
+                        channel = i
+                        break
+
+                client_socket, addr = sock.accept()
+                handler = channel_handlers.get(channel, handle_tcp_client)
+
+                client_thread = threading.Thread(
+                    target=handler,
+                    args=(client_socket, addr),
+                    daemon=True
+                )
+                client_thread.start()
+    except KeyboardInterrupt:
+        log("Server shutting down")
+    except Exception as e:
+        log(f"Multi TCP error: {e}")
+        sys.stderr.write(f"Multi TCP error: {e}\n")
+    finally:
+        for s, p, i, n in servers:
+            s.close()
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--tcp":
         # TCP-only mode for GUI
         port = int(sys.argv[2]) if len(sys.argv) > 2 else TCP_PORT
         tcp_only_main(port)
+    elif len(sys.argv) > 1 and sys.argv[1] == "--dual":
+        # Dual port mode: --dual FEED_PORT QUERY_PORT
+        feed_port = int(sys.argv[2]) if len(sys.argv) > 2 else 9999
+        query_port = int(sys.argv[3]) if len(sys.argv) > 3 else 9998
+        tcp_dual_main(feed_port, query_port)
+    elif len(sys.argv) > 1 and sys.argv[1] == "--multi":
+        # Multi-channel mode: --multi NUM_CHANNELS BASE_PORT
+        num_channels = int(sys.argv[2]) if len(sys.argv) > 2 else 4
+        base_port = int(sys.argv[3]) if len(sys.argv) > 3 else 9999
+        tcp_multi_main(num_channels, base_port)
     else:
         # Standard MCP mode (stdio + TCP background)
         main()

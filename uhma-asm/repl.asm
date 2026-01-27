@@ -1,4 +1,4 @@
-; repl.asm — Interactive command loop
+; repl.asm — Interactive command loop with 6-channel TCP support
 ;
 ; @entry repl_run() -> never returns (exits via quit/EOF)
 ; @calls dispatch.asm:process_input
@@ -8,12 +8,14 @@
 ; @calls observe.asm:observe_cycle
 ; @calls dreams.asm:dream_cycle
 ; @calls surface.asm:surface_freeze
+; @calls channels.asm:channels_poll, channels_read, get_channel_fd
+; @calls format.asm:set_output_channel, reset_output_channel
 ; @calledby boot.asm:_start
 ;
-; COMMAND DISPATCH (~line 220-580):
-;   Match by literal: cmp dword [rbx], 'quit'
-;   Pattern: .not_X after fail, .cmd_X for handler
-;   NO colon prefix - plain words: help, quit, why, misses
+; I/O SOURCES:
+;   stdin (-1)     - interactive terminal (skipped if stdin_active=0)
+;   TCP channels   - 6-channel paired I/O (see channels.asm)
+;   Output routing - via set_output_channel(fd) before command execution
 ;
 ; COMMANDS:
 ;   Status:  help, status, regions, presence, drives, self, metacog
@@ -22,15 +24,11 @@
 ;   Debug:   why, misses [n], receipts [n], listen, debugger, genes
 ;   Exit:    quit (syncs surface)
 ;
-; TEXT: non-command → process_input() → tokenize → process_token
-;
-; LISTENER FLAGS: LISTENER_HOLO | LISTENER_PRINT (no LISTENER_WORKING - removed)
-;
 ; GOTCHAS:
 ;   - Commands are plain words, NOT :prefixed
-;   - New command = add string match + .not_X + .cmd_X handler
 ;   - quit must call surface_freeze before exit
-;   - listen command uses LISTENER_HOLO | LISTENER_PRINT only (working buffer removed)
+;   - TCP input: get_channel_fd(ch+1) for output socket, then set_output_channel(fd)
+;   - stdin EOF sets stdin_active=0, does NOT quit (allows headless TCP-only)
 %include "syscalls.inc"
 %include "constants.inc"
 
@@ -122,6 +120,11 @@ section .bss
     input_buf:      resb INPUT_BUF_SIZE
     buf_pos:        resq 1            ; current read position in buffer
     buf_end:        resq 1            ; end of valid data in buffer
+    current_channel: resd 1           ; -1=stdin, 0-5=TCP channel
+
+section .data
+global stdin_active
+    stdin_active:   dd 1              ; 0 if stdin hit EOF
 
 section .text
 
@@ -178,6 +181,12 @@ extern receipt_show_misses    ; from receipt.asm - show last N misses
 extern intro_report           ; from receipt.asm - introspective state report
 extern self_show_context_types ; from receipt.asm - trace-based context strengths
 extern causal_report          ; from receipt.asm - causal model report
+extern channels_poll          ; from channels.asm - poll all channels + stdin
+extern channels_read          ; from channels.asm - read from TCP channel
+extern channels_respond       ; from channels.asm - write to paired output channel
+extern get_channel_fd         ; from channels.asm - get socket fd for channel
+extern set_output_channel     ; from format.asm - route output to channel
+extern reset_output_channel   ; from format.asm - reset to stdout
 
 ;; ============================================================
 ;; repl_run
@@ -204,7 +213,25 @@ repl_run:
     cmp rax, rcx
     jl .have_data
 
-    ; No data in buffer — print prompt and read new input
+    ; Poll all channels (stdin + 6 TCP) for data
+    call channels_poll
+    mov [rel current_channel], eax
+
+    ; Check result: -2=timeout, -1=stdin, 0-5=TCP channel
+    cmp eax, -2
+    je .loop                      ; timeout, loop back
+
+    cmp eax, -1
+    jne .read_tcp_channel
+
+    ; Check if stdin is still active
+    cmp dword [rel stdin_active], 0
+    je .loop                      ; stdin dead, ignore and re-poll
+
+    ; stdin has data — ensure output goes to stdout
+    call reset_output_channel
+
+    ; Print prompt and read
     lea rdi, [rel prompt_str]
     mov rsi, prompt_len
     call print_str
@@ -213,10 +240,37 @@ repl_run:
     mov rsi, INPUT_BUF_SIZE - 1
     call read_stdin
 
-    ; Check EOF
+    ; Check EOF on stdin - if channels active, don't quit, just loop
     test rax, rax
-    jle .quit
+    jg .set_buffer
+    ; EOF on stdin - mark dead and keep running for channel I/O
+    mov dword [rel stdin_active], 0
+    jmp .loop
 
+.read_tcp_channel:
+    ; Read from TCP channel (eax = input channel 0,2,4)
+    mov edi, [rel current_channel]
+    lea rsi, [rel input_buf]
+    mov edx, INPUT_BUF_SIZE - 1
+    call channels_read
+    mov r12d, eax                 ; save bytes read
+
+    ; Check for disconnect/error
+    test eax, eax
+    jle .loop                     ; channel closed, poll again
+
+    ; Route output to paired output channel (input+1)
+    ; Get socket fd from channels and pass to set_output_channel
+    mov edi, [rel current_channel]
+    inc edi                       ; output channel = input + 1
+    call get_channel_fd           ; eax = socket fd for channel edi
+    mov edi, eax
+    call set_output_channel
+
+    mov eax, r12d                 ; restore bytes read for .set_buffer
+    jmp .set_buffer
+
+.set_buffer:
     ; Set buffer bounds
     lea rcx, [rel input_buf]
     mov [rel buf_pos], rcx

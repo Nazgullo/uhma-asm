@@ -1,21 +1,26 @@
-; boot.asm — System startup: mmap surface, install handlers, enter REPL
+; boot.asm — System startup: surface, handlers, channels, REPL
 ;
-; ENTRY POINTS:
-;   _start                        - ELF entry point, never returns
+; @entry _start -> ELF entry point, never returns
+; @calls surface.asm:surface_init
+; @calls signal.asm:install_fault_handlers
+; @calls dispatch.asm:dispatch_init
+; @calls vsa.asm:vsa_init_random
+; @calls verify.asm:verify_init
+; @calls maturity.asm:maturity_init
+; @calls channels.asm:channels_init
+; @calls repl.asm:repl_run
 ;
 ; STARTUP SEQUENCE:
-;   1. surface_init()             - mmap 100GB sparse persistent file
-;   2. install_fault_handlers()   - SIGSEGV/SIGFPE/SIGBUS recovery
-;   3. dispatch_init()            - init dispatch tree with echo behavior
-;   4. vsa_init_random()          - seed random vectors for VSA arena
-;   5. verify_init()              - assembly brittleness protection
-;   6. maturity_init()            - developmental gating (Stage 0)
-;   7. repl_run()                 - enter main REPL loop (never returns)
+;   1. surface_init()           - mmap 8GB sparse persistent file
+;   2. install_fault_handlers() - SIGSEGV/SIGFPE/SIGBUS recovery
+;   3. dispatch_init()          - init dispatch tree with echo behavior
+;   4. vsa_init_random()        - seed random vectors for VSA arena
+;   5. verify_init()            - assembly brittleness protection
+;   6. maturity_init()          - developmental gating (Stage 0)
+;   7. channels_init()          - 6-channel TCP listeners (9999-9994)
+;   8. repl_run()               - main loop (stdin + TCP channels)
 ;
-; CALLS OUT TO:
-;   surface.asm, signal.asm, dispatch.asm, vsa.asm, verify.asm, maturity.asm, repl.asm
-;
-; NOTE: Stack aligned to 16 at entry. No cleanup needed (repl_run loops forever).
+; NOTE: Stack aligned to 16 at entry. repl_run never returns.
 ;
 %include "syscalls.inc"
 %include "constants.inc"
@@ -32,6 +37,7 @@ extern vsa_init_random
 extern verify_init
 extern verify_vsa_math
 extern maturity_init
+extern channels_init
 
 ;; ============================================================
 ;; _start — Entry point
@@ -76,7 +82,10 @@ _start:
     mov rax, 0x3FF0000000000000    ; 1.0 f64
     mov [rbx + STATE_OFFSET + ST_TEMPO_MULT], rax
 
-    ; 6. Enter the interactive REPL (never returns)
+    ; 8. Initialize multi-channel I/O (6 TCP channels)
+    call channels_init
+
+    ; 9. Enter the interactive REPL (never returns)
     call repl_run
 
     ; Should not reach here

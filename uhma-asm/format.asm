@@ -1,25 +1,27 @@
-; format.asm — Output formatting: integers, floats, hex, strings
+; format.asm — Output formatting with channel routing
 ;
-; ENTRY POINTS:
-;   print_str(ptr, len)     - write raw bytes to stdout
-;   print_cstr(ptr)         - write null-terminated string to stdout
-;   print_u64(val)          - print u64 as decimal
-;   print_i64(val)          - print i64 as signed decimal
-;   print_hex64(val)        - print 16-digit hex (0-padded)
-;   print_hex32(val)        - print 8-digit hex (0-padded)
-;   print_f32(val)          - print f32 with 3 decimal places
-;   print_f64(val)          - print f64 with 6 decimal places
-;   print_newline()         - write '\n' to stdout
-;   print_space()           - write ' ' to stdout
+; @entry set_output_channel(edi=fd) -> routes output to socket fd
+; @entry reset_output_channel() -> resets output to stdout (fd=1)
+; @entry print_str(rdi=ptr, rsi=len) -> writes to output_fd
+; @entry print_cstr(rdi=ptr) -> writes null-terminated string to output_fd
+; @entry print_u64(rdi=val) -> prints decimal to output_fd
+; @entry print_i64(rdi=val) -> prints signed decimal to output_fd
+; @entry print_hex64(rdi=val) -> prints 0x-prefixed 16-digit hex
+; @entry print_hex32(edi=val) -> prints 8-digit hex (no prefix)
+; @entry print_f32(xmm0=val) -> prints float with 3 decimals
+; @entry print_f64(xmm0=val) -> prints double with 4 decimals
+; @entry print_newline() -> writes '\n'
+; @entry print_space() -> writes ' '
+; @calledby nearly every module for debug/status output
 ;
-; IMPLEMENTATION:
-;   Uses 128-byte scratch buffer (fmt_buf) for conversions
-;   Decimal: divide-by-10 loop, reverse digits
-;   Hex: nibble extraction with lookup table
-;   Float: integer part + decimal part conversion
+; OUTPUT ROUTING:
+;   output_fd variable (default=1) controls where all print functions write
+;   set_output_channel(fd) changes target, reset_output_channel() restores stdout
+;   Used by repl.asm to route TCP channel responses to paired output socket
 ;
-; CALLED BY: nearly every module for debug/status output
-; NO EXTERNAL CALLS (self-contained, uses SYS_WRITE directly)
+; GOTCHAS:
+;   - All print functions use output_fd, not hardcoded STDOUT
+;   - Caller must call reset_output_channel() after TCP response
 ;
 %include "syscalls.inc"
 %include "constants.inc"
@@ -27,17 +29,38 @@
 section .bss
     fmt_buf: resb 128                ; scratch buffer for formatting
 
+section .data
+    output_fd: dd 1                  ; current output fd (1=stdout, or channel socket)
+
 section .text
+
+;; ============================================================
+;; set_output_channel(fd)
+;; edi=fd (1=stdout, or socket fd for channel output)
+;; ============================================================
+global set_output_channel
+set_output_channel:
+    mov [rel output_fd], edi
+    ret
+
+;; ============================================================
+;; reset_output_channel — reset to stdout
+;; ============================================================
+global reset_output_channel
+reset_output_channel:
+    mov dword [rel output_fd], 1
+    ret
 
 ;; ============================================================
 ;; print_str(str, len)
 ;; rdi=str ptr, rsi=len
+;; Writes to output_fd (stdout or channel socket)
 ;; ============================================================
 global print_str
 print_str:
     mov rdx, rsi
     mov rsi, rdi
-    mov edi, STDOUT
+    mov edi, [rel output_fd]
     mov rax, SYS_WRITE
     syscall
     ret
@@ -45,6 +68,7 @@ print_str:
 ;; ============================================================
 ;; print_cstr(str)
 ;; rdi=null-terminated string
+;; Writes to output_fd (stdout or channel socket)
 ;; ============================================================
 global print_cstr
 print_cstr:
@@ -59,7 +83,7 @@ print_cstr:
 .found:
     mov rdx, rcx              ; len
     pop rsi                   ; buf
-    mov edi, STDOUT
+    mov edi, [rel output_fd]
     mov rax, SYS_WRITE
     syscall
     ret
@@ -97,7 +121,7 @@ print_u64:
     sub rsi, rdi               ; len
     mov rdx, rsi
     mov rsi, rdi
-    mov edi, STDOUT
+    mov edi, [rel output_fd]
     mov rax, SYS_WRITE
     syscall
     pop rbp

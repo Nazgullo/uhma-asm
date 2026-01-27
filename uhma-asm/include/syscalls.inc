@@ -82,4 +82,24 @@
 %define STDOUT              1
 %define STDERR              2
 
+; socket syscalls
+%define SYS_SOCKET          41
+%define SYS_BIND            49
+%define SYS_LISTEN          50
+%define SYS_ACCEPT          43
+%define SYS_CONNECT         42
+%define SYS_SETSOCKOPT      54
+%define SYS_SELECT          23
+%define SYS_POLL            7
+
+; socket constants
+%define AF_INET             2
+%define SOCK_STREAM         1
+%define SOL_SOCKET          1
+%define SO_REUSEADDR        2
+%define INADDR_LOOPBACK     0x0100007F  ; 127.0.0.1 in network byte order
+
+; poll events
+%define POLLIN              0x0001
+
 %endif

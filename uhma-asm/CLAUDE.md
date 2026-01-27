@@ -220,13 +220,48 @@ The system is self-aware. After `observe` runs: `SELF-AWARE: 0.973` (97.3% self-
 - **MUST call vsa_normalize after binding chain** to restore unit length
 - HOLO_OFFSET (0xC0000000) sign-extends when used as immediate → use register: `mov rcx, HOLO_OFFSET; add rdi, rcx`
 
+### 6-Channel TCP I/O
+UHMA exposes 3 paired TCP channels for external communication:
+
+| Pair | Input Port | Output Port | Purpose |
+|------|------------|-------------|---------|
+| FEED | 9999 (CH0) | 9998 (CH1) | eat, dream, observe |
+| QUERY | 9997 (CH2) | 9996 (CH3) | status, why, misses |
+| DEBUG | 9995 (CH4) | 9994 (CH5) | trace, receipts |
+
+**Protocol:**
+1. Client connects to BOTH ports of a channel pair
+2. Send command to input port (even: 0,2,4)
+3. Read response from output port (odd: 1,3,5)
+4. Synchronous request/response (no async)
+
+**Implementation:**
+- `channels.asm`: TCP listeners, poll, read/write/respond
+- `format.asm`: `set_output_channel(fd)` routes all print functions
+- `repl.asm`: polls stdin + TCP, routes output via `get_channel_fd(ch+1)`
+
+**Headless mode:** When stdin is `/dev/null`, `stdin_active=0` and UHMA runs TCP-only.
+
+**Testing:**
+```bash
+# Terminal 1: Start UHMA headless
+./uhma < /dev/null
+
+# Terminal 2: Connect to query output
+nc localhost 9996
+
+# Terminal 3: Send query
+echo "status" | nc localhost 9997
+# Response appears in Terminal 2
+```
+
 ## File Index
 
 ### Core Loop
 | File | Purpose | Calls | Called By |
 |------|---------|-------|-----------|
-| boot.asm | Entry point, surface init | surface_init, repl_run | OS |
-| repl.asm | Command loop, text dispatch | process_input, dream_cycle, observe_cycle | boot |
+| boot.asm | Entry point, surface init, channels | surface_init, channels_init, repl_run | OS |
+| repl.asm | Command loop, stdin + TCP dispatch | process_input, channels_poll, set_output_channel | boot |
 | dispatch.asm | Token processing, prediction | learn_pattern, holo_predict, emit_receipt | repl, io |
 
 ### Learning & Memory
@@ -255,6 +290,8 @@ The system is self-aware. After `observe` runs: `SELF-AWARE: 0.973` (97.3% self-
 ### I/O & Persistence
 | File | Purpose | Calls | Called By |
 |------|---------|-------|-----------|
+| channels.asm | 6-channel TCP I/O | socket, bind, poll | boot, repl |
+| format.asm | Output formatting + routing | SYS_WRITE | everywhere |
 | io.asm | File I/O, digest_file | process_token | repl (eat cmd) |
 | surface.asm | Memory management | mmap, madvise | boot |
 | persist.asm | Save/load state | (file I/O) | repl |
@@ -270,7 +307,6 @@ The system is self-aware. After `observe` runs: `SELF-AWARE: 0.973` (97.3% self-
 ### Support
 | File | Purpose |
 |------|---------|
-| format.asm | Print functions (print_str, print_hex, etc.) |
 | decode.asm | x86 instruction decoder |
 | hooks.asm | Event hooks system |
 | trace.asm | Journey tracing (token path tracking) |
@@ -282,13 +318,14 @@ The system is self-aware. After `observe` runs: `SELF-AWARE: 0.973` (97.3% self-
 
 ### Data Flow
 ```
-Input → repl.asm → dispatch.asm → [predict] → HIT/MISS
-                                      ↓
-                              learn.asm → emit.asm → new region
-                                      ↓
-                              receipt.asm → trace (8 dimensions)
-                                      ↓
-                              dreams.asm → consolidate/prune
+stdin ──────────┐
+                ├──→ repl.asm → dispatch.asm → [predict] → HIT/MISS
+TCP (6-channel) ┘         ↓                         ↓
+                    set_output_channel        learn.asm → emit.asm
+                          ↓                         ↓
+                    response → TCP/stdout    receipt.asm → trace
+                                                    ↓
+                                             dreams.asm → consolidate
 ```
 
 ## Header Template
@@ -316,8 +353,8 @@ Pre-tool hooks automatically inject relevant context before Read/Edit/Write/Grep
 
 This prevents repeating past mistakes by surfacing gotchas at edit time.
 
-### MCP Server (UHMA Control Interface)
-Full command/control/communication with UHMA via MCP tools:
+### MCP Server (Claude Code Integration)
+For Claude Code only - spawns UHMA subprocess, communicates via stdin/stdout pipe.
 
 | Tool | Description |
 |------|-------------|
@@ -329,24 +366,21 @@ Full command/control/communication with UHMA via MCP tools:
 | `web_fetch` | Fetch URL, optionally digest into UHMA |
 | `raw` | Escape hatch for any REPL command |
 
-Auto-spawns UHMA on MCP initialization. Bidirectional stdin/stdout pipe.
-
-**MCP Configuration** (IMPORTANT):
-- Config file: `PROJECT_ROOT/.mcp.json` (NOT `~/.claude/mcp.json`)
-- Claude Code must be **restarted** after adding/modifying `.mcp.json`
-- Verify with `/mcp` command in Claude Code after restart
-- Example `.mcp.json`:
+**Config** (`PROJECT_ROOT/.mcp.json`):
 ```json
 {
   "mcpServers": {
     "uhma": {
       "command": "python3",
-      "args": ["/path/to/uhma-asm/tools/rag/server.py"],
+      "args": ["tools/rag/server.py"],
       "cwd": "/path/to/uhma-asm"
     }
   }
 }
 ```
+Restart Claude Code after changes. Verify with `/mcp`.
+
+**For GUI/external tools:** Use 6-channel TCP directly (see above), not MCP server.
 
 ### RAG Index
 `tools/rag/index.json` contains:

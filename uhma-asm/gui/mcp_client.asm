@@ -1,41 +1,48 @@
-; mcp_client.asm — MCP server communication for GUI via TCP
+; mcp_client.asm — GUI client for UHMA 6-channel TCP I/O
 ;
-; Connects to MCP server via TCP socket (port 9999). If server not running,
-; spawns it in --tcp mode. GUI calls these instead of UHMA directly.
-;
-; ARCHITECTURE:
-;   GUI (this) ──(TCP:9999)──→ MCP Server ──→ UHMA (subprocess)
-;                                  ↑
-;   Claude Code ──────(stdio)──────┘
-;
-; Both GUI and Claude Code share the same UHMA instance through MCP.
-;
-; @entry mcp_init() -> eax=1 on success, 0 on failure
-; @entry mcp_shutdown()
+; @entry mcp_init() -> eax=1 success, 0 failure (connects to all 6 ports)
+; @entry mcp_shutdown() -> closes all sockets
 ; @entry mcp_call(rdi=tool_name, rsi=args_json) -> rax=response_ptr
+; @entry mcp_call_ch(edi=channel, rsi=tool_name, rdx=args_json) -> rax=response_ptr
 ; @entry mcp_send_text(rdi=text) -> rax=response_ptr
 ; @entry mcp_get_status() -> rax=status_json_ptr
+; @calledby gui/visualizer.asm
 ;
-; FLOW: mcp_init connects to TCP:9999, mcp_call sends JSON-RPC, parses response
+; CHANNEL PAIRS (client perspective - write to input, read from output):
+;   FEED:  write 9999 (CH0) → read 9998 (CH1) - eat, dream, observe
+;   QUERY: write 9997 (CH2) → read 9996 (CH3) - status, why, misses
+;   DEBUG: write 9995 (CH4) → read 9994 (CH5) - trace, receipts
+;
+; PROTOCOL:
+;   1. Connect to both ports of a channel pair
+;   2. Send command to input port (even: 0,2,4)
+;   3. Read response from output port (odd: 1,3,5)
+;   Synchronous request/response, no async
 ;
 ; GOTCHAS:
 ;   - Response buffer is static, overwritten each call
-;   - Uses raw JSON lines over TCP (no Content-Length)
-;   - MCP server spawns UHMA internally
-;   - Stack alignment (x86-64 ABI): ODD pushes → aligned → sub must be multiple of 16
+;   - Stack alignment: ODD pushes → sub rsp must be multiple of 16
 
 section .data
     ; MCP server command (for spawning if not running)
     mcp_cmd:        db "python3", 0
     mcp_arg1:       db "../tools/rag/server.py", 0
-    mcp_arg2:       db "--tcp", 0
-    mcp_arg3:       db "9999", 0
-    mcp_argv:       dq 0, 0, 0, 0, 0  ; filled at runtime
+    mcp_arg2:       db "--multi", 0
+    mcp_arg3:       db "6", 0         ; 6 channels
+    mcp_arg4:       db "9999", 0      ; base port
+    mcp_argv:       dq 0, 0, 0, 0, 0, 0  ; filled at runtime
 
-    ; TCP connection params
-    MCP_PORT        equ 9999
-    AF_INET         equ 2
-    SOCK_STREAM     equ 1
+    ; TCP connection params (6-channel)
+    MCP_NUM_CHANNELS equ 6
+    MCP_PORT_BASE    equ 9999         ; channels use 9999-9994
+    MCP_CH_FEED      equ 0            ; channel 0 = feed (async)
+    MCP_CH_QUERY     equ 1            ; channel 1 = query (sync)
+    MCP_CH_TRACE     equ 2            ; channel 2 = trace/receipts
+    MCP_CH_STREAM    equ 3            ; channel 3 = event stream
+    MCP_CH_LLM       equ 4            ; channel 4 = LLM communication
+    MCP_CH_RESERVED  equ 5            ; channel 5 = reserved
+    AF_INET          equ 2
+    SOCK_STREAM      equ 1
 
     ; JSON-RPC templates (raw JSON, no Content-Length for TCP)
     json_init:      db '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"uhma-gui"}},"id":1}', 10, 0
@@ -51,17 +58,18 @@ section .data
     err_connect:    db "MCP: connect failed, spawning server...", 10, 0
     err_spawn:      db "MCP: spawn failed", 10, 0
     err_socket:     db "MCP: socket failed", 10, 0
-    msg_connected:  db "MCP: connected to server", 10, 0
+    msg_connected:  db "MCP: connected (%d channels)", 10, 0
 
 section .bss
-    ; TCP socket
-    mcp_socket:     resd 1
-    mcp_running:    resd 1
-    mcp_pid:        resd 1
-    call_id:        resd 1
+    ; TCP sockets (6-channel)
+    mcp_sockets:      resd 6          ; socket FDs for channels 0-5
+    mcp_sock_valid:   resd 6          ; 1 if channel connected, 0 if not
+    mcp_running:      resd 1
+    mcp_pid:          resd 1
+    call_id:          resd 1
 
     ; sockaddr_in structure (16 bytes)
-    sock_addr:      resb 16
+    sock_addr:        resb 16
 
     ; Request/response buffers
     req_buf:        resb 4096
@@ -93,6 +101,8 @@ extern htons
 global mcp_init
 global mcp_shutdown
 global mcp_call
+global mcp_call_ch
+global mcp_call_feed
 global mcp_send_text
 global mcp_get_status
 global mcp_dream
@@ -100,19 +110,34 @@ global mcp_observe
 global mcp_evolve
 global mcp_save
 global mcp_load
+global mcp_get_channel_socket
 
-;; mcp_init — Connect to MCP server via TCP
-;; Returns: eax=1 success, 0 failure
+;; mcp_init — Connect to MCP server via TCP (all channels)
+;; Returns: eax=1 success (at least query channel connected), 0 failure
 mcp_init:
     push rbx
     push r12
     push r13
-    sub rsp, 16
+    push r14
+    push r15
+    sub rsp, 8              ; 5 pushes (odd) + 8 = 48, aligned
 
-    ; Try to connect first (server may already be running via Claude Code)
-    call .try_connect
-    test eax, eax
-    jnz .connected
+    ; Clear socket validity flags (6 channels)
+    xor eax, eax
+    mov [rel mcp_sock_valid], eax
+    mov [rel mcp_sock_valid + 4], eax
+    mov [rel mcp_sock_valid + 8], eax
+    mov [rel mcp_sock_valid + 12], eax
+    mov [rel mcp_sock_valid + 16], eax
+    mov [rel mcp_sock_valid + 20], eax
+
+    ; Try to connect all channels
+    call .try_connect_all
+    mov r12d, eax           ; save connected count
+
+    ; If no channels connected, spawn server
+    test r12d, r12d
+    jnz .some_connected
 
     ; Connection failed - spawn server
     lea rdi, [rel err_connect]
@@ -124,22 +149,27 @@ mcp_init:
     jz .spawn_fail
 
     ; Wait for server to start
-    mov edi, 1500000        ; 1.5s
+    mov edi, 2000000        ; 2s for multi-channel startup
     call usleep
 
     ; Try to connect again
-    call .try_connect
-    test eax, eax
-    jz .spawn_fail
+    call .try_connect_all
+    mov r12d, eax
 
-.connected:
-    ; Send initialize request
-    call .send_init
+.some_connected:
+    ; Need at least query channel (channel 1)
+    cmp dword [rel mcp_sock_valid + 4], 0
+    je .spawn_fail
+
+    ; Send initialize on query channel
+    mov edi, MCP_CH_QUERY
+    call .send_init_ch
 
     mov dword [rel mcp_running], 1
     mov dword [rel call_id], 2
 
     lea rdi, [rel msg_connected]
+    mov esi, r12d           ; channels connected
     xor eax, eax
     call printf
 
@@ -154,17 +184,33 @@ mcp_init:
     jmp .done
 
 .done:
-    add rsp, 16
+    add rsp, 8
+    pop r15
+    pop r14
     pop r13
     pop r12
     pop rbx
     ret
 
-;; Try to connect to TCP server
-;; Returns: eax=1 success, 0 failure
-.try_connect:
+;; Try to connect all channels
+;; Returns: eax = number of channels connected
+.try_connect_all:
     push rbx
-    sub rsp, 16
+    push r12
+    push r13
+    sub rsp, 8
+
+    xor r12d, r12d          ; connected count
+    xor r13d, r13d          ; channel index
+
+.connect_loop:
+    cmp r13d, MCP_NUM_CHANNELS
+    jge .connect_done
+
+    ; Calculate port: base - channel (9999, 9998, 9997, 9996)
+    mov eax, MCP_PORT_BASE
+    sub eax, r13d
+    mov ebx, eax            ; port for this channel
 
     ; Create socket
     mov edi, AF_INET
@@ -172,9 +218,12 @@ mcp_init:
     xor edx, edx
     call socket
     cmp eax, -1
-    je .conn_fail
-    mov [rel mcp_socket], eax
-    mov ebx, eax
+    je .next_channel
+
+    ; Save socket fd
+    lea rcx, [rel mcp_sockets]
+    mov [rcx + r13 * 4], eax
+    push rax                ; save socket fd
 
     ; Setup sockaddr_in
     lea rdi, [rel sock_addr]
@@ -182,34 +231,45 @@ mcp_init:
     mov edx, 16
     call memset
 
-    mov word [rel sock_addr], AF_INET       ; sin_family
-    mov edi, MCP_PORT
+    mov word [rel sock_addr], AF_INET
+    mov edi, ebx            ; port
     call htons
-    mov [rel sock_addr + 2], ax             ; sin_port
-    mov dword [rel sock_addr + 4], 0x0100007f  ; 127.0.0.1 in network order
+    mov [rel sock_addr + 2], ax
+    mov dword [rel sock_addr + 4], 0x0100007f  ; 127.0.0.1
 
     ; Connect
-    mov edi, ebx
+    pop rdi                 ; socket fd
+    push rdi
     lea rsi, [rel sock_addr]
     mov edx, 16
     call connect
+    pop rbx                 ; socket fd
     test eax, eax
-    jnz .conn_close_fail
+    jnz .close_failed
 
-    mov eax, 1
-    jmp .conn_done
+    ; Mark channel as valid
+    lea rcx, [rel mcp_sock_valid]
+    mov dword [rcx + r13 * 4], 1
+    inc r12d
+    jmp .next_channel
 
-.conn_close_fail:
-    mov edi, [rel mcp_socket]
+.close_failed:
+    mov edi, ebx
     call close
-.conn_fail:
-    xor eax, eax
-.conn_done:
-    add rsp, 16
+
+.next_channel:
+    inc r13d
+    jmp .connect_loop
+
+.connect_done:
+    mov eax, r12d
+    add rsp, 8
+    pop r13
+    pop r12
     pop rbx
     ret
 
-;; Spawn MCP server in TCP-only mode
+;; Spawn MCP server in multi-channel mode
 ;; Returns: eax=1 success, 0 failure
 .spawn_server:
     push rbx
@@ -227,7 +287,7 @@ mcp_init:
     jmp .spawn_done
 
 .child:
-    ; Build argv: python3 server.py --tcp 9999
+    ; Build argv: python3 server.py --multi 4 9999
     lea rax, [rel mcp_cmd]
     mov [rel mcp_argv], rax
     lea rax, [rel mcp_arg1]
@@ -236,7 +296,9 @@ mcp_init:
     mov [rel mcp_argv + 16], rax
     lea rax, [rel mcp_arg3]
     mov [rel mcp_argv + 24], rax
-    mov qword [rel mcp_argv + 32], 0
+    lea rax, [rel mcp_arg4]
+    mov [rel mcp_argv + 32], rax
+    mov qword [rel mcp_argv + 40], 0
 
     ; Exec
     lea rdi, [rel mcp_cmd]
@@ -255,48 +317,98 @@ mcp_init:
     pop rbx
     ret
 
-;; Send initialize JSON-RPC
-.send_init:
+;; Send initialize JSON-RPC on specific channel
+;; edi = channel number
+.send_init_ch:
     push rbx
-    sub rsp, 16
+    push r12
+    sub rsp, 8
 
-    ; Send init request (raw JSON line)
+    mov r12d, edi           ; channel
+
+    ; Check channel valid
+    lea rax, [rel mcp_sock_valid]
+    cmp dword [rax + r12 * 4], 0
+    je .init_done
+
+    ; Get socket for channel
+    lea rax, [rel mcp_sockets]
+    mov ebx, [rax + r12 * 4]
+
+    ; Send init request
     lea rdi, [rel json_init]
     call strlen
-    mov rdx, rax            ; length
-    mov edi, [rel mcp_socket]
+    mov rdx, rax
+    mov edi, ebx
     lea rsi, [rel json_init]
-    xor ecx, ecx            ; flags = 0
+    xor ecx, ecx
     call send
 
     ; Read response (discard for init)
-    mov edi, [rel mcp_socket]
+    mov edi, ebx
     lea rsi, [rel resp_buf]
     mov edx, 65535
     xor ecx, ecx
     call recv
 
-    add rsp, 16
+.init_done:
+    add rsp, 8
+    pop r12
     pop rbx
     ret
 
-;; mcp_shutdown — Close TCP connection, optionally kill server
+;; mcp_get_channel_socket — Get socket FD for channel
+;; edi = channel number (0-3)
+;; Returns: eax = socket FD, or -1 if invalid
+mcp_get_channel_socket:
+    cmp edi, MCP_NUM_CHANNELS
+    jge .invalid_ch
+    lea rax, [rel mcp_sock_valid]
+    cmp dword [rax + rdi * 4], 0
+    je .invalid_ch
+    lea rax, [rel mcp_sockets]
+    mov eax, [rax + rdi * 4]
+    ret
+.invalid_ch:
+    mov eax, -1
+    ret
+
+;; mcp_shutdown — Close all TCP channels, optionally kill server
 mcp_shutdown:
     push rbx
-    sub rsp, 16
+    push r12
+    sub rsp, 8
 
     cmp dword [rel mcp_running], 0
-    je .done
+    je .shut_done
 
-    ; Send quit command first
+    ; Send quit command on query channel
     lea rdi, [rel .quit_tool]
     xor esi, esi
     call mcp_call
 
-    ; Close socket
-    mov edi, [rel mcp_socket]
+    ; Close all connected sockets
+    xor r12d, r12d
+.close_loop:
+    cmp r12d, MCP_NUM_CHANNELS
+    jge .close_done
+
+    lea rax, [rel mcp_sock_valid]
+    cmp dword [rax + r12 * 4], 0
+    je .next_close
+
+    lea rax, [rel mcp_sockets]
+    mov edi, [rax + r12 * 4]
     call close
 
+    lea rax, [rel mcp_sock_valid]
+    mov dword [rax + r12 * 4], 0
+
+.next_close:
+    inc r12d
+    jmp .close_loop
+
+.close_done:
     ; Kill spawned server if we started one
     mov edi, [rel mcp_pid]
     test edi, edi
@@ -311,26 +423,60 @@ mcp_shutdown:
 
     mov dword [rel mcp_running], 0
 
-.done:
-    add rsp, 16
+.shut_done:
+    add rsp, 8
+    pop r12
     pop rbx
     ret
 
 .quit_tool: db "quit", 0
 
-;; mcp_call — Call MCP tool via TCP
+;; mcp_call — Call MCP tool via TCP (uses QUERY channel)
 ;; rdi = tool name (C string)
 ;; rsi = arguments JSON (C string, can be empty or null)
 ;; Returns: rax = pointer to response text (in resp_buf)
 mcp_call:
+    ; Route to query channel (channel 1)
+    mov rdx, rsi            ; args -> rdx
+    mov rsi, rdi            ; tool -> rsi
+    mov edi, MCP_CH_QUERY   ; channel 1
+    jmp mcp_call_ch
+
+;; mcp_call_feed — Call MCP tool via FEED channel (async)
+;; rdi = tool name (C string)
+;; rsi = arguments JSON (C string, can be empty or null)
+;; Returns: rax = pointer to response text
+mcp_call_feed:
+    mov rdx, rsi
+    mov rsi, rdi
+    mov edi, MCP_CH_FEED    ; channel 0
+    jmp mcp_call_ch
+
+;; mcp_call_ch — Call MCP tool on specific channel
+;; edi = channel number (0-3)
+;; rsi = tool name (C string)
+;; rdx = arguments JSON (C string, can be empty or null)
+;; Returns: rax = pointer to response text (in resp_buf)
+mcp_call_ch:
     push rbx
     push r12
     push r13
     push r14
-    sub rsp, 8
+    push r15
+    sub rsp, 8              ; 5 pushes (odd) + 8 = 48, aligned
 
-    mov r12, rdi            ; tool name
-    mov r13, rsi            ; args
+    mov r14d, edi           ; channel
+    mov r12, rsi            ; tool name
+    mov r13, rdx            ; args
+
+    ; Check channel valid
+    lea rax, [rel mcp_sock_valid]
+    cmp dword [rax + r14 * 4], 0
+    je .ch_not_found
+
+    ; Get socket for channel
+    lea rax, [rel mcp_sockets]
+    mov r15d, [rax + r14 * 4]  ; socket fd
 
     ; Clear request buffer
     lea rdi, [rel req_buf]
@@ -338,8 +484,7 @@ mcp_call:
     mov edx, 4096
     call memset
 
-    ; Build JSON directly (no Content-Length for TCP, just raw JSON + newline)
-    ; {"jsonrpc":"2.0","method":"tools/call","params":{"name":"TOOL","arguments":{ARGS}},"id":N}\n
+    ; Build JSON: {"jsonrpc":"2.0","method":"tools/call","params":{"name":"TOOL","arguments":{ARGS}},"id":N}\n
     lea rdi, [rel req_buf]
     lea rsi, [rel json_call_pre]
     call strcpy
@@ -386,26 +531,28 @@ mcp_call:
 
     inc dword [rel call_id]
 
-    ; Send request via TCP
+    ; Send request via TCP on selected channel
     lea rdi, [rel req_buf]
     call strlen
     mov rdx, rax                ; length
-    mov edi, [rel mcp_socket]
+    mov edi, r15d               ; socket fd
     lea rsi, [rel req_buf]
     xor ecx, ecx                ; flags = 0
     call send
 
     ; Read response via TCP
-    mov edi, [rel mcp_socket]
+    mov edi, r15d
     lea rsi, [rel resp_buf]
     mov edx, 65535
     xor ecx, ecx
     call recv
-    mov r14, rax                ; bytes read
+    mov rbx, rax                ; bytes read
 
     ; Null terminate response
     lea rdi, [rel resp_buf]
-    mov byte [rdi + r14], 0
+    cmp rbx, 0
+    jle .ch_not_found
+    mov byte [rdi + rbx], 0
 
     ; Find "text":" in response and extract value
     lea rax, [rel resp_buf]
@@ -413,7 +560,7 @@ mcp_call:
 
 .find_text:
     cmp byte [rbx], 0
-    je .not_found
+    je .ch_not_found
     cmp dword [rbx], 0x74786574     ; "text" little endian = "txet"
     je .check_text
     inc rbx
@@ -436,7 +583,7 @@ mcp_call:
     cmp byte [rbx], '"'
     je .found_end
     cmp byte [rbx], 0
-    je .not_found
+    je .ch_not_found
     ; Handle escaped quotes
     cmp byte [rbx], '\'
     jne .next_text_char
@@ -447,17 +594,18 @@ mcp_call:
 
 .found_end:
     mov byte [rbx], 0       ; null terminate
-    jmp .done
+    jmp .ch_done
 
 .next_char:
     inc rbx
     jmp .find_text
 
-.not_found:
+.ch_not_found:
     lea rax, [rel resp_buf]
 
-.done:
+.ch_done:
     add rsp, 8
+    pop r15
     pop r14
     pop r13
     pop r12
@@ -502,33 +650,40 @@ mcp_send_text:
 .input_tool: db "input", 0
 
 ;; Convenience wrappers for common commands
+;; Feed operations (async) use channel 0
+;; Query operations (sync) use channel 1
+
 mcp_dream:
+    ; Dream is async - use feed channel
     lea rdi, [rel .dream]
     xor esi, esi
-    jmp mcp_call
+    jmp mcp_call_feed
 .dream: db "dream", 0
 
 mcp_observe:
+    ; Observe is async - use feed channel
     lea rdi, [rel .observe]
     xor esi, esi
-    jmp mcp_call
+    jmp mcp_call_feed
 .observe: db "observe", 0
 
 mcp_evolve:
-    ; No evolve in MCP tools, use raw
+    ; Evolve is async - use feed channel
     lea rdi, [rel .raw]
     lea rsi, [rel .evolve_arg]
-    jmp mcp_call
+    jmp mcp_call_feed
 .raw: db "raw", 0
 .evolve_arg: db '"command":"evolve"', 0
 
 mcp_save:
+    ; Save needs response - use query channel
     lea rdi, [rel .save]
     xor esi, esi
     jmp mcp_call
 .save: db "save", 0
 
 mcp_load:
+    ; Load needs response - use query channel
     lea rdi, [rel .load]
     xor esi, esi
     jmp mcp_call

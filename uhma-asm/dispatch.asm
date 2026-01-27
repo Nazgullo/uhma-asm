@@ -1199,7 +1199,51 @@ dispatch_predict:
 
     movsd [rsp + 72], xmm1    ; save confidence_modulator
 
-    ; --- TRY HOLOGRAPHIC PREDICTION FIRST ---
+    ; === TRY SCHEMA-BASED PREDICTION FIRST (uses 8-position struct_ctx) ===
+    ; Query cosine similarity between current struct_ctx and accumulated schema trace
+    cmp dword [rbx + STATE_OFFSET + ST_STRUCT_CTX_VALID], 0
+    je .no_schema_predict
+
+    lea rdi, [rbx + STATE_OFFSET + ST_SCHEMA_TRACE_VEC]
+    lea rsi, [rbx + STATE_OFFSET + ST_STRUCT_CTX_VEC]
+    call holo_cosim_f64       ; xmm0 = schema similarity (f64)
+
+    ; Check if similarity > threshold (0.3 = moderate match)
+    mov rax, 0x3FD3333333333333  ; 0.3 f64
+    movq xmm1, rax
+    ucomisd xmm0, xmm1
+    jbe .no_schema_predict
+
+    ; Schema match! Extract filler at position 0 (predicted next token position)
+    ; filler ≈ unbind(struct_ctx, ROLE_POS_0)
+    push r12                  ; save ctx_hash
+    sub rsp, 8192             ; temp buffer for filler vector
+    xor edi, edi              ; role_idx = 0 (next token position)
+    mov rsi, rsp              ; output buffer
+    call schema_extract_var
+
+    ; Find best matching token for this filler
+    mov rdi, rsp              ; filler_ptr
+    call schema_query_filler  ; eax = best matching token (0 if none)
+    mov r15d, eax             ; save schema prediction
+
+    add rsp, 8192
+    pop r12
+
+    test r15d, r15d
+    jz .no_schema_predict
+
+    ; Schema predicted a token! Mark it and compute confidence
+    mov dword [rbx + STATE_OFFSET + ST_EXPECT_IS_SCHEMA], 1
+    mov eax, r15d             ; predicted token
+    ; Use schema similarity as base confidence
+    lea rdi, [rbx + STATE_OFFSET + ST_SCHEMA_TRACE_VEC]
+    lea rsi, [rbx + STATE_OFFSET + ST_STRUCT_CTX_VEC]
+    call holo_cosim_f64       ; xmm0 = confidence
+    jmp .holo_got_prediction
+
+.no_schema_predict:
+    ; --- FALLBACK TO FLAT HOLOGRAPHIC PREDICTION ---
     mov edi, r12d             ; ctx_hash
     call holo_predict
     ; eax = best_token, xmm0 = confidence (f64)
@@ -1207,6 +1251,7 @@ dispatch_predict:
     ; Save predicted token BEFORE modulation (uses rax for constants!)
     mov r15d, eax             ; r15d = best_token (preserved)
 
+.holo_got_prediction:
     ; --- APPLY RESONANCE MODULATION ---
     ; Adjust confidence based on past HIT/MISS patterns for this context
     ; modulated_conf = conf * (1 + 0.2 * confidence_modulator)
@@ -2761,6 +2806,7 @@ schema_extract_var:
 ;; rdi = filler vector pointer
 ;; Finds the token whose vector is most similar to the filler.
 ;; Returns token_id of best match, 0 if no good match.
+;; Scans the ACTUAL vocabulary table, not hardcoded 0-255.
 ;; ============================================================
 global schema_query_filler
 schema_query_filler:
@@ -2769,7 +2815,7 @@ schema_query_filler:
     push r13
     push r14
     push r15
-    sub rsp, 8
+    sub rsp, 24                           ; 5 pushes (odd) + 24 = 64 bytes, 16-aligned
 
     mov r12, rdi                          ; filler_ptr
     mov rbx, SURFACE_BASE
@@ -2777,43 +2823,59 @@ schema_query_filler:
     mov rax, 0xBFF0000000000000           ; -1.0 (any positive beats this)
     movq xmm7, rax                        ; best_sim in xmm7
 
-    ; Scan first 256 token vectors for best match
-    xor r14d, r14d                        ; token_idx
+    ; Get vocabulary count and cap at VOCAB_MAX_SCAN
+    mov r15d, [rbx + STATE_OFFSET + ST_VOCAB_COUNT]
+    cmp r15d, VOCAB_MAX_SCAN
+    jle .vocab_count_ok
+    mov r15d, VOCAB_MAX_SCAN
+.vocab_count_ok:
+    test r15d, r15d
+    jz .scan_done                         ; empty vocab
+
+    ; Calculate vocab table base (VOCAB_OFFSET sign-extends, use register)
+    mov rax, VOCAB_OFFSET
+    add rax, rbx                          ; rax = vocab_table_base
+    mov [rsp], rax                        ; save vocab_base on stack
+
+    ; Scan vocabulary entries
+    xor r14d, r14d                        ; vocab_idx
 
 .scan_loop:
-    cmp r14d, 256
+    cmp r14d, r15d
     jge .scan_done
 
+    ; Read token_id from vocab entry [vocab_base + idx * 8]
+    mov rax, [rsp]                        ; vocab_base
+    imul rcx, r14, VOCAB_ENTRY_SIZE       ; idx * 8
+    mov edi, [rax + rcx]                  ; token_id (first u32 of entry)
+
     ; Generate f64 token vector in scratch area
-    mov edi, r14d                         ; token_id as seed
     lea rsi, [rbx + SCRATCH_OFFSET + HOLO_VEC_BYTES * 4]  ; temp for token vec
-    push r12
-    push r13
-    push r14
+    mov [rsp + 8], r14                    ; save idx
+    mov [rsp + 16], r15                   ; save count
     call holo_gen_vec
-    pop r14
-    pop r13
-    pop r12
+    mov r14, [rsp + 8]                    ; restore idx
+    mov r15, [rsp + 16]                   ; restore count
 
     ; Compute similarity (f64)
     mov rdi, r12                          ; filler (f64)
     lea rsi, [rbx + SCRATCH_OFFSET + HOLO_VEC_BYTES * 4]  ; token_vec (f64)
-    push r12
-    push r13
-    push r14
+    mov [rsp + 8], r14
+    mov [rsp + 16], r15
     call holo_cosim_f64
-    pop r14
-    pop r13
-    pop r12
+    mov r14, [rsp + 8]
+    mov r15, [rsp + 16]
     ; xmm0 = similarity
 
     ; Check if better than best
     ucomisd xmm0, xmm7
     jbe .next_token
 
-    ; New best
+    ; New best - save the actual token_id, not the index
     movapd xmm7, xmm0
-    mov r13d, r14d                        ; best_token = current
+    mov rax, [rsp]                        ; vocab_base
+    imul rcx, r14, VOCAB_ENTRY_SIZE
+    mov r13d, [rax + rcx]                 ; best_token = token_id
 
 .next_token:
     inc r14d
@@ -2833,7 +2895,7 @@ schema_query_filler:
     xor eax, eax                          ; return 0
 
 .query_done:
-    add rsp, 8
+    add rsp, 24
     pop r15
     pop r14
     pop r13
