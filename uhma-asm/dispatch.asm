@@ -1,60 +1,23 @@
-; dispatch.asm — Token processing, prediction, hit/miss handling
+; dispatch.asm — Token processing, prediction, self-model queries
 ;
-; @entry process_input(rdi=buf, rsi=len) -> void
-; @entry process_token(edi=token_id) -> void
-; @entry dispatch_predict(edi=ctx_hash) -> eax=token, xmm0=conf
-; @entry schema_dispatch() -> eax=token ; match schemas against struct_ctx
-; @entry schema_learn_from_context() -> void ; create schema from struct_ctx
-; @entry compute_struct_ctx() -> void ; build 8-position f64 structural context
-; @calls learn.asm:learn_pattern, emit.asm:emit_dispatch_pattern
-; @calls receipt.asm:emit_receipt_full, receipt.asm:receipt_resonate
-; @calls vsa.asm:holo_predict, vsa.asm:holo_superpose_f64, vsa.asm:holo_cosim_f64
-; @calls vsa.asm:holo_gen_vec, vsa.asm:holo_bind_f64, vsa.asm:holo_unbind_f64
-; @calledby repl.asm:repl_run, io.asm:digest_file, dreams.asm:dream_extract_schemas
+; @entry process_input(buf, len)           → tokenize and process text
+; @entry process_token(token_id)           → predict/learn cycle
+; @entry dispatch_predict(ctx_hash)        → eax=token, xmm0=confidence
 ;
 ; FLOW: token → ctx=hash(prev) → predict → HIT/MISS → learn on miss
-; STATE: ST_CTX_HASH, ST_EXPECT_TOKEN, ST_EXPECT_CONF, ST_PREDICT_REGION
 ;
-; TOKEN ABSTRACTION (~line 240):
-;   digits → TOKEN_NUM (0x4e554d21), 0x... → TOKEN_HEX (0x48455821)
-;   MUST match io.asm:digest_file abstraction
+; SELF-MODEL INTEGRATION:
+;   - dispatch_predict queries ST_SELF_MODEL_VEC for confidence boost
+;   - On MISS with ST_IS_SELF_REF: corrects self-model
+;   - SURPRISE_SELF vs SURPRISE_OUTCOME → different pressure paths
 ;
-; STRUCTURAL CONTEXT (compute_struct_ctx):
-;   struct_ctx = Σ bind(ROLE_i, token_history[i]) for positions 0-7
-;   Uses f64 vectors: holo_gen_vec for roles/tokens, holo_bind_f64, holo_superpose_f64
+; GOTCHAS (CRITICAL):
+;   !! ctx = hash(prev_token) ONLY - no somatic XOR
+;   !! rcx is caller-saved - use r10-r15 in loops
+;   !! Token abstraction must match io.asm:digest_file
+;   !! struct_ctx uses f64 (holo_*), not f32 (vsa_*)
 ;
-; SCHEMA TRACE (~line 825):
-;   On MISS: superpose ST_STRUCT_CTX_VEC into ST_SCHEMA_TRACE_VEC
-;   Accumulates structural patterns for holographic schema learning
-;
-; SELF-AWARENESS SYSTEM (~line 732, ~line 898, ~line 1197):
-;   SURPRISE_SELF: high-confidence region wrong → emit EVENT_SELF receipt
-;   ST_IS_SELF_REF check: also emit EVENT_SELF when digesting own .asm code
-;   Increments ST_SELF_SURPRISE_COUNT on self-model violations
-;   Enables system to track "I was wrong about myself" separately
-;
-; SELF-MODEL RESONANCE (dispatch_predict ~line 1197):
-;   Queries cosine similarity between ctx_vec and ST_SELF_MODEL_VEC
-;   High resonance = familiar self-referential context → boost confidence
-;   self_boost = holo_cosim_f64(ctx_vec, self_model) * 0.5
-;
-; SELF-MODEL CORRECTION (process_token ~line 932):
-;   On MISS when ST_IS_SELF_REF: superpose actual token into ST_SELF_MODEL_VEC
-;   Strengthens correct patterns when we fail to predict our own behavior
-;
-; SELF/OTHER BOUNDARY (~line 724):
-;   SURPRISE_SELF: high-confidence region was wrong → flags RFLAG_NEEDS_REPAIR
-;     - Boosts ST_INTROSPECT_PRESSURE for self-repair cycle
-;     - This is ME being wrong about myself
-;   SURPRISE_OUTCOME: low-confidence miss → standard learning
-;     - Boosts dream pressure for world-model consolidation
-;     - This is the WORLD being unknown
-;
-; GOTCHAS:
-;   - ctx = hash(prev_token) ONLY, no somatic XOR (breaks pattern identity)
-;   - rcx is caller-saved, use r10-r15 in loops that call functions
-;   - Token abstraction must match in BOTH process_input AND digest_file
-;   - All struct_ctx operations use f64 (holo_*), not f32 (vsa_*)
+; @calledby repl.asm, io.asm, dreams.asm
 ;
 %include "syscalls.inc"
 %include "constants.inc"

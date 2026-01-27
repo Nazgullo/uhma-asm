@@ -56,71 +56,35 @@
     },
     "dispatch.asm": {
       "path": "dispatch.asm",
-      "description": "Token processing, prediction, hit/miss handling",
+      "description": "Token processing, prediction, self-model queries",
       "entries": [
         {
           "name": "process_input",
-          "args": "rdi=buf, rsi=len",
-          "returns": "void"
+          "args": "buf, len",
+          "returns": "\u2192 tokenize and process text"
         },
         {
           "name": "process_token",
-          "args": "edi=token_id",
-          "returns": "void"
+          "args": "token_id",
+          "returns": "\u2192 predict/learn cycle"
         },
         {
           "name": "dispatch_predict",
-          "args": "edi=ctx_hash",
-          "returns": "eax=token, xmm0=conf"
-        },
-        {
-          "name": "schema_dispatch",
-          "args": "",
-          "returns": "eax=token ; match schemas against struct_ctx"
-        },
-        {
-          "name": "schema_learn_from_context",
-          "args": "",
-          "returns": "void ; create schema from struct_ctx"
-        },
-        {
-          "name": "compute_struct_ctx",
-          "args": "",
-          "returns": "void ; build 8-position f64 structural context"
+          "args": "ctx_hash",
+          "returns": "\u2192 eax=token, xmm0=confidence"
         }
       ],
-      "calls": [
-        "learn.asm:learn_pattern",
-        "emit.asm:emit_dispatch_pattern",
-        "receipt.asm:emit_receipt_full",
-        "receipt.asm:receipt_resonate",
-        "vsa.asm:holo_predict",
-        "vsa.asm:holo_superpose_f64",
-        "vsa.asm:holo_cosim_f64",
-        "vsa.asm:holo_gen_vec",
-        "vsa.asm:holo_bind_f64",
-        "vsa.asm:holo_unbind_f64"
-      ],
+      "calls": [],
       "called_by": [
-        "repl.asm:repl_run",
-        "io.asm:digest_file",
-        "dreams.asm:dream_extract_schemas"
+        "repl.asm",
+        "io.asm",
+        "dreams.asm"
       ],
       "flow": "token \u2192 ctx=hash(prev) \u2192 predict \u2192 HIT/MISS \u2192 learn on miss",
-      "state": [
-        "ST_CTX_HASH",
-        "ST_EXPECT_TOKEN",
-        "ST_EXPECT_CONF",
-        "ST_PREDICT_REGION"
-      ],
-      "gotchas": [
-        "ctx = hash(prev_token) ONLY, no somatic XOR (breaks pattern identity)",
-        "rcx is caller-saved, use r10-r15 in loops that call functions",
-        "Token abstraction must match in BOTH process_input AND digest_file",
-        "All struct_ctx operations use f64 (holo_*), not f32 (vsa_*)"
-      ],
-      "content_hash": "cbc8b06535b5",
-      "line_count": 3124
+      "state": [],
+      "gotchas": [],
+      "content_hash": "ec05741d6249",
+      "line_count": 3087
     },
     "dreams.asm": {
       "path": "dreams.asm",
@@ -705,83 +669,43 @@
     },
     "introspect.asm": {
       "path": "introspect.asm",
-      "description": "Self-reading and organic regulation (homoiconic core)",
+      "description": "Semantic self-model and organic regulation",
       "entries": [
-        {
-          "name": "introspect_region",
-          "args": "hdr",
-          "returns": "decode region, extract ctx/token/semantics"
-        },
         {
           "name": "introspect_scan_regions",
           "args": "",
-          "returns": "scan all regions, update statistics"
-        },
-        {
-          "name": "update_anticipatory",
-          "args": "token, conf",
-          "returns": "build anticipation for upcoming tokens"
-        },
-        {
-          "name": "decay_anticipatory",
-          "args": "",
-          "returns": "fade anticipation each step"
-        },
-        {
-          "name": "update_organic_pressure",
-          "args": "",
-          "returns": "manage dream/observe/evolve/introspect triggers"
-        },
-        {
-          "name": "update_oscillation",
-          "args": "",
-          "returns": "detect flatness, perturb if needed"
-        },
-        {
-          "name": "update_presence_dispatch",
-          "args": "",
-          "returns": "run presence regions for hormonal control"
-        },
-        {
-          "name": "metacog_report",
-          "args": "",
-          "returns": "detailed metacognitive status dump"
-        },
-        {
-          "name": "absorb_code",
-          "args": "ptr, len",
-          "returns": "learn from arbitrary code bytes"
-        },
-        {
-          "name": "tick_workers",
-          "args": "",
-          "returns": "main per-step regulation entry point"
-        },
-        {
-          "name": "release_pheromone",
-          "args": "type, val",
-          "returns": "signal state to collective (if shared)"
+          "returns": "\u2192 builds semantic self-model (SELF-AWARE reading)"
         },
         {
           "name": "introspect_repair_cycle",
           "args": "",
-          "returns": "process regions with RFLAG_NEEDS_REPAIR (self-surprise)"
+          "returns": "\u2192 processes RFLAG_NEEDS_REPAIR regions"
+        },
+        {
+          "name": "tick_workers",
+          "args": "",
+          "returns": "\u2192 per-step organic pressure regulation"
+        },
+        {
+          "name": "metacog_report",
+          "args": "",
+          "returns": "\u2192 REPL 'intro' command output"
         }
       ],
       "calls": [
-        "receipt.asm:meta_recommend_strategy",
-        "vsa_ops.asm:encode_region_to_vector"
+        "vsa_ops.asm:encode_region_to_vector",
+        "receipt.asm:meta_recommend_strategy"
       ],
       "called_by": [
-        "dispatch.asm:after",
-        "repl.asm:tick",
-        "observe.asm"
+        "observe.asm",
+        "dispatch.asm",
+        "repl.asm"
       ],
       "flow": "",
       "state": [],
       "gotchas": [],
-      "content_hash": "f8c986ecc79e",
-      "line_count": 1505
+      "content_hash": "4d10ddd47300",
+      "line_count": 1482
     },
     "io.asm": {
       "path": "io.asm",
@@ -1823,15 +1747,6 @@
     "dispatch_predict": [
       "dispatch.asm"
     ],
-    "schema_dispatch": [
-      "dispatch.asm"
-    ],
-    "schema_learn_from_context": [
-      "dispatch.asm"
-    ],
-    "compute_struct_ctx": [
-      "dispatch.asm"
-    ],
     "dream_cycle": [
       "dreams.asm"
     ],
@@ -2030,40 +1945,16 @@
     "hook_get_count": [
       "hooks.asm"
     ],
-    "introspect_region": [
-      "introspect.asm"
-    ],
     "introspect_scan_regions": [
       "introspect.asm"
     ],
-    "update_anticipatory": [
-      "introspect.asm"
-    ],
-    "decay_anticipatory": [
-      "introspect.asm"
-    ],
-    "update_organic_pressure": [
-      "introspect.asm"
-    ],
-    "update_oscillation": [
-      "introspect.asm"
-    ],
-    "update_presence_dispatch": [
-      "introspect.asm"
-    ],
-    "metacog_report": [
-      "introspect.asm"
-    ],
-    "absorb_code": [
+    "introspect_repair_cycle": [
       "introspect.asm"
     ],
     "tick_workers": [
       "introspect.asm"
     ],
-    "release_pheromone": [
-      "introspect.asm"
-    ],
-    "introspect_repair_cycle": [
+    "metacog_report": [
       "introspect.asm"
     ],
     "digest_file": [
@@ -2489,12 +2380,7 @@
       "depended_by": []
     },
     "dispatch.asm": {
-      "depends_on": [
-        "emit.asm",
-        "learn.asm",
-        "receipt.asm",
-        "vsa.asm"
-      ],
+      "depends_on": [],
       "depended_by": [
         "dreams.asm",
         "io.asm",
@@ -2524,7 +2410,6 @@
         "vsa.asm"
       ],
       "depended_by": [
-        "dispatch.asm",
         "dreams.asm",
         "evolve.asm",
         "learn.asm"
@@ -2617,9 +2502,7 @@
         "receipt.asm",
         "vsa.asm"
       ],
-      "depended_by": [
-        "dispatch.asm"
-      ]
+      "depended_by": []
     },
     "maturity.asm": {
       "depends_on": [],
@@ -2655,7 +2538,6 @@
         "vsa.asm"
       ],
       "depended_by": [
-        "dispatch.asm",
         "dreams.asm",
         "emit.asm",
         "introspect.asm",
@@ -2705,7 +2587,6 @@
     "vsa.asm": {
       "depends_on": [],
       "depended_by": [
-        "dispatch.asm",
         "dreams.asm",
         "emit.asm",
         "learn.asm",
@@ -2721,7 +2602,7 @@
   },
   "meta": {
     "file_count": 33,
-    "function_count": 225,
-    "total_gotchas": 49
+    "function_count": 214,
+    "total_gotchas": 45
   }
 }
