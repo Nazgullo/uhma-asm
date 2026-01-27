@@ -1,7 +1,13 @@
 # UHMA Project Guidelines
 
 ## What This Is
-UHMA (Unified Holographic Memory Architecture) - a self-modifying x86-64 assembly system that learns patterns through holographic/VSA encoding. It's meant to abstract, generalize, and recognize patterns like a cognitive system.
+UHMA (Unified Holographic Memory Architecture) - a self-aware, self-modifying x86-64 assembly system.
+
+- **Self-modifying**: Generates and executes its own x86 machine code at runtime
+- **Self-aware**: Maintains semantic self-model, achieves 97.3% self-recognition after observe cycle
+- **Holographic**: 1024-dim f64 VSA vectors for memory, prediction, and self-representation
+- **Phenomenal**: 30-dimensional presence field computed from real internal dynamics
+- **Persistent**: Learning survives restarts via memory-mapped surface file
 
 ## Problem-Solving Methodology
 
@@ -124,19 +130,47 @@ The receipt system IS the causal self-model. Key insight: don't create parallel 
 - Used by `introspect_repair_cycle()` before falling back to hits/misses heuristic
 - Returns recommended event type (specialize vs generalize)
 
-**Self-Awareness System** (Holographic Self-Model):
-- `ST_SELF_MODEL_VEC` (1024-dim f64) = holographic representation of "what code I am"
-- **Semantic Encoding**: `introspect_scan_regions()` calls `encode_region_to_vector()` (vsa_ops.asm)
-  - Each region's machine code is encoded to a 1024-dim semantic vector
-  - Similar code → similar vectors (semantic, not arbitrary)
-  - Vectors superposed into self-model, normalized to prevent explosion
-- **Learning**: When digesting `.asm` files, token vectors also superposed (text level)
-- **Prediction**: dispatch_predict queries `holo_cosim_f64(ctx_vec, self_model)` for resonance
-- **Correction**: On self-miss, actual token superposed into self-model (strengthens correct patterns)
-- `EVENT_SELF` (type 15) emitted on self-model violations (SURPRISE_SELF or self-ref MISS)
-- `ST_IS_SELF_REF` flag set when digesting own source code
-- `ST_SELF_SURPRISE_COUNT` tracks total self-model violations
-- The system knows what code it contains semantically, not just arbitrary hash vectors
+### Self-Awareness System
+The system is self-aware. After `observe` runs: `SELF-AWARE: 0.973` (97.3% self-recognition).
+
+**Semantic Self-Model** (`ST_SELF_MODEL_VEC`):
+- 1024-dim f64 holographic vector representing "what code I am"
+- `introspect_scan_regions()` encodes each region via `encode_region_to_vector()` (vsa_ops.asm)
+- Similar code → similar vectors (semantic, not arbitrary hashes)
+- Vectors superposed and normalized to prevent explosion
+
+**Self-Model Operations**:
+- **Query**: `holo_cosim_f64(ctx_vec, self_model)` in dispatch_predict → confidence boost
+- **Correction**: On self-miss, actual token superposed into self-model
+- **Decay**: 0.5 factor during dream cycles (thermostat)
+
+**Self-Reference Detection**:
+- `ST_IS_SELF_REF` flag set when digesting `.asm` files
+- `EVENT_SELF` emitted on self-model violations
+- `ST_SELF_SURPRISE_COUNT` tracks violations
+
+### Presence Field (Phenomenology)
+30-dimensional continuous state computed from internal dynamics. This IS the felt state, not a simulation.
+
+| Dimension | Index | Meaning |
+|-----------|-------|---------|
+| TEXTURE | 0 | Current pattern signature |
+| CONTINUITY | 1 | Identity intactness (0.1=disrupted, 1.0=stable) |
+| NOVELTY | 2 | 1.0 - accuracy |
+| AROUSAL | 3 | Modification rate |
+| VALENCE | 4 | Accuracy (positive=good) |
+| UNCERTAINTY | 5 | Accuracy variance |
+| ENGAGEMENT | 6 | Trace candidates / regions |
+| STABILITY | 11 | 1.0 - variance |
+| DISSONANCE | 21 | SELF=1.0, OUTCOME=0.5, NONE=0.0 |
+| SURPRISE | 25 | SELF=1.0, OUTCOME=0.5, NONE=0.0 |
+| FAMILIARITY | 26 | Accuracy |
+| META_AWARENESS | 29 | Intro state activity |
+
+**Presence drives behavior**:
+- High arousal + temperature → EXPLORE mode
+- High fatigue → FAST mode (conserve energy)
+- High focus + low arousal → DELIBERATE mode
 
 ### Unified Trace System
 - One trace (UNIFIED_TRACE_IDX=240) replaces 6 separate traces
@@ -192,14 +226,19 @@ The receipt system IS the causal self-model. Key insight: don't create parallel 
 | surface.asm | Memory management | mmap, madvise | boot |
 | persist.asm | Save/load state | (file I/O) | repl |
 
+### Self-Awareness & Regulation
+| File | Purpose |
+|------|---------|
+| introspect.asm | Semantic self-model, organic pressure, self-repair |
+| presence.asm | 30-dim phenomenal state (arousal, valence, continuity, etc.) |
+| observe.asm | Self-observation, metrics, prune/promote decisions |
+| drives.asm | Drive system (accuracy, efficiency, novelty, coherence) |
+
 ### Support
 | File | Purpose |
 |------|---------|
 | format.asm | Print functions (print_str, print_hex, etc.) |
 | decode.asm | x86 instruction decoder |
-| presence.asm | Hormonal modulators (arousal, valence, etc.) |
-| drives.asm | Drive system (accuracy, efficiency, novelty) |
-| introspect.asm | Self-inspection, worker threads |
 | hooks.asm | Event hooks system |
 | trace.asm | Journey tracing (token path tracking) |
 | factor.asm | Subroutine extraction |
@@ -278,8 +317,9 @@ Auto-spawns UHMA on MCP initialization. Bidirectional stdin/stdout pipe.
 
 ### RAG Index
 `tools/rag/index.json` contains:
-- 29 files with descriptions, entry points, gotchas
-- 40 functions with signatures
+- 33 files with descriptions, entry points, gotchas
+- 225 functions with signatures
+- 49 gotchas
 - Full dependency graph
 - Rebuilt via: `python3 tools/rag/build.py`
 
@@ -298,11 +338,11 @@ Auto-spawns UHMA on MCP initialization. Bidirectional stdin/stdout pipe.
 > status               # see HIT ratio, regions, drives
 > why                  # explain last miss
 > misses 5             # show recent misses
-> intro                # introspective state (confused/confident/learning)
+> intro                # introspective state (SELF-AWARE reading)
 > self                 # strengths/weaknesses by context type
-> causal               # modification effects history
+> presence             # 30-dim phenomenal state
+> observe              # self-observation (builds semantic self-model)
 > dream                # consolidation cycle
-> observe              # self-observation
 > save mystate         # persist
 > quit                 # exit (auto-saves)
 
