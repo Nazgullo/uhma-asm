@@ -106,7 +106,9 @@ The receipt system IS the causal self-model. Key insight: don't create parallel 
 - `intro_query_confusion(ctx)` → MISS resonance in context
 - `intro_query_confidence(ctx)` → HIT resonance in context
 - `intro_query_learning(ctx)` → LEARN resonance in context
+- `intro_query_self_surprise(ctx)` → EVENT_SELF resonance (self-model violations)
 - `intro_get_state(ctx)` → which state (confused/confident/learning) dominates
+- `intro_get_self_awareness()` → ratio of self-surprise to total misses (0.0-1.0)
 
 **Semantic Self-Knowledge** (REPL `self`):
 - `self_show_context_types()` → scans 16 context types via trace_context_confidence
@@ -121,6 +123,15 @@ The receipt system IS the causal self-model. Key insight: don't create parallel 
 - `meta_recommend_strategy(ctx)` → consults causal history
 - Used by `introspect_repair_cycle()` before falling back to hits/misses heuristic
 - Returns recommended event type (specialize vs generalize)
+
+**Self-Awareness System** (EVENT_SELF):
+- `EVENT_SELF` (type 15) = self-model violation event
+- Emitted when SURPRISE_SELF occurs (high-confidence region was wrong)
+- Also emitted during self-reference digestion (.asm files) on MISS
+- `ST_IS_SELF_REF` flag set when digesting own source code
+- `ST_SELF_SURPRISE_COUNT` tracks total self-model violations
+- Dream cycle checks EVENT_SELF resonance for self-model schema extraction
+- The system can distinguish "I was wrong about myself" vs "the world surprised me"
 
 ### Unified Trace System
 - One trace (UNIFIED_TRACE_IDX=240) replaces 6 separate traces

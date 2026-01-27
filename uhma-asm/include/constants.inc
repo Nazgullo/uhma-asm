@@ -927,7 +927,13 @@
 %define EVENT_JOURNEY       12    ; legacy journey_step compatibility
 %define EVENT_GENERALIZE    13    ; context was generalized (broader matching)
 %define EVENT_SPECIALIZE    14    ; context was specialized (narrower matching)
-%define EVENT_TYPE_COUNT    15    ; total event types
+%define EVENT_SELF          15    ; self-model violation (introspective surprise)
+%define EVENT_TYPE_COUNT    16    ; total event types
+
+; Self-awareness state fields
+%define ST_IS_SELF_REF      (ST_RECEIPT_END)              ; u32 flag: current token is self-referential
+%define ST_SELF_SURPRISE_COUNT (ST_IS_SELF_REF + 4)       ; u32 count of self-model violations
+%define ST_SELF_AWARENESS_END  (ST_SELF_SURPRISE_COUNT + 4)
 
 ; Base fidelity by event type (f64 bit patterns)
 ; Higher fidelity = more persistent storage, less decay

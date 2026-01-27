@@ -10,6 +10,12 @@
 ; FLOW (digest_file): open → mmap → tokenize → process_token each → unmap
 ; TOKEN ABSTRACTION: 0x... → TOKEN_HEX, digits → TOKEN_NUM
 ;
+; SELF-REFERENCE DETECTION (~line 437):
+;   Scans path for ".asm" to detect self-digestion
+;   Sets ST_IS_SELF_REF flag during digestion of own source code
+;   Clears flag at digest completion
+;   Enables dispatch.asm to emit EVENT_SELF on misses during self-digestion
+;
 ; MATURITY GATING:
 ;   Stage 0: stdout/stderr/stdin only
 ;   Stage 1: + read files
@@ -433,6 +439,33 @@ digest_file:
     mov r13, rax              ; bytes read
     mov r14, SURFACE_BASE     ; surface base
 
+    ; === SELF-REFERENCE DETECTION ===
+    ; If digesting .asm file, this is self-referential (eating own code)
+    ; Set ST_IS_SELF_REF flag so misses during self-ingestion are tracked specially
+    mov dword [r14 + STATE_OFFSET + ST_IS_SELF_REF], 0  ; default: not self-ref
+    ; Scan path (r12) for ".asm"
+    mov rdi, r12
+.self_ref_scan:
+    movzx eax, byte [rdi]
+    test al, al
+    jz .self_ref_done         ; end of string
+    cmp al, '.'
+    jne .self_ref_next
+    ; Found '.', check for "asm"
+    cmp byte [rdi + 1], 'a'
+    jne .self_ref_next
+    cmp byte [rdi + 2], 's'
+    jne .self_ref_next
+    cmp byte [rdi + 3], 'm'
+    jne .self_ref_next
+    ; Found ".asm" - this is self-referential!
+    mov dword [r14 + STATE_OFFSET + ST_IS_SELF_REF], 1
+    jmp .self_ref_done
+.self_ref_next:
+    inc rdi
+    jmp .self_ref_scan
+.self_ref_done:
+
     ; Print bytes read
     lea rdi, [rel digest_bytes_msg]
     call print_cstr
@@ -603,6 +636,9 @@ digest_file:
     jmp .digest_loop
 
 .digest_done:
+    ; Clear self-reference flag (digestion complete)
+    mov dword [r14 + STATE_OFFSET + ST_IS_SELF_REF], 0
+
     ; Bonus energy for tokens extracted
     cvtsi2sd xmm0, r15        ; tokens as f64
     mulsd xmm0, [rel energy_per_token]

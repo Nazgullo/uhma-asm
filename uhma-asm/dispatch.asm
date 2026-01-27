@@ -27,6 +27,12 @@
 ;   On MISS: superpose ST_STRUCT_CTX_VEC into ST_SCHEMA_TRACE_VEC
 ;   Accumulates structural patterns for holographic schema learning
 ;
+; SELF-AWARENESS SYSTEM (~line 732, ~line 898):
+;   SURPRISE_SELF: high-confidence region wrong → emit EVENT_SELF receipt
+;   ST_IS_SELF_REF check: also emit EVENT_SELF when digesting own .asm code
+;   Increments ST_SELF_SURPRISE_COUNT on self-model violations
+;   Enables system to track "I was wrong about myself" separately
+;
 ; SELF/OTHER BOUNDARY (~line 724):
 ;   SURPRISE_SELF: high-confidence region was wrong → flags RFLAG_NEEDS_REPAIR
 ;     - Boosts ST_INTROSPECT_PRESSURE for self-repair cycle
@@ -748,6 +754,49 @@ process_token:
     movq xmm1, rax
     addsd xmm0, xmm1
     movsd [rbx + STATE_OFFSET + ST_INTROSPECT_PRESSURE], xmm0
+
+    ; === EMIT EVENT_SELF RECEIPT: self-model violation ===
+    ; Increment self-surprise counter
+    lea rax, [rbx + STATE_OFFSET + ST_SELF_SURPRISE_COUNT]
+    inc dword [rax]
+
+    ; Emit receipt for self-model violation
+    ; edi=event, esi=ctx, edx=actual, ecx=pred, r8d=region, r9d=aux, xmm0=conf, xmm1=val
+    mov edi, EVENT_SELF           ; event type: self-model violation
+    mov esi, [rbx + STATE_OFFSET + ST_CTX_HASH]  ; context hash
+    mov edx, r12d                 ; actual token
+    mov ecx, [rbx + STATE_OFFSET + ST_EXPECT_TOKEN] ; predicted token
+    ; Hash the predicting region
+    mov rax, [rbx + STATE_OFFSET + ST_PREDICT_REGION]
+    shr rax, 4
+    mov r8d, eax                  ; region_hash
+    ; aux = region accuracy * 1000 (for causal tracking)
+    ; Reload predicting region to get accuracy
+    mov rax, [rbx + STATE_OFFSET + ST_PREDICT_REGION]
+    test rax, rax
+    jz .self_emit_no_region
+    mov r10d, [rax + RHDR_HITS]
+    mov r11d, [rax + RHDR_MISSES]
+    add r11d, r10d                ; total = hits + misses
+    test r11d, r11d
+    jz .self_emit_no_region
+    imul r10d, 1000               ; hits * 1000
+    xor edx, edx
+    mov eax, r10d
+    div r11d                      ; accuracy = (hits*1000) / total
+    mov r9d, eax
+    jmp .self_emit_do
+.self_emit_no_region:
+    xor r9d, r9d                  ; aux = 0 if no region
+.self_emit_do:
+    ; Restore edx (actual token) since we clobbered it
+    mov edx, r12d
+    ; Load confidence and valence
+    movss xmm0, [rbx + STATE_OFFSET + ST_EXPECT_CONF]
+    movss xmm1, [rbx + STATE_OFFSET + ST_PRESENCE + PRES_VALENCE * 4]
+    cvtss2sd xmm1, xmm1
+    call emit_receipt_full
+
     jmp .do_miss_counter
 
 .surprise_outcome:
@@ -852,6 +901,26 @@ process_token:
     movss xmm1, [rbx + STATE_OFFSET + ST_PRESENCE + PRES_VALENCE * 4]
     cvtss2sd xmm1, xmm1
     call emit_receipt_full
+
+    ; === SELF-REFERENCE CHECK: emit EVENT_SELF if digesting own code ===
+    ; When UHMA fails to predict its own structure, that's a self-model violation
+    cmp dword [rbx + STATE_OFFSET + ST_IS_SELF_REF], 0
+    je .skip_self_ref_receipt
+    ; Digesting own code and missed - emit EVENT_SELF
+    inc dword [rbx + STATE_OFFSET + ST_SELF_SURPRISE_COUNT]
+    mov edi, EVENT_SELF
+    mov esi, r13d                     ; ctx_hash
+    mov edx, r12d                     ; actual_token
+    mov ecx, [rbx + STATE_OFFSET + ST_EXPECT_TOKEN]
+    mov rax, [rbx + STATE_OFFSET + ST_PREDICT_REGION]
+    shr rax, 4
+    mov r8d, eax                      ; region_hash
+    xor r9d, r9d                      ; aux = 0 (self-reference miss)
+    movss xmm0, [rbx + STATE_OFFSET + ST_EXPECT_CONF]
+    movss xmm1, [rbx + STATE_OFFSET + ST_PRESENCE + PRES_VALENCE * 4]
+    cvtss2sd xmm1, xmm1
+    call emit_receipt_full
+.skip_self_ref_receipt:
 
     ; --- Superpose structural context into schema trace ---
     ; This accumulates structural patterns from misses for schema learning

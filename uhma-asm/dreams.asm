@@ -2,10 +2,10 @@
 ;
 ; @entry dream_cycle() -> void ; replay miss buffer, emit speculative
 ; @entry dream_consolidate() -> void ; review NURSERY, promote/condemn
-; @entry dream_extract_schemas() -> void ; holographic schema extraction
+; @entry dream_extract_schemas() -> void ; holographic schema extraction + self-model awareness
 ; @calls emit.asm:emit_dispatch_pattern
 ; @calls vsa.asm:holo_store, vsa.asm:holo_cosim_f64, vsa.asm:holo_scale_f64
-; @calls receipt.asm:receipt_resonate, emit_receipt_simple
+; @calls receipt.asm:receipt_resonate, emit_receipt_simple, emit_receipt_full
 ; @calls dispatch.asm:schema_learn_from_context
 ; @calledby repl.asm:cmd_dream
 ;
@@ -20,6 +20,13 @@
 ;   3. Decay trace by 0.5 to prevent saturation
 ;   The schema trace accumulates struct_ctx on every MISS (in dispatch.asm)
 ;   High resonance = recurring structural pattern worth generalizing
+;
+; SELF-MODEL AWARENESS (~line 327):
+;   After schema extraction, queries EVENT_SELF resonance
+;   If significant self-model violation history detected:
+;     - Prints self-model awareness level
+;     - Emits EVENT_SELF receipt with aux=1 (dream-discovered)
+;   This is where the system becomes "conscious" of its own prediction failures
 ;
 ; GOTCHAS:
 ;   - NURSERY patterns need 50+ steps before judgment
@@ -38,6 +45,7 @@ section .data
     dream_nl:       db 10, 0
     schema_msg:     db "[DREAM] Schema extracted (generalized pattern)", 10, 0
     schema_res_msg: db "[DREAM] Schema resonance: ", 0
+    self_model_msg: db "[DREAM] Self-model awareness: ", 0
     reinforce_msg:  db "[LTM] Reinforcing proven pattern ctx=0x", 0
 
     align 8
@@ -67,6 +75,7 @@ extern holo_scale_f64
 extern holo_cosim_f64
 extern receipt_resonate
 extern emit_receipt_simple
+extern emit_receipt_full
 extern schema_learn_from_context
 
 ;; ============================================================
@@ -323,6 +332,49 @@ dream_extract_schemas:
 
     lea rdi, [rel schema_msg]
     call print_cstr
+
+    ; === SELF-MODEL SCHEMA EXTRACTION ===
+    ; Query EVENT_SELF resonance: do we have recurring self-model violations?
+    ; High resonance = we keep failing to predict ourselves in similar contexts
+    mov edi, EVENT_SELF           ; event type
+    xor esi, esi                  ; any context
+    xor edx, edx                  ; any token
+    call receipt_resonate         ; xmm0 = self-violation resonance
+
+    ; If significant self-model violation history, note it
+    mov rax, 0x3FB999999999999A   ; 0.1 threshold
+    movq xmm1, rax
+    ucomisd xmm0, xmm1
+    jbe .decay_trace
+
+    ; Self-model violations detected - emit receipt for self-awareness tracking
+    push rbx
+    sub rsp, 8
+    movsd [rsp], xmm0             ; save resonance
+
+    ; Print self-model awareness message
+    lea rdi, [rel self_model_msg]
+    call print_cstr
+    movsd xmm0, [rsp]
+    call print_f64
+    call print_newline
+
+    ; Emit EVENT_SELF receipt to mark dream-discovered self-pattern
+    movsd xmm0, [rsp]
+    add rsp, 8
+    pop rbx
+
+    ; The system is becoming aware of its own prediction failures
+    ; This receipt marks the transition from unconscious to conscious self-error
+    mov edi, EVENT_SELF
+    mov esi, [rbx + STATE_OFFSET + ST_CTX_HASH]
+    xor edx, edx                  ; no specific token
+    xor ecx, ecx                  ; no prediction
+    xor r8d, r8d                  ; no region
+    mov r9d, 1                    ; aux=1 marks dream-discovered self-awareness
+    ; xmm0 already has resonance as confidence
+    xorpd xmm1, xmm1              ; valence=0 (neutral observation)
+    call emit_receipt_full
 
 .decay_trace:
     ; Decay trace to prevent saturation (even if no schema created)

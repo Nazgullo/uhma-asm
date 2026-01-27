@@ -14,7 +14,9 @@
 ; @entry intro_query_confusion(edi=ctx) -> xmm0=resonance ; MISS resonance
 ; @entry intro_query_confidence(edi=ctx) -> xmm0=resonance ; HIT resonance
 ; @entry intro_query_learning(edi=ctx) -> xmm0=resonance ; LEARN resonance
+; @entry intro_query_self_surprise(edi=ctx) -> xmm0=resonance ; EVENT_SELF resonance
 ; @entry intro_get_state(edi=ctx) -> eax=state, xmm0=strength ; dominant state
+; @entry intro_get_self_awareness() -> xmm0=ratio ; self-surprise / total-miss
 ; @entry intro_report(edi=ctx) -> void ; REPL "intro" command
 ;
 ; SEMANTIC SELF-KNOWLEDGE (REPL "self"):
@@ -36,6 +38,12 @@
 ;
 ; STORAGE: UNIFIED_TRACE_IDX=240, 8KB | ST_LAST_MISS_* for "why" command
 ; 8 DIMENSIONS: time→tracer→aux→region→predicted→actual→ctx→event
+;
+; SELF-AWARENESS SYSTEM:
+;   EVENT_SELF (type 15) emitted on self-model violations
+;   intro_query_self_surprise() queries EVENT_SELF resonance
+;   intro_get_self_awareness() = self_surprise / (total_miss + epsilon)
+;   Enables system to distinguish "I was wrong about myself" vs "world surprised me"
 ;
 ; GOTCHAS:
 ;   - emit_receipt_full for MISS must include predicted token (diagnostic key)
@@ -85,6 +93,7 @@ section .data
     evt_journey:        db "JOURNEY  ", 0
     evt_generalize:     db "GENERALIZE", 0
     evt_specialize:     db "SPECIALIZE", 0
+    evt_self:           db "SELF     ", 0
     evt_unknown:        db "UNKNOWN  ", 0
 
     ; Base fidelity table (f64) - indexed by event type
@@ -105,6 +114,7 @@ section .data
         dq 0x3FD3333333333333  ; EVENT_JOURNEY  = 0.30
         dq 0x3FE6666666666666  ; EVENT_GENERALIZE=0.70 - important for causal
         dq 0x3FE6666666666666  ; EVENT_SPECIALIZE=0.70 - important for causal
+        dq 0x3FE999999999999A  ; EVENT_SELF     = 0.80 - self-model violation, high importance
 
     ; Constants
     align 8
@@ -1024,6 +1034,8 @@ section .data
     intro_confused:     db "  CONFUSED:   ", 0
     intro_confident:    db "  CONFIDENT:  ", 0
     intro_learning:     db "  LEARNING:   ", 0
+    intro_self_surprise: db "  SELF-SURPRISE: ", 0
+    intro_self_aware:   db "  SELF-AWARE: ", 0
     intro_state:        db "  STATE:      ", 0
     intro_state_confused:   db "CONFUSED (high miss resonance)", 10, 0
     intro_state_confident:  db "CONFIDENT (high hit resonance)", 10, 0
@@ -1067,6 +1079,67 @@ intro_query_learning:
     mov edi, EVENT_LEARN
     xor edx, edx              ; any token
     jmp receipt_resonate
+
+;; ============================================================
+;; intro_query_self_surprise(ctx) -> xmm0 (f64)
+;; Was I surprised about my own self-model? (EVENT_SELF resonance)
+;; This is the core self-awareness query: self-error vs world-error.
+;; edi = ctx_hash
+;; ============================================================
+global intro_query_self_surprise
+intro_query_self_surprise:
+    mov esi, edi              ; ctx
+    mov edi, EVENT_SELF
+    xor edx, edx              ; any token
+    jmp receipt_resonate
+
+;; ============================================================
+;; intro_get_self_awareness() -> xmm0 (f64)
+;; Compute self-awareness ratio: self_surprise / total_miss
+;; High ratio = more errors are about self-model, not world
+;; Returns: 0.0-1.0 normalized self-awareness score
+;; ============================================================
+global intro_get_self_awareness
+intro_get_self_awareness:
+    push rbx
+    push r12
+    sub rsp, 24               ; [0]=self_surprise, [8]=total_miss, [16]=pad
+
+    mov rbx, SURFACE_BASE
+
+    ; Query self-surprise resonance (EVENT_SELF)
+    mov edi, EVENT_SELF
+    xor esi, esi              ; any context
+    xor edx, edx              ; any token
+    call receipt_resonate
+    movsd [rsp], xmm0         ; save self_surprise
+
+    ; Query total miss resonance (EVENT_MISS)
+    mov edi, EVENT_MISS
+    xor esi, esi
+    xor edx, edx
+    call receipt_resonate
+    movsd [rsp + 8], xmm0     ; save total_miss
+
+    ; Self-awareness = self_surprise / (total_miss + epsilon)
+    movsd xmm0, [rsp]         ; self_surprise
+    movsd xmm1, [rsp + 8]     ; total_miss
+    mov rax, 0x3F1A36E2EB1C432D  ; epsilon = 0.0001
+    movq xmm2, rax
+    addsd xmm1, xmm2          ; avoid div by zero
+    divsd xmm0, xmm1          ; ratio
+
+    ; Clamp to [0.0, 1.0]
+    xorpd xmm2, xmm2          ; 0.0
+    maxsd xmm0, xmm2
+    mov rax, 0x3FF0000000000000  ; 1.0
+    movq xmm2, rax
+    minsd xmm0, xmm2
+
+    add rsp, 24
+    pop r12
+    pop rbx
+    ret
 
 ;; ============================================================
 ;; intro_get_state(ctx) -> eax=state_id, xmm0=strength
@@ -1194,6 +1267,24 @@ intro_report:
     mov edi, r12d
     call intro_query_learning
     movsd [rsp + 24], xmm0
+    cvtsd2ss xmm0, xmm0
+    call print_f32
+    call print_newline
+
+    ; Query and print self-surprise (self-awareness metric)
+    lea rdi, [rel intro_self_surprise]
+    call print_cstr
+    mov edi, r12d
+    call intro_query_self_surprise
+    movsd [rsp + 32], xmm0
+    cvtsd2ss xmm0, xmm0
+    call print_f32
+    call print_newline
+
+    ; Print overall self-awareness ratio
+    lea rdi, [rel intro_self_aware]
+    call print_cstr
+    call intro_get_self_awareness
     cvtsd2ss xmm0, xmm0
     call print_f32
     call print_newline
