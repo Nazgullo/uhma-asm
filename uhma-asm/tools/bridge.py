@@ -13,8 +13,8 @@ Endpoints:
   GET  /msg/new?since=ID  Poll for new messages
 
 Channel routing:
-  feed  (9999→9998): eat, dream, observe, compact, save, load
-  query (9997→9996): status, why, misses, intro, self, presence
+  feed  (9999→9998): eat, dream, compact, save, load
+  query (9997→9996): status, why, misses, intro, self, presence, drives, observe
   debug (9995→9994): receipts, trace
 
 Usage:
@@ -41,8 +41,9 @@ CHANNELS = {
     'debug': (9995, 9994),
 }
 
-FEED_CMDS = {'eat', 'dream', 'observe', 'compact', 'reset', 'save', 'load',
+FEED_CMDS = {'eat', 'dream', 'compact', 'reset', 'save', 'load',
              'share', 'hive', 'colony', 'export', 'import'}
+QUERY_CMDS = {'status', 'why', 'misses', 'intro', 'self', 'presence', 'drives', 'observe'}
 DEBUG_CMDS = {'receipts', 'trace', 'listen'}
 
 def route_command(cmd: str) -> str:
@@ -51,6 +52,7 @@ def route_command(cmd: str) -> str:
         return 'feed'
     elif first_word in DEBUG_CMDS:
         return 'debug'
+    # QUERY_CMDS and default both go to query channel
     return 'query'
 
 def send_to_uhma(channel: str, cmd: str, timeout: float = 5.0) -> str:
