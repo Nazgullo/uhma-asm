@@ -8,14 +8,16 @@ server.py — MCP Server for UHMA command/control/communication.
 FLOW: MCP client (Claude Code) → JSON-RPC → this server → UHMA stdin/stdout
 CONFIG: Project-level .mcp.json in uhma-asm root (NOT ~/.claude/mcp.json)
 
-TOOLS EXPOSED (27 total):
+TOOLS EXPOSED (28 total):
   - Input: input, raw
-  - Status: help, status, self, metacog, debugger, genes, subroutines, regions, presence, drives
+  - Status: help, status, self, metacog, intro, debugger, genes, subroutines, regions, presence, drives
   - Debug: why, misses, receipts, listen, trace
   - Actions: dream, observe, compact, reset
   - I/O: save, load, eat
   - Hive: hive, share, colony, export, import_gene
   - Other: geom, web_fetch, quit
+
+NOTE: intro shows SELF-AWARE reading (0.0-1.0). Run observe first to build semantic self-model.
 
 GOTCHAS:
   - MCP config must be at PROJECT_ROOT/.mcp.json, not ~/.claude/mcp.json
@@ -87,43 +89,67 @@ def start_uhma():
         return False
 
 
-def send_to_uhma(text, timeout=5.0):
+def send_to_uhma(text, timeout=10.0):
     """Send text to UHMA and collect response."""
     global uhma_process
 
-    if not uhma_process or uhma_process.poll() is not None:
+    # Check if process died
+    if uhma_process and uhma_process.poll() is not None:
+        log(f"UHMA process died with code {uhma_process.returncode}, restarting...")
+        uhma_process = None
+
+    if not uhma_process:
         if not start_uhma():
             return "Error: UHMA not running and failed to start"
-
-    # Clear queue
-    while not uhma_output_queue.empty():
-        try:
-            uhma_output_queue.get_nowait()
-        except:
-            break
+        # Give UHMA time to fully initialize and print banner
+        time.sleep(1.5)
+        # Drain the startup banner
+        drained = 0
+        while not uhma_output_queue.empty():
+            try:
+                uhma_output_queue.get_nowait()
+                drained += 1
+            except:
+                break
+        log(f"Drained {drained} startup lines")
 
     # Send input
+    log(f"Sending to UHMA: {text}")
     with uhma_lock:
         try:
             uhma_process.stdin.write(text + "\n")
             uhma_process.stdin.flush()
         except Exception as e:
+            log(f"Error sending: {e}")
             return f"Error sending to UHMA: {e}"
 
     # Collect output until prompt or timeout
     output_lines = []
     deadline = time.time() + timeout
+    last_output_time = time.time()
+    got_first_output = False
 
     while time.time() < deadline:
         try:
-            line = uhma_output_queue.get(timeout=0.1)
+            line = uhma_output_queue.get(timeout=0.2)
             output_lines.append(line.rstrip())
+            last_output_time = time.time()
+            got_first_output = True
+            log(f"Got line: {line.rstrip()[:60]}")
             # Check for prompt (indicates command complete)
             if line.strip().endswith("uhma>") or line.strip() == "uhma>":
                 break
         except queue.Empty:
+            # If we have output and haven't seen more for 0.5s, command is probably done
+            if got_first_output and (time.time() - last_output_time) > 0.5:
+                break
+            # If we haven't seen any output for 2s, something's wrong
+            if not got_first_output and (time.time() - last_output_time) > 2.0:
+                log("No output received after 2s")
+                break
             continue
 
+    log(f"Collected {len(output_lines)} lines")
     return "\n".join(output_lines)
 
 
@@ -229,6 +255,11 @@ TOOLS = [
     {
         "name": "drives",
         "description": "Show drive levels and thresholds",
+        "inputSchema": {"type": "object", "properties": {}}
+    },
+    {
+        "name": "intro",
+        "description": "Show introspective state (CONFUSED, CONFIDENT, LEARNING, SELF-AWARE readings)",
         "inputSchema": {"type": "object", "properties": {}}
     },
 
@@ -418,7 +449,7 @@ def handle_tool_call(name, args):
 
     # Simple commands (no args)
     simple_cmds = ['help', 'status', 'self', 'metacog', 'debugger', 'genes',
-                   'subroutines', 'regions', 'presence', 'drives', 'why',
+                   'subroutines', 'regions', 'presence', 'drives', 'intro', 'why',
                    'listen', 'trace', 'dream', 'observe', 'compact', 'reset',
                    'hive', 'share', 'colony', 'quit']
 

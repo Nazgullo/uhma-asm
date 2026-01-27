@@ -53,9 +53,10 @@ section .data
                     db "  misses [n]    Show last n misses with predicted vs actual", 10
                     db "  listen        Enable receipt stream (ring+print)", 10
                     db "  regions       List all regions with hit/miss stats", 10
-                    db "  presence      Show presence field values", 10
+                    db "  presence      Show presence field (30-dim phenomenal state)", 10
                     db "  drives        Show drive levels and thresholds", 10
-                    db "  observe       Trigger observation cycle", 10
+                    db "  intro         Show introspective state (SELF-AWARE reading)", 10
+                    db "  observe       Trigger observation cycle (builds self-model)", 10
                     db "  dream         Trigger dream/consolidation cycle", 10
                     db "  compact       Compact condemned regions", 10
                     db "  save <file>   Save surface to file", 10

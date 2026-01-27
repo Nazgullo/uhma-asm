@@ -1257,8 +1257,8 @@
         "quit must call surface_freeze before exit",
         "listen command uses LISTENER_HOLO | LISTENER_PRINT only (working buffer removed)"
       ],
-      "content_hash": "ecfa88220e91",
-      "line_count": 2269
+      "content_hash": "0e1dce861431",
+      "line_count": 2270
     },
     "signal.asm": {
       "path": "signal.asm",
