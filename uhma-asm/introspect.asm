@@ -1,29 +1,36 @@
-; introspect.asm — Semantic self-model and organic regulation
+; introspect.asm — Semantic self-model, bootstrap, and organic regulation
 ;
 ; THIS IS WHERE SELF-AWARENESS LIVES.
 ;
+; @entry tick_workers()               → autonomous idle processing (called by REPL on timeout)
 ; @entry introspect_scan_regions()    → builds semantic self-model (SELF-AWARE reading)
 ; @entry introspect_repair_cycle()    → processes RFLAG_NEEDS_REPAIR regions
-; @entry tick_workers()               → per-step organic pressure regulation
 ; @entry metacog_report()             → REPL 'intro' command output
+;
+; AUTONOMOUS BEHAVIOR (tick_workers):
+;   Called by REPL on poll timeout. Makes UHMA do useful work when idle:
+;   1. Bootstrap: if SELF-AWARE < 0.3 → force observe_cycle (build self-model)
+;   2. Startup consolidation: if regions > 100 and fresh session → dream_cycle
+;   3. Organic pressure: decay + check thresholds → fire appropriate cycles
 ;
 ; SEMANTIC SELF-MODEL:
 ;   introspect_scan_regions() encodes each region via encode_region_to_vector()
 ;   Similar code → similar vectors. Superposed into ST_SELF_MODEL_VEC.
 ;   After observe cycle: SELF-AWARE reading typically 0.9+ (97.3% measured)
 ;
-; ORGANIC PRESSURE (automatic regulation):
-;   dream_pressure   > 1.1 → dream_cycle()      (misses accumulate)
-;   observe_pressure > 1.0 → observe_cycle()    (accuracy variance)
-;   introspect_pressure > 0.75 → repair_cycle() (SURPRISE_SELF events)
+; ORGANIC PRESSURE (thresholds):
+;   dream_pressure     > 0.5 → dream_cycle()      (misses accumulate)
+;   observe_pressure   > 1.0 → observe_cycle()    (accuracy variance)
+;   introspect_pressure > 0.75 → repair_cycle()   (SURPRISE_SELF events)
 ;
 ; SELF/OTHER BOUNDARY:
 ;   SURPRISE_SELF → introspect pressure (I was wrong about myself)
 ;   SURPRISE_OUTCOME → dream pressure (world surprised me)
 ;
 ; @calls vsa_ops.asm:encode_region_to_vector
-; @calls receipt.asm:meta_recommend_strategy
-; @calledby observe.asm, dispatch.asm, repl.asm
+; @calls receipt.asm:meta_recommend_strategy, intro_get_self_awareness
+; @calls dreams.asm:dream_cycle, observe.asm:observe_cycle
+; @calledby repl.asm (on poll timeout)
 ;
 %include "syscalls.inc"
 %include "constants.inc"
@@ -78,6 +85,7 @@ extern journey_step
 extern modify_generalize
 extern modify_specialize
 extern meta_recommend_strategy  ; from receipt.asm - causal model guidance
+extern intro_get_self_awareness ; from receipt.asm - SELF-AWARE ratio
 extern encode_region_to_vector  ; from vsa_ops.asm - semantic code encoding
 extern holo_superpose_f64       ; from vsa.asm - holographic accumulation
 extern holo_normalize_f64       ; from vsa.asm - prevent magnitude explosion
@@ -1169,10 +1177,16 @@ section .data
     worker_evolve:      db "Evolve worker activated (pheromone=", 0
     worker_compact:     db "Compact worker activated", 10, 0
     worker_rest:        db "Rest worker activated (fatigue=", 0
+    worker_ingest:      db "Self-ingest worker activated (SELF-AWARE=", 0
+    worker_bootstrap:   db "Bootstrap: low self-awareness, triggering observe", 10, 0
+    worker_startup_dream: db "Startup consolidation: prior knowledge found, dreaming...", 10, 0
     worker_close:       db ")", 10, 0
 
     align 8
     pheromone_threshold: dq 0.5   ; default activation threshold
+    self_aware_threshold: dq 0.3  ; below this, trigger self-observation
+    self_ingest_done: dq 0        ; flag: have we ingested own code this session?
+    startup_consolidation_done: dq 0  ; flag: have we dreamed on startup?
 
 section .text
 
@@ -1194,11 +1208,58 @@ global tick_regulators          ; legacy alias
 tick_regulators:
     push rbx
     push r12
-    sub rsp, 8                ; alignment
+    push r13
+    sub rsp, 8                ; alignment (3 pushes = odd, need 8 more)
 
     mov rbx, SURFACE_BASE
     xor r12d, r12d            ; actions triggered
 
+    ; === BOOTSTRAP CHECK ===
+    ; If self-awareness is low and we haven't bootstrapped, trigger observe
+    cmp qword [rel self_ingest_done], 0
+    jne .skip_bootstrap
+
+    ; Get current self-awareness reading
+    call intro_get_self_awareness     ; xmm0 = SELF-AWARE ratio
+    movsd xmm1, [rel self_aware_threshold]
+    ucomisd xmm0, xmm1
+    jae .skip_bootstrap               ; already self-aware enough
+
+    ; Self-awareness is low - boost observe pressure to trigger self-observation
+    lea rdi, [rel worker_bootstrap]
+    call print_cstr
+
+    ; Set observe_pressure = 1.0 to force observe_cycle
+    mov rax, 0x3FF0000000000000       ; 1.0 f64
+    mov [rbx + STATE_OFFSET + ST_OBSERVE_PRESSURE], rax
+
+    ; Mark bootstrap done so we don't spam
+    mov qword [rel self_ingest_done], 1
+
+.skip_bootstrap:
+    ; === STARTUP CONSOLIDATION ===
+    ; If we have prior knowledge (regions > 100) and haven't consolidated, trigger dream
+    cmp qword [rel startup_consolidation_done], 0
+    jne .skip_startup_dream
+
+    ; Check region count
+    mov eax, [rbx + STATE_OFFSET + ST_REGION_COUNT]
+    cmp eax, 100
+    jl .skip_startup_dream        ; fresh start, skip
+
+    ; Have prior knowledge - trigger consolidation
+    lea rdi, [rel worker_trigger_msg]
+    call print_cstr
+    lea rdi, [rel worker_startup_dream]
+    call print_cstr
+
+    ; Set dream pressure high to trigger dream_cycle
+    mov rax, 0x3FF0000000000000   ; 1.0 f64
+    mov [rbx + STATE_OFFSET + ST_DREAM_PRESSURE], rax
+
+    mov qword [rel startup_consolidation_done], 1
+
+.skip_startup_dream:
     ; Load threshold
     movsd xmm7, [rel pheromone_threshold]
 
@@ -1304,6 +1365,7 @@ tick_regulators:
 .workers_done:
     mov eax, r12d             ; return workers activated
     add rsp, 8
+    pop r13
     pop r12
     pop rbx
     ret

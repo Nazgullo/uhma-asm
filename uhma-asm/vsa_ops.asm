@@ -516,9 +516,11 @@ encode_code_to_vector:
     mov r13d, esi         ; code_len
     mov r14, rdx          ; out_vec
 
-    ; Zero the output vector
+    ; Zero the output vector (f64: 1024 qwords = 8192 bytes)
     mov rdi, r14
-    call vsa_zero
+    xor eax, eax
+    mov ecx, 1024
+    rep stosq
 
     ; Walk through code, decode each instruction, encode to vector
     xor r15d, r15d        ; position counter

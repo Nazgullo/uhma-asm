@@ -1,33 +1,28 @@
-; repl.asm — Interactive command loop with 6-channel TCP support
+; repl.asm — Interactive command loop with autonomous idle processing
 ;
 ; @entry repl_run() -> never returns (exits via quit/EOF)
+; @calls introspect.asm:tick_workers (on poll timeout - autonomous behavior)
 ; @calls dispatch.asm:process_input
 ; @calls io.asm:digest_file
-; @calls receipt.asm:receipt_why_miss, receipt_show_misses, receipt_dump
-; @calls receipt.asm:intro_report, causal_report, self_show_context_types
-; @calls observe.asm:observe_cycle
 ; @calls dreams.asm:dream_cycle
+; @calls observe.asm:observe_cycle
 ; @calls surface.asm:surface_freeze
 ; @calls channels.asm:channels_poll, channels_read, get_channel_fd
-; @calls format.asm:set_output_channel, reset_output_channel
 ; @calledby boot.asm:_start
+;
+; AUTONOMOUS LOOP:
+;   On poll timeout (100ms with no input), calls tick_workers() which:
+;   - Checks dream/observe/evolve pressures → triggers cycles
+;   - Bootstrap: if SELF-AWARE < 0.3, triggers observe_cycle
+;   - Startup: if regions > 100 and fresh session, triggers dream_cycle
 ;
 ; I/O SOURCES:
 ;   stdin (-1)     - interactive terminal (skipped if stdin_active=0)
-;   TCP channels   - 6-channel paired I/O (see channels.asm)
-;   Output routing - via set_output_channel(fd) before command execution
-;
-; COMMANDS:
-;   Status:  help, status, regions, presence, drives, self, metacog
-;   Intro:   intro (introspective state), causal (modification history)
-;   Actions: dream, observe, compact, eat <file>, trace on/off
-;   Debug:   why, misses [n], receipts [n], listen, debugger, genes
-;   Exit:    quit (syncs surface)
+;   TCP channels   - 6-channel paired I/O (FEED/QUERY/DEBUG)
 ;
 ; GOTCHAS:
 ;   - Commands are plain words, NOT :prefixed
 ;   - quit must call surface_freeze before exit
-;   - TCP input: get_channel_fd(ch+1) for output socket, then set_output_channel(fd)
 ;   - stdin EOF sets stdin_active=0, does NOT quit (allows headless TCP-only)
 %include "syscalls.inc"
 %include "constants.inc"
@@ -153,6 +148,7 @@ extern get_fault_count
 extern persist_save
 extern persist_load
 extern drives_show
+extern tick_workers            ; from introspect.asm - autonomous idle processing
 extern presence_show
 extern vocab_count
 extern holo_dot_f64
@@ -219,7 +215,11 @@ repl_run:
 
     ; Check result: -2=timeout, -1=stdin, 0-5=TCP channel
     cmp eax, -2
-    je .loop                      ; timeout, loop back
+    jne .not_timeout
+    ; Timeout - do autonomous work (dream/observe/self-ingest based on pressure)
+    call tick_workers
+    jmp .loop
+.not_timeout:
 
     cmp eax, -1
     jne .read_tcp_channel
