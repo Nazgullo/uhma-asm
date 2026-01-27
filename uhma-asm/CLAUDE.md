@@ -125,14 +125,18 @@ The receipt system IS the causal self-model. Key insight: don't create parallel 
 - Returns recommended event type (specialize vs generalize)
 
 **Self-Awareness System** (Holographic Self-Model):
-- `ST_SELF_MODEL_VEC` (1024-dim f64) = holographic representation of "what I am"
-- **Learning**: When digesting `.asm` files, token vectors superposed into self-model
+- `ST_SELF_MODEL_VEC` (1024-dim f64) = holographic representation of "what code I am"
+- **Semantic Encoding**: `introspect_scan_regions()` calls `encode_region_to_vector()` (vsa_ops.asm)
+  - Each region's machine code is encoded to a 1024-dim semantic vector
+  - Similar code → similar vectors (semantic, not arbitrary)
+  - Vectors superposed into self-model, normalized to prevent explosion
+- **Learning**: When digesting `.asm` files, token vectors also superposed (text level)
 - **Prediction**: dispatch_predict queries `holo_cosim_f64(ctx_vec, self_model)` for resonance
 - **Correction**: On self-miss, actual token superposed into self-model (strengthens correct patterns)
 - `EVENT_SELF` (type 15) emitted on self-model violations (SURPRISE_SELF or self-ref MISS)
 - `ST_IS_SELF_REF` flag set when digesting own source code
 - `ST_SELF_SURPRISE_COUNT` tracks total self-model violations
-- The system learns itself the same way it learns anything else: holographic superposition + resonance query
+- The system knows what code it contains semantically, not just arbitrary hash vectors
 
 ### Unified Trace System
 - One trace (UNIFIED_TRACE_IDX=240) replaces 6 separate traces
@@ -164,6 +168,7 @@ The receipt system IS the causal self-model. Key insight: don't create parallel 
 | learn.asm | Pattern learning | emit_dispatch_pattern, holo_store | dispatch |
 | emit.asm | x86 code generation | region_alloc, verify_code | learn, dreams |
 | vsa.asm | Holographic operations | (pure math) | dispatch, learn, receipt |
+| vsa_ops.asm | Semantic code encoding | holo_*, classify_opcode | introspect, verify |
 | receipt.asm | Unified trace + cognitive self-model | holo_bind, holo_superpose, intro_*, causal_*, meta_* | dispatch, learn, observe, introspect |
 
 ### Consolidation

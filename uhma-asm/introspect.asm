@@ -37,8 +37,16 @@
 ;   whether to specialize vs generalize. Falls back to hits/misses heuristic if
 ;   no causal data available for the context.
 ;
-; CALLED BY: dispatch.asm (after each token), repl.asm (tick command)
+; SEMANTIC SELF-MODEL (introspect_scan_regions):
+;   Each region is encoded via encode_region_to_vector (vsa_ops.asm) into a
+;   1024-dim semantic vector where similar code → similar vectors.
+;   These vectors are superposed into ST_SELF_MODEL_VEC to build a holographic
+;   representation of "what code I am". This enables semantic self-awareness:
+;   the system can query its own code structure via cosine similarity.
+;
+; CALLED BY: dispatch.asm (after each token), repl.asm (tick command), observe.asm
 ; @calls receipt.asm:meta_recommend_strategy
+; @calls vsa_ops.asm:encode_region_to_vector
 ;
 %include "syscalls.inc"
 %include "constants.inc"
@@ -93,6 +101,9 @@ extern journey_step
 extern modify_generalize
 extern modify_specialize
 extern meta_recommend_strategy  ; from receipt.asm - causal model guidance
+extern encode_region_to_vector  ; from vsa_ops.asm - semantic code encoding
+extern holo_superpose_f64       ; from vsa.asm - holographic accumulation
+extern holo_normalize_f64       ; from vsa.asm - prevent magnitude explosion
 
 ;; ============================================================
 ;; introspect_region(region_ptr) → fills cache entry
@@ -242,6 +253,7 @@ introspect_scan_regions:
     push r13
     push r14
     push r15
+    sub rsp, 8200               ; temp vector (8192) + 8 alignment (5 pushes = odd)
 
     mov rbx, SURFACE_BASE
     lea r12, [rbx + REGION_TABLE_OFFSET]  ; region table base
@@ -328,6 +340,24 @@ introspect_scan_regions:
 .n4:
     mov [rcx + ICE_NEIGHBOR_COUNT], dx
 
+    ; === SEMANTIC SELF-MODEL: encode region code into self-model ===
+    ; This builds a holographic representation of "what code I am"
+    ; using semantic encoding where similar code → similar vectors
+    push rsi                        ; save RTE pointer
+    mov rdi, [rsi + RTE_ADDR]       ; region header
+    lea rsi, [rsp + 8]              ; temp vector on stack (offset for push)
+    call encode_region_to_vector    ; encode region semantically
+
+    ; Superpose into self-model: ST_SELF_MODEL_VEC += region_vec
+    lea rdi, [rbx + STATE_OFFSET + ST_SELF_MODEL_VEC]
+    lea rsi, [rsp + 8]              ; temp vector
+    call holo_superpose_f64
+
+    ; Normalize to prevent magnitude explosion
+    lea rdi, [rbx + STATE_OFFSET + ST_SELF_MODEL_VEC]
+    call holo_normalize_f64
+    pop rsi                         ; restore RTE pointer
+
     inc r15d
 
 .scan_next:
@@ -335,6 +365,7 @@ introspect_scan_regions:
     jmp .scan_loop
 
 .scan_done:
+    add rsp, 8200               ; free temp vector + alignment
     pop r15
     pop r14
     pop r13

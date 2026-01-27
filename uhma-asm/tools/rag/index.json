@@ -119,8 +119,8 @@
         "Token abstraction must match in BOTH process_input AND digest_file",
         "All struct_ctx operations use f64 (holo_*), not f32 (vsa_*)"
       ],
-      "content_hash": "3faeef3ce1c2",
-      "line_count": 3119
+      "content_hash": "cbc8b06535b5",
+      "line_count": 3124
     },
     "dreams.asm": {
       "path": "dreams.asm",
@@ -163,8 +163,8 @@
         "Promoted patterns must be reinforced via holo_store",
         "Uses cosine similarity (normalized) not raw dot product"
       ],
-      "content_hash": "fb34123d84f9",
-      "line_count": 529
+      "content_hash": "fdf25e69ea11",
+      "line_count": 534
     },
     "drives.asm": {
       "path": "drives.asm",
@@ -769,17 +769,19 @@
         }
       ],
       "calls": [
-        "receipt.asm:meta_recommend_strategy"
+        "receipt.asm:meta_recommend_strategy",
+        "vsa_ops.asm:encode_region_to_vector"
       ],
       "called_by": [
         "dispatch.asm:after",
-        "repl.asm:tick"
+        "repl.asm:tick",
+        "observe.asm"
       ],
       "flow": "",
       "state": [],
       "gotchas": [],
-      "content_hash": "58ac7dc26ae8",
-      "line_count": 1474
+      "content_hash": "f8c986ecc79e",
+      "line_count": 1505
     },
     "io.asm": {
       "path": "io.asm",
@@ -807,8 +809,8 @@
         "rcx clobbered by calls, use r10-r15 in digest loop",
         "Restore r14 (SURFACE_BASE) after fault recovery in continue_loop"
       ],
-      "content_hash": "60fc3a3d6faf",
-      "line_count": 925
+      "content_hash": "7028d4585987",
+      "line_count": 930
     },
     "learn.asm": {
       "path": "learn.asm",
@@ -2593,7 +2595,8 @@
     },
     "introspect.asm": {
       "depends_on": [
-        "receipt.asm"
+        "receipt.asm",
+        "vsa_ops.asm"
       ],
       "depended_by": [
         "decode.asm"
@@ -2711,7 +2714,9 @@
     },
     "vsa_ops.asm": {
       "depends_on": [],
-      "depended_by": []
+      "depended_by": [
+        "introspect.asm"
+      ]
     }
   },
   "meta": {
