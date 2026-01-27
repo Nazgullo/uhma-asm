@@ -108,6 +108,7 @@ extern fire_hook
 extern vsa_get_token_vec
 extern vsa_superpose
 extern holo_superpose_f64
+extern holo_normalize_f64
 extern holo_gen_vec
 extern holo_bind_f64
 extern holo_cosim_f64
@@ -953,6 +954,10 @@ process_token:
     lea rdi, [rbx + STATE_OFFSET + ST_SELF_MODEL_VEC]
     mov rsi, rsp
     call holo_superpose_f64
+
+    ; Normalize to prevent magnitude explosion
+    lea rdi, [rbx + STATE_OFFSET + ST_SELF_MODEL_VEC]
+    call holo_normalize_f64
 
     add rsp, 8200
 

@@ -383,6 +383,11 @@ dream_extract_schemas:
     movsd xmm0, [rel schema_trace_decay]  ; 0.5 decay factor
     call holo_scale_f64
 
+    ; Decay self-model too - old self-knowledge fades, new emerges
+    lea rdi, [rbx + STATE_OFFSET + ST_SELF_MODEL_VEC]
+    movsd xmm0, [rel schema_trace_decay]  ; same 0.5 decay
+    call holo_scale_f64
+
 .no_schema:
     add rsp, 8
     pop r12

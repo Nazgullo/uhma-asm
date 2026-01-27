@@ -417,6 +417,7 @@ extern fault_safe_rsp
 extern fault_safe_rip
 extern holo_gen_vec
 extern holo_superpose_f64
+extern holo_normalize_f64
 
 global digest_file
 digest_file:
@@ -635,6 +636,10 @@ digest_file:
     lea rdi, [r14 + STATE_OFFSET + ST_SELF_MODEL_VEC]
     mov rsi, rsp                  ; src = token_vec on stack
     call holo_superpose_f64
+
+    ; Normalize to prevent magnitude explosion
+    lea rdi, [r14 + STATE_OFFSET + ST_SELF_MODEL_VEC]
+    call holo_normalize_f64
 
     add rsp, 8192                 ; free temp vector
     add rsp, 8                    ; alignment
