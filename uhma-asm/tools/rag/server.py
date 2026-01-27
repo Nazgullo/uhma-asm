@@ -2,10 +2,20 @@
 """
 server.py — MCP Server for UHMA command/control/communication.
 
-@entry main() -> runs MCP protocol loop
+@entry main() -> runs MCP protocol loop (stdio for Claude Code)
+@entry tcp_main() -> runs TCP server for GUI connections
 @calls uhma binary via subprocess
 
-FLOW: MCP client (Claude Code) → JSON-RPC → this server → UHMA stdin/stdout
+ARCHITECTURE:
+  GUI (TCP:9999) ─┐
+                  ├──→ MCP Server ──→ UHMA (subprocess)
+  Claude Code ────┘     (stdio)
+
+FLOW:
+  - Claude Code: stdin/stdout JSON-RPC (standard MCP)
+  - GUI: TCP socket JSON-RPC on port 9999
+  - Both share the same UHMA instance
+
 CONFIG: Project-level .mcp.json in uhma-asm root (NOT ~/.claude/mcp.json)
 
 TOOLS EXPOSED (28 total):
@@ -24,6 +34,7 @@ GOTCHAS:
   - Claude Code must be restarted after adding/modifying .mcp.json
   - eat command uses 60s timeout (large files take time)
   - UHMA auto-spawns on first tool call if not running
+  - GUI connects via TCP:9999, Claude Code via stdio
 """
 
 import json
@@ -32,6 +43,8 @@ import subprocess
 import threading
 import queue
 import time
+import socket
+import select
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -557,11 +570,156 @@ def log(msg):
         f.flush()
 
 
+# TCP server for GUI connections
+TCP_PORT = 9999
+tcp_clients = []
+tcp_lock = threading.Lock()
+
+
+def send_tcp_response(client_socket, id, result):
+    """Send JSON-RPC response to TCP client."""
+    response = {"jsonrpc": "2.0", "id": id, "result": result}
+    msg = json.dumps(response) + "\n"
+    try:
+        client_socket.sendall(msg.encode())
+    except:
+        pass
+
+
+def send_tcp_error(client_socket, id, code, message):
+    """Send JSON-RPC error to TCP client."""
+    response = {"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}
+    msg = json.dumps(response) + "\n"
+    try:
+        client_socket.sendall(msg.encode())
+    except:
+        pass
+
+
+def handle_tcp_request(client_socket, request):
+    """Handle a request from TCP client (GUI)."""
+    method = request.get("method")
+    id = request.get("id")
+    params = request.get("params", {})
+
+    if method == "initialize":
+        client_version = params.get("protocolVersion", "2024-11-05")
+        send_tcp_response(client_socket, id, {
+            "protocolVersion": client_version,
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "uhma-control", "version": "2.0.0"}
+        })
+
+    elif method == "tools/list":
+        send_tcp_response(client_socket, id, {"tools": TOOLS})
+
+    elif method == "tools/call":
+        tool_name = params.get("name")
+        args = params.get("arguments", {})
+        try:
+            result = handle_tool_call(tool_name, args)
+            send_tcp_response(client_socket, id, {"content": [{"type": "text", "text": result}]})
+        except Exception as e:
+            send_tcp_error(client_socket, id, -32000, str(e))
+
+    elif method == "ping":
+        send_tcp_response(client_socket, id, {})
+
+
+def handle_tcp_client(client_socket, addr):
+    """Handle a single TCP client connection."""
+    log(f"TCP client connected from {addr}")
+    buffer = ""
+
+    try:
+        while True:
+            data = client_socket.recv(4096)
+            if not data:
+                break
+            buffer += data.decode()
+
+            # Process complete JSON lines
+            while "\n" in buffer:
+                line, buffer = buffer.split("\n", 1)
+                line = line.strip()
+                if not line:
+                    continue
+
+                # Handle Content-Length format
+                if line.startswith("Content-Length:"):
+                    content_length = int(line.split(":", 1)[1].strip())
+                    # Read until we have blank line + content
+                    while "\r\n\r\n" not in buffer and "\n\n" not in buffer:
+                        more = client_socket.recv(4096)
+                        if not more:
+                            return
+                        buffer += more.decode()
+                    # Skip blank line
+                    if "\r\n\r\n" in buffer:
+                        _, buffer = buffer.split("\r\n\r\n", 1)
+                    else:
+                        _, buffer = buffer.split("\n\n", 1)
+                    # Read content
+                    while len(buffer) < content_length:
+                        more = client_socket.recv(4096)
+                        if not more:
+                            return
+                        buffer += more.decode()
+                    content = buffer[:content_length]
+                    buffer = buffer[content_length:]
+                    try:
+                        request = json.loads(content)
+                        handle_tcp_request(client_socket, request)
+                    except json.JSONDecodeError:
+                        pass
+                    continue
+
+                # Handle raw JSON
+                if line.startswith("{"):
+                    try:
+                        request = json.loads(line)
+                        handle_tcp_request(client_socket, request)
+                    except json.JSONDecodeError:
+                        pass
+    except Exception as e:
+        log(f"TCP client error: {e}")
+    finally:
+        log(f"TCP client disconnected from {addr}")
+        client_socket.close()
+
+
+def tcp_server_thread():
+    """Background thread running TCP server for GUI connections."""
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        server.bind(("127.0.0.1", TCP_PORT))
+        server.listen(5)
+        log(f"TCP server listening on port {TCP_PORT}")
+
+        while True:
+            client_socket, addr = server.accept()
+            client_thread = threading.Thread(
+                target=handle_tcp_client,
+                args=(client_socket, addr),
+                daemon=True
+            )
+            client_thread.start()
+    except Exception as e:
+        log(f"TCP server error: {e}")
+
+
 def main():
     sys.stderr.write("UHMA MCP server starting...\n")
     sys.stderr.flush()
     log("Server starting")
 
+    # Start TCP server for GUI connections in background
+    tcp_thread = threading.Thread(target=tcp_server_thread, daemon=True)
+    tcp_thread.start()
+    log(f"TCP server started on port {TCP_PORT}")
+
+    # Main loop handles stdio for Claude Code
     while True:
         try:
             log("Waiting for input...")
@@ -610,5 +768,46 @@ def main():
             sys.stderr.flush()
 
 
+def tcp_only_main(port=TCP_PORT):
+    """Run as TCP-only server (for GUI standalone mode)."""
+    global TCP_PORT
+    TCP_PORT = port
+    sys.stderr.write(f"UHMA MCP server (TCP-only) starting on port {port}...\n")
+    sys.stderr.flush()
+    log(f"TCP-only server starting on port {port}")
+
+    # Start UHMA immediately
+    start_uhma()
+
+    # Run TCP server in foreground
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        server.bind(("127.0.0.1", port))
+        server.listen(5)
+        log(f"TCP server listening on port {port}")
+        sys.stderr.write(f"TCP server listening on port {port}\n")
+
+        while True:
+            client_socket, addr = server.accept()
+            client_thread = threading.Thread(
+                target=handle_tcp_client,
+                args=(client_socket, addr),
+                daemon=True
+            )
+            client_thread.start()
+    except KeyboardInterrupt:
+        log("Server shutting down")
+    except Exception as e:
+        log(f"TCP server error: {e}")
+        sys.stderr.write(f"TCP server error: {e}\n")
+
+
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1 and sys.argv[1] == "--tcp":
+        # TCP-only mode for GUI
+        port = int(sys.argv[2]) if len(sys.argv) > 2 else TCP_PORT
+        tcp_only_main(port)
+    else:
+        # Standard MCP mode (stdio + TCP background)
+        main()

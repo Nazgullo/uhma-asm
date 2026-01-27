@@ -519,7 +519,7 @@
     },
     "gui/mcp_client.asm": {
       "path": "gui/mcp_client.asm",
-      "description": "MCP server communication for GUI",
+      "description": "MCP server communication for GUI via TCP",
       "entries": [
         {
           "name": "mcp_init",
@@ -549,16 +549,16 @@
       ],
       "calls": [],
       "called_by": [],
-      "flow": "mcp_init spawns server, mcp_call sends JSON-RPC, parses response",
+      "flow": "mcp_init connects to TCP:9999, mcp_call sends JSON-RPC, parses response",
       "state": [],
       "gotchas": [
         "Response buffer is static, overwritten each call",
-        "JSON-RPC uses Content-Length header framing",
+        "Uses raw JSON lines over TCP (no Content-Length)",
         "MCP server spawns UHMA internally",
         "Stack alignment (x86-64 ABI): ODD pushes \u2192 aligned \u2192 sub must be multiple of 16"
       ],
-      "content_hash": "1a898a384f88",
-      "line_count": 541
+      "content_hash": "88dbc315e4bd",
+      "line_count": 545
     },
     "gui/visualizer.asm": {
       "path": "gui/visualizer.asm",
@@ -596,8 +596,8 @@
         "Callee-saved regs (rbx, r12-r15) must be preserved across gfx_* calls",
         "ecx is caller-saved: reload h from memory before each gfx call, don't push/pop"
       ],
-      "content_hash": "d139979e1c55",
-      "line_count": 2906
+      "content_hash": "99a76626d3e0",
+      "line_count": 3038
     },
     "gui/viz_main.asm": {
       "path": "gui/viz_main.asm",

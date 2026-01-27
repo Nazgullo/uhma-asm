@@ -1,7 +1,14 @@
-; mcp_client.asm — MCP server communication for GUI
+; mcp_client.asm — MCP server communication for GUI via TCP
 ;
-; Spawns MCP server (python3 tools/rag/server.py) and handles JSON-RPC
-; communication over pipes. GUI calls these instead of UHMA directly.
+; Connects to MCP server via TCP socket (port 9999). If server not running,
+; spawns it in --tcp mode. GUI calls these instead of UHMA directly.
+;
+; ARCHITECTURE:
+;   GUI (this) ──(TCP:9999)──→ MCP Server ──→ UHMA (subprocess)
+;                                  ↑
+;   Claude Code ──────(stdio)──────┘
+;
+; Both GUI and Claude Code share the same UHMA instance through MCP.
 ;
 ; @entry mcp_init() -> eax=1 on success, 0 on failure
 ; @entry mcp_shutdown()
@@ -9,49 +16,52 @@
 ; @entry mcp_send_text(rdi=text) -> rax=response_ptr
 ; @entry mcp_get_status() -> rax=status_json_ptr
 ;
-; FLOW: mcp_init spawns server, mcp_call sends JSON-RPC, parses response
+; FLOW: mcp_init connects to TCP:9999, mcp_call sends JSON-RPC, parses response
 ;
 ; GOTCHAS:
 ;   - Response buffer is static, overwritten each call
-;   - JSON-RPC uses Content-Length header framing
+;   - Uses raw JSON lines over TCP (no Content-Length)
 ;   - MCP server spawns UHMA internally
 ;   - Stack alignment (x86-64 ABI): ODD pushes → aligned → sub must be multiple of 16
-;                                   EVEN pushes → unaligned → sub must be 8 mod 16
 
 section .data
-    ; MCP server command
+    ; MCP server command (for spawning if not running)
     mcp_cmd:        db "python3", 0
     mcp_arg1:       db "../tools/rag/server.py", 0
-    mcp_argv:       dq 0, 0, 0  ; filled at runtime
+    mcp_arg2:       db "--tcp", 0
+    mcp_arg3:       db "9999", 0
+    mcp_argv:       dq 0, 0, 0, 0, 0  ; filled at runtime
 
-    ; JSON-RPC templates
-    json_init:      db '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"uhma-gui"}},"id":1}', 0
+    ; TCP connection params
+    MCP_PORT        equ 9999
+    AF_INET         equ 2
+    SOCK_STREAM     equ 1
+
+    ; JSON-RPC templates (raw JSON, no Content-Length for TCP)
+    json_init:      db '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"uhma-gui"}},"id":1}', 10, 0
     json_call_pre:  db '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"', 0
     json_call_mid:  db '","arguments":{', 0
     json_call_post: db '}},"id":', 0
     json_input_arg: db '"text":"', 0
 
-    ; Content-Length header
-    content_hdr:    db "Content-Length: ", 0
-    crlf2:          db 13, 10, 13, 10, 0
-
     ; Format strings
     fmt_int:        db "%d", 0
 
     ; Error messages
-    err_fork:       db "MCP: fork failed", 10, 0
-    err_pipe:       db "MCP: pipe failed", 10, 0
-    err_exec:       db "MCP: exec failed", 10, 0
-    msg_started:    db "MCP: server started", 10, 0
+    err_connect:    db "MCP: connect failed, spawning server...", 10, 0
+    err_spawn:      db "MCP: spawn failed", 10, 0
+    err_socket:     db "MCP: socket failed", 10, 0
+    msg_connected:  db "MCP: connected to server", 10, 0
 
 section .bss
-    ; Pipe file descriptors [read, write]
-    pipe_to_mcp:    resd 2      ; GUI writes, MCP reads
-    pipe_from_mcp:  resd 2      ; MCP writes, GUI reads
-
-    mcp_pid:        resd 1
+    ; TCP socket
+    mcp_socket:     resd 1
     mcp_running:    resd 1
+    mcp_pid:        resd 1
     call_id:        resd 1
+
+    ; sockaddr_in structure (16 bytes)
+    sock_addr:      resb 16
 
     ; Request/response buffers
     req_buf:        resb 4096
@@ -61,13 +71,13 @@ section .bss
 section .text
 
 ; Libc functions
+extern socket
+extern connect
+extern send
+extern recv
+extern close
 extern fork
 extern execvp
-extern pipe
-extern close
-extern dup2
-extern read
-extern write
 extern waitpid
 extern kill
 extern usleep
@@ -78,6 +88,7 @@ extern memset
 extern memcpy
 extern strcpy
 extern strcat
+extern htons
 
 global mcp_init
 global mcp_shutdown
@@ -90,7 +101,7 @@ global mcp_evolve
 global mcp_save
 global mcp_load
 
-;; mcp_init — Spawn MCP server, establish pipes
+;; mcp_init — Connect to MCP server via TCP
 ;; Returns: eax=1 success, 0 failure
 mcp_init:
     push rbx
@@ -98,104 +109,45 @@ mcp_init:
     push r13
     sub rsp, 16
 
-    ; Create pipes
-    lea rdi, [rel pipe_to_mcp]
-    call pipe
+    ; Try to connect first (server may already be running via Claude Code)
+    call .try_connect
     test eax, eax
-    jnz .pipe_fail
+    jnz .connected
 
-    lea rdi, [rel pipe_from_mcp]
-    call pipe
+    ; Connection failed - spawn server
+    lea rdi, [rel err_connect]
+    xor eax, eax
+    call printf
+
+    call .spawn_server
     test eax, eax
-    jnz .pipe_fail
-
-    ; Fork
-    call fork
-    cmp eax, -1
-    je .fork_fail
-    test eax, eax
-    jz .child
-
-    ; Parent: save PID, close unused ends
-    mov [rel mcp_pid], eax
-
-    ; Close read end of pipe_to_mcp (we write)
-    mov edi, [rel pipe_to_mcp]
-    call close
-
-    ; Close write end of pipe_from_mcp (we read)
-    mov edi, [rel pipe_from_mcp + 4]
-    call close
+    jz .spawn_fail
 
     ; Wait for server to start
-    mov edi, 500000         ; 500ms
+    mov edi, 1500000        ; 1.5s
     call usleep
 
+    ; Try to connect again
+    call .try_connect
+    test eax, eax
+    jz .spawn_fail
+
+.connected:
     ; Send initialize request
     call .send_init
 
     mov dword [rel mcp_running], 1
     mov dword [rel call_id], 2
 
-    lea rdi, [rel msg_started]
+    lea rdi, [rel msg_connected]
     xor eax, eax
     call printf
 
     mov eax, 1
     jmp .done
 
-.child:
-    ; Child: set up pipes and exec MCP server
-
-    ; stdin = pipe_to_mcp[0] (read end)
-    mov edi, [rel pipe_to_mcp]
-    xor esi, esi            ; STDIN_FILENO = 0
-    call dup2
-
-    ; stdout = pipe_from_mcp[1] (write end)
-    mov edi, [rel pipe_from_mcp + 4]
-    mov esi, 1              ; STDOUT_FILENO = 1
-    call dup2
-
-    ; Close all pipe fds
-    mov edi, [rel pipe_to_mcp]
-    call close
-    mov edi, [rel pipe_to_mcp + 4]
-    call close
-    mov edi, [rel pipe_from_mcp]
-    call close
-    mov edi, [rel pipe_from_mcp + 4]
-    call close
-
-    ; Build argv
-    lea rax, [rel mcp_cmd]
-    mov [rel mcp_argv], rax
-    lea rax, [rel mcp_arg1]
-    mov [rel mcp_argv + 8], rax
-    mov qword [rel mcp_argv + 16], 0
-
-    ; Exec
-    lea rdi, [rel mcp_cmd]
-    lea rsi, [rel mcp_argv]
-    call execvp
-
-    ; If we get here, exec failed
-    lea rdi, [rel err_exec]
-    xor eax, eax
-    call printf
-    mov edi, 1
-    mov eax, 60             ; sys_exit
-    syscall
-
-.pipe_fail:
-    lea rdi, [rel err_pipe]
-    xor eax, eax
-    call printf
-    xor eax, eax
-    jmp .done
-
-.fork_fail:
-    lea rdi, [rel err_fork]
+.spawn_fail:
+    lea rdi, [rel err_spawn]
     xor eax, eax
     call printf
     xor eax, eax
@@ -208,56 +160,127 @@ mcp_init:
     pop rbx
     ret
 
+;; Try to connect to TCP server
+;; Returns: eax=1 success, 0 failure
+.try_connect:
+    push rbx
+    sub rsp, 16
+
+    ; Create socket
+    mov edi, AF_INET
+    mov esi, SOCK_STREAM
+    xor edx, edx
+    call socket
+    cmp eax, -1
+    je .conn_fail
+    mov [rel mcp_socket], eax
+    mov ebx, eax
+
+    ; Setup sockaddr_in
+    lea rdi, [rel sock_addr]
+    xor esi, esi
+    mov edx, 16
+    call memset
+
+    mov word [rel sock_addr], AF_INET       ; sin_family
+    mov edi, MCP_PORT
+    call htons
+    mov [rel sock_addr + 2], ax             ; sin_port
+    mov dword [rel sock_addr + 4], 0x0100007f  ; 127.0.0.1 in network order
+
+    ; Connect
+    mov edi, ebx
+    lea rsi, [rel sock_addr]
+    mov edx, 16
+    call connect
+    test eax, eax
+    jnz .conn_close_fail
+
+    mov eax, 1
+    jmp .conn_done
+
+.conn_close_fail:
+    mov edi, [rel mcp_socket]
+    call close
+.conn_fail:
+    xor eax, eax
+.conn_done:
+    add rsp, 16
+    pop rbx
+    ret
+
+;; Spawn MCP server in TCP-only mode
+;; Returns: eax=1 success, 0 failure
+.spawn_server:
+    push rbx
+    sub rsp, 16
+
+    call fork
+    cmp eax, -1
+    je .spawn_err
+    test eax, eax
+    jz .child
+
+    ; Parent: save PID
+    mov [rel mcp_pid], eax
+    mov eax, 1
+    jmp .spawn_done
+
+.child:
+    ; Build argv: python3 server.py --tcp 9999
+    lea rax, [rel mcp_cmd]
+    mov [rel mcp_argv], rax
+    lea rax, [rel mcp_arg1]
+    mov [rel mcp_argv + 8], rax
+    lea rax, [rel mcp_arg2]
+    mov [rel mcp_argv + 16], rax
+    lea rax, [rel mcp_arg3]
+    mov [rel mcp_argv + 24], rax
+    mov qword [rel mcp_argv + 32], 0
+
+    ; Exec
+    lea rdi, [rel mcp_cmd]
+    lea rsi, [rel mcp_argv]
+    call execvp
+
+    ; If we get here, exec failed
+    mov edi, 1
+    mov eax, 60             ; sys_exit
+    syscall
+
+.spawn_err:
+    xor eax, eax
+.spawn_done:
+    add rsp, 16
+    pop rbx
+    ret
+
 ;; Send initialize JSON-RPC
 .send_init:
     push rbx
     sub rsp, 16
 
-    ; Build request with Content-Length header
+    ; Send init request (raw JSON line)
     lea rdi, [rel json_init]
     call strlen
-    mov rbx, rax            ; json length
-
-    ; Format: "Content-Length: N\r\n\r\n{json}"
-    lea rdi, [rel req_buf]
-    lea rsi, [rel content_hdr]
-    call strcpy
-
-    lea rdi, [rel req_buf]
-    call strlen
-    lea rdi, [rel req_buf + rax]
-    lea rsi, [rel fmt_int]
-    mov rdx, rbx
-    xor eax, eax
-    call sprintf
-
-    lea rdi, [rel req_buf]
-    lea rsi, [rel crlf2]
-    call strcat
-
-    lea rdi, [rel req_buf]
-    lea rsi, [rel json_init]
-    call strcat
-
-    ; Write to MCP
-    lea rdi, [rel req_buf]
-    call strlen
     mov rdx, rax            ; length
-    mov edi, [rel pipe_to_mcp + 4]  ; write end
-    lea rsi, [rel req_buf]
-    call write
+    mov edi, [rel mcp_socket]
+    lea rsi, [rel json_init]
+    xor ecx, ecx            ; flags = 0
+    call send
 
     ; Read response (discard for init)
-    mov edi, [rel pipe_from_mcp]    ; read end
+    mov edi, [rel mcp_socket]
     lea rsi, [rel resp_buf]
     mov edx, 65535
-    call read
+    xor ecx, ecx
+    call recv
 
     add rsp, 16
     pop rbx
     ret
 
-;; mcp_shutdown — Kill MCP server
+;; mcp_shutdown — Close TCP connection, optionally kill server
 mcp_shutdown:
     push rbx
     sub rsp, 16
@@ -270,22 +293,21 @@ mcp_shutdown:
     xor esi, esi
     call mcp_call
 
-    ; Close pipes
-    mov edi, [rel pipe_to_mcp + 4]
-    call close
-    mov edi, [rel pipe_from_mcp]
+    ; Close socket
+    mov edi, [rel mcp_socket]
     call close
 
-    ; Kill process
+    ; Kill spawned server if we started one
     mov edi, [rel mcp_pid]
+    test edi, edi
+    jz .no_kill
     mov esi, 15             ; SIGTERM
     call kill
-
-    ; Wait for it
     mov edi, [rel mcp_pid]
     xor esi, esi
     xor edx, edx
     call waitpid
+.no_kill:
 
     mov dword [rel mcp_running], 0
 
@@ -296,7 +318,7 @@ mcp_shutdown:
 
 .quit_tool: db "quit", 0
 
-;; mcp_call — Call MCP tool
+;; mcp_call — Call MCP tool via TCP
 ;; rdi = tool name (C string)
 ;; rsi = arguments JSON (C string, can be empty or null)
 ;; Returns: rax = pointer to response text (in resp_buf)
@@ -316,16 +338,17 @@ mcp_call:
     mov edx, 4096
     call memset
 
-    ; Build JSON: {"jsonrpc":"2.0","method":"tools/call","params":{"name":"TOOL","arguments":{ARGS}},"id":N}
-    lea rdi, [rel req_buf + 256]  ; build json here, header at start
+    ; Build JSON directly (no Content-Length for TCP, just raw JSON + newline)
+    ; {"jsonrpc":"2.0","method":"tools/call","params":{"name":"TOOL","arguments":{ARGS}},"id":N}\n
+    lea rdi, [rel req_buf]
     lea rsi, [rel json_call_pre]
     call strcpy
 
-    lea rdi, [rel req_buf + 256]
+    lea rdi, [rel req_buf]
     mov rsi, r12
     call strcat
 
-    lea rdi, [rel req_buf + 256]
+    lea rdi, [rel req_buf]
     lea rsi, [rel json_call_mid]
     call strcat
 
@@ -335,73 +358,54 @@ mcp_call:
     cmp byte [r13], 0
     je .no_args
 
-    lea rdi, [rel req_buf + 256]
+    lea rdi, [rel req_buf]
     mov rsi, r13
     call strcat
 
 .no_args:
-    lea rdi, [rel req_buf + 256]
+    lea rdi, [rel req_buf]
     lea rsi, [rel json_call_post]
     call strcat
 
     ; Add call ID
-    lea rdi, [rel req_buf + 256]
+    lea rdi, [rel req_buf]
     call strlen
-    lea rdi, [rel req_buf + 256 + rax]
+    lea rdi, [rel req_buf + rax]
     lea rsi, [rel fmt_int]
     mov edx, [rel call_id]
     xor eax, eax
     call sprintf
 
-    ; Close JSON
-    lea rdi, [rel req_buf + 256]
-    call strlen
-    lea rdi, [rel req_buf + 256 + rax]
-    mov byte [rdi], '}'
-    mov byte [rdi + 1], 0
-
-    inc dword [rel call_id]
-
-    ; Get JSON length
-    lea rdi, [rel req_buf + 256]
-    call strlen
-    mov r14, rax
-
-    ; Build header at start of req_buf
-    lea rdi, [rel req_buf]
-    lea rsi, [rel content_hdr]
-    call strcpy
-
+    ; Close JSON and add newline
     lea rdi, [rel req_buf]
     call strlen
     lea rdi, [rel req_buf + rax]
-    lea rsi, [rel fmt_int]
-    mov rdx, r14
-    xor eax, eax
-    call sprintf
+    mov byte [rdi], '}'
+    mov byte [rdi + 1], 10      ; newline
+    mov byte [rdi + 2], 0
 
-    lea rdi, [rel req_buf]
-    lea rsi, [rel crlf2]
-    call strcat
+    inc dword [rel call_id]
 
-    lea rdi, [rel req_buf]
-    lea rsi, [rel req_buf + 256]
-    call strcat
-
-    ; Send request
+    ; Send request via TCP
     lea rdi, [rel req_buf]
     call strlen
-    mov rdx, rax
-    mov edi, [rel pipe_to_mcp + 4]
+    mov rdx, rax                ; length
+    mov edi, [rel mcp_socket]
     lea rsi, [rel req_buf]
-    call write
+    xor ecx, ecx                ; flags = 0
+    call send
 
-    ; Read response
-    mov edi, [rel pipe_from_mcp]
+    ; Read response via TCP
+    mov edi, [rel mcp_socket]
     lea rsi, [rel resp_buf]
     mov edx, 65535
-    call read
-    mov r14, rax            ; bytes read
+    xor ecx, ecx
+    call recv
+    mov r14, rax                ; bytes read
+
+    ; Null terminate response
+    lea rdi, [rel resp_buf]
+    mov byte [rdi + r14], 0
 
     ; Find "text":" in response and extract value
     lea rax, [rel resp_buf]

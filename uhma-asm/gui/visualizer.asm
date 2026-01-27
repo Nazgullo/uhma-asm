@@ -74,6 +74,8 @@ section .data
     btn_load:       db "LOAD", 0
     btn_file:       db "FILE", 0
     btn_dir:        db "DIR", 0
+    btn_url:        db "URL", 0
+    btn_intro:      db "INTRO", 0
     btn_trace:      db "TRACE", 0
     btn_geom:       db "GEOM", 0
     btn_send:       db "SEND", 0
@@ -192,6 +194,7 @@ section .data
     ; Zenity commands
     zenity_file:    db "zenity --file-selection --title='Select File' 2>/dev/null > /tmp/.uhma_pick", 0
     zenity_dir:     db "zenity --file-selection --directory --title='Select Folder' 2>/dev/null > /tmp/.uhma_pick", 0
+    zenity_url:     db "zenity --entry --title='Fetch URL' --text='Enter URL to digest:' 2>/dev/null > /tmp/.uhma_pick", 0
     tmp_pick_path:  db "/tmp/.uhma_pick", 0
     read_mode:      db "rb", 0
 
@@ -207,6 +210,8 @@ section .data
     msg_clear:      db "Cleared", 0
     msg_file_ok:    db "File loaded", 0
     msg_dir_ok:     db "Dir loaded", 0
+    msg_url_ok:     db "URL fetched", 0
+    msg_intro_ok:   db "Intro shown", 0
     msg_file_err:   db "Load failed", 0
     msg_trace_on:   db "Trace ON", 0
     msg_trace_off:  db "Trace OFF", 0
@@ -264,11 +269,13 @@ section .data
     ACT_LOAD        equ 7
     ACT_FILE        equ 8
     ACT_DIR         equ 9
-    ACT_TRACE       equ 10
-    ACT_GEOM        equ 11
-    ACT_SEND        equ 12
-    ACT_CLEAR       equ 13
-    ACT_QUIT        equ 14
+    ACT_URL         equ 10
+    ACT_INTRO       equ 11
+    ACT_TRACE       equ 12
+    ACT_GEOM        equ 13
+    ACT_SEND        equ 14
+    ACT_CLEAR       equ 15
+    ACT_QUIT        equ 16
 
     ; Layout constants
     WIN_W           equ 1280
@@ -530,41 +537,55 @@ vis_init:
     mov dword [rdi+12], 30
     add rdi, 16
 
-    ; TRACE (9)
+    ; URL (9)
     mov dword [rdi], 570
     mov dword [rdi+4], 8
-    mov dword [rdi+8], 55
+    mov dword [rdi+8], 40
     mov dword [rdi+12], 30
     add rdi, 16
 
-    ; GEOM (10) - toggle verification mode
-    mov dword [rdi], 635
+    ; INTRO (10) - show self-awareness reading
+    mov dword [rdi], 620
     mov dword [rdi+4], 8
     mov dword [rdi+8], 50
     mov dword [rdi+12], 30
     add rdi, 16
 
-    ; SEND (11) - near input
+    ; TRACE (11)
+    mov dword [rdi], 680
+    mov dword [rdi+4], 8
+    mov dword [rdi+8], 55
+    mov dword [rdi+12], 30
+    add rdi, 16
+
+    ; GEOM (12) - toggle verification mode
+    mov dword [rdi], 745
+    mov dword [rdi+4], 8
+    mov dword [rdi+8], 50
+    mov dword [rdi+12], 30
+    add rdi, 16
+
+    ; SEND (13) - near input
     mov dword [rdi], 1100
     mov dword [rdi+4], WIN_H - INPUT_H - STATUS_H + 10
     mov dword [rdi+8], 55
     mov dword [rdi+12], 30
     add rdi, 16
 
-    ; CLEAR (12)
+    ; CLEAR (14)
     mov dword [rdi], 1165
     mov dword [rdi+4], WIN_H - INPUT_H - STATUS_H + 10
     mov dword [rdi+8], 55
     mov dword [rdi+12], 30
     add rdi, 16
 
-    ; QUIT (13)
+    ; QUIT (15)
     mov dword [rdi], 1210
     mov dword [rdi+4], 8
     mov dword [rdi+8], 50
     mov dword [rdi+12], 30
 
-    mov dword [rel num_buttons], 14
+    mov dword [rel num_buttons], 16
 
     ; Initialize state
     mov dword [rel vis_running], 1
@@ -1080,6 +1101,10 @@ do_action:
     je .do_file
     cmp ebx, ACT_DIR
     je .do_dir
+    cmp ebx, ACT_URL
+    je .do_url
+    cmp ebx, ACT_INTRO
+    je .do_intro
     cmp ebx, ACT_TRACE
     je .do_trace
     cmp ebx, ACT_GEOM
@@ -1151,6 +1176,24 @@ do_action:
 .do_dir:
     call load_dir
     jmp .continue
+
+.do_url:
+    ; URL fetch/digest - use zenity for URL input, then MCP web_fetch
+    call load_url
+    jmp .continue
+
+.do_intro:
+    ; Show introspective state via MCP
+    lea rdi, [rel .intro_tool]
+    xor esi, esi
+    call mcp_call
+    ; Response is in rax, could display it in output panel
+    lea rax, [rel msg_intro_ok]
+    mov [rel feedback_msg], rax
+    mov dword [rel feedback_timer], 90
+    jmp .continue
+
+.intro_tool: db "intro", 0
 
 .do_trace:
     ; Toggle trace via MCP
@@ -1394,21 +1437,29 @@ draw_buttons:
     mov ecx, 3
     cmp eax, 8
     je .draw_lbl
+    lea rdx, [rel btn_url]
+    mov ecx, 3
+    cmp eax, 9
+    je .draw_lbl
+    lea rdx, [rel btn_intro]
+    mov ecx, 5
+    cmp eax, 10
+    je .draw_lbl
     lea rdx, [rel btn_trace]
     mov ecx, 5
-    cmp eax, 9
+    cmp eax, 11
     je .draw_lbl
     lea rdx, [rel btn_geom]
     mov ecx, 4
-    cmp eax, 10
+    cmp eax, 12
     je .draw_lbl
     lea rdx, [rel btn_send]
     mov ecx, 4
-    cmp eax, 11
+    cmp eax, 13
     je .draw_lbl
     lea rdx, [rel btn_clear]
     mov ecx, 5
-    cmp eax, 12
+    cmp eax, 14
     je .draw_lbl
     lea rdx, [rel btn_quit]
     mov ecx, 4
@@ -2895,6 +2946,87 @@ load_dir:
     pop r12
     pop rbx
     ret
+
+;; ============================================================
+;; load_url — URL input and web fetch/digest
+;; ============================================================
+load_url:
+    push rbx
+    push r12
+    sub rsp, 8
+
+    ; Use zenity to get URL
+    lea rdi, [rel zenity_url]
+    call system
+    test eax, eax
+    jnz .url_error
+
+    ; Read URL from temp file
+    lea rdi, [rel tmp_pick_path]
+    lea rsi, [rel read_mode]
+    call fopen
+    test rax, rax
+    jz .url_error
+    mov rbx, rax
+
+    lea rdi, [rel file_path_buf]
+    mov esi, 511
+    mov rdx, rbx
+    call fgets
+    mov r12, rax
+
+    mov rdi, rbx
+    call fclose
+
+    test r12, r12
+    jz .url_error
+
+    ; Strip newline from URL
+    lea rdi, [rel file_path_buf]
+    call strlen
+    test rax, rax
+    jz .url_error
+    lea rdi, [rel file_path_buf + rax - 1]
+    cmp byte [rdi], 10
+    jne .no_strip_url
+    mov byte [rdi], 0
+.no_strip_url:
+
+    ; Build web_fetch command: "url":"URL","digest":true
+    lea rdi, [rel eat_cmd_buf]
+    lea rsi, [rel .url_arg_pre]
+    call strcpy
+    lea rdi, [rel eat_cmd_buf]
+    lea rsi, [rel file_path_buf]
+    call strcat
+    lea rdi, [rel eat_cmd_buf]
+    lea rsi, [rel .url_arg_post]
+    call strcat
+
+    ; Send via MCP web_fetch
+    lea rdi, [rel .web_fetch_tool]
+    lea rsi, [rel eat_cmd_buf]
+    call mcp_call
+
+    lea rax, [rel msg_url_ok]
+    mov [rel feedback_msg], rax
+    mov dword [rel feedback_timer], 90
+    jmp .url_done
+
+.url_error:
+    lea rax, [rel msg_file_err]
+    mov [rel feedback_msg], rax
+    mov dword [rel feedback_timer], 90
+
+.url_done:
+    add rsp, 8
+    pop r12
+    pop rbx
+    ret
+
+.web_fetch_tool: db "web_fetch", 0
+.url_arg_pre:    db '"url":"', 0
+.url_arg_post:   db '","digest":true', 0
 
 ;; ============================================================
 ;; vis_is_running
