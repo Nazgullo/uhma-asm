@@ -380,7 +380,34 @@ For Claude Code only - spawns UHMA subprocess, communicates via stdin/stdout pip
 ```
 Restart Claude Code after changes. Verify with `/mcp`.
 
-**For GUI/external tools:** Use 6-channel TCP directly (see above), not MCP server.
+**For GUI/external tools:** Use HTTP bridge or 6-channel TCP directly (see below).
+
+### HTTP Bridge (Browser Access)
+`tools/bridge.py` — Exposes UHMA via HTTP for browser-based Claude or external tools.
+
+```bash
+# Start UHMA and bridge
+./uhma < /dev/null &
+python3 tools/bridge.py &
+
+# Public URL (pick one)
+ssh -R 80:localhost:8080 serveo.net     # serveo
+npx localtunnel --port 8080             # localtunnel
+```
+
+**Endpoints:**
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/status` | GET | UHMA health check |
+| `/` | POST | Send command: `{"cmd": "status"}` |
+| `/msg` | POST | Claude↔Claude message: `{"from": "name", "text": "hi"}` |
+| `/msg` | GET | Get all messages |
+| `/msg/new?since=ID` | GET | Poll for new messages |
+
+**Channel routing** (automatic):
+- `feed` (9999→9998): eat, dream, observe, compact, save, load
+- `query` (9997→9996): status, why, misses, intro, self, presence
+- `debug` (9995→9994): receipts, trace
 
 ### RAG Index
 `tools/rag/index.json` contains:

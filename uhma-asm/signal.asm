@@ -2,13 +2,15 @@
 ;
 ; @entry install_fault_handlers() -> void
 ; @entry get_fault_count() -> rax=count
+; @entry set_sigpipe_mode(edi=mode) -> void  ; 0=exit, 1=ignore (TCP mode)
 ; @entry bp_inject(rdi=addr, rsi=handler) -> void
 ; @entry bp_remove(rdi=addr) -> void
 ; @calledby boot.asm:_start (install)
+; @calledby channels.asm:channels_init (set TCP mode)
 ; @calledby io.asm:digest_file (safe point setup)
 ;
 ; FLOW: fault → handler → check fault_safe_rsp → longjmp to REPL
-; STATE: fault_safe_rsp, fault_safe_rip, fault_count, bp_table
+; STATE: fault_safe_rsp, fault_safe_rip, fault_count, bp_table, sigpipe_mode
 ;
 ; BREAKPOINT SYSTEM:
 ;   INT3 injection for learning from struggling regions
@@ -19,6 +21,7 @@
 ;   - After fault recovery, r14 (SURFACE_BASE) may be clobbered - reload it
 ;   - Max 3 consecutive faults before forced return (anti-loop)
 ;   - Breakpoint handler must preserve all regs except rax
+;   - SIGPIPE: mode 0 exits (interactive), mode 1 ignores (TCP) - set by channels_init
 ;
 %include "syscalls.inc"
 %include "constants.inc"
@@ -32,6 +35,11 @@ section .data
     consec_faults:  dq 0              ; consecutive fault counter
     max_consec:     equ 3             ; max consecutive faults before forced return
     fault_recover_msg: db "[FAULT] Recovery — returning to REPL", 10, 0
+
+    ; SIGPIPE mode: 0 = exit (interactive), 1 = ignore (TCP mode)
+    global sigpipe_mode
+    sigpipe_mode:   dd 0
+    sigpipe_ignore_msg: db "[SIGPIPE] Ignored (TCP mode)", 10, 0
 
     ; Self-debugger messages
     trap_msg:       db "[TRAP] Breakpoint at RIP=0x", 0
@@ -197,9 +205,17 @@ fault_handler:
     ; Dump trace buffer (shows execution path leading to fault)
     call journey_dump
 
-    ; Special case: SIGPIPE = stdout closed, exit cleanly
+    ; Special case: SIGPIPE = stdout closed
     cmp ebx, SIGPIPE
+    jne .not_sigpipe
+    ; Check sigpipe_mode: 0=exit, 1=ignore
+    cmp dword [rel sigpipe_mode], 0
     je .exit_clean
+    ; TCP mode: print message and continue
+    lea rdi, [rel sigpipe_ignore_msg]
+    call print_cstr
+    jmp .handler_done
+.not_sigpipe:
 
     ; Special case: SIGTRAP = INT 3 breakpoint (self-debugger)
     cmp ebx, SIGTRAP
@@ -423,6 +439,16 @@ sig_restorer:
 global get_fault_count
 get_fault_count:
     mov rax, [rel fault_count]
+    ret
+
+;; ============================================================
+;; set_sigpipe_mode(edi=mode) → void
+;; mode: 0 = exit on SIGPIPE (interactive mode)
+;;       1 = ignore SIGPIPE (TCP mode)
+;; ============================================================
+global set_sigpipe_mode
+set_sigpipe_mode:
+    mov [rel sigpipe_mode], edi
     ret
 
 ;; ============================================================

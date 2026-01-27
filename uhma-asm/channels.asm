@@ -9,6 +9,7 @@
 ; @entry get_channel_fd(edi=channel) -> eax=socket fd or -1
 ; @entry channels_shutdown() -> closes all sockets
 ; @calls format.asm:print_cstr, print_u64
+; @calls signal.asm:set_sigpipe_mode (enables TCP mode on init)
 ; @calledby boot.asm:_start, repl.asm:repl_run
 ;
 ; CHANNEL PAIRS (synchronous request/response):
@@ -22,7 +23,7 @@
 ;   Output channel = input channel + 1 (handled by channels_respond)
 ;
 ; GOTCHAS:
-;   - channels_init() called from boot.asm before repl_run
+;   - channels_init() sets SIGPIPE to ignore mode (survives client disconnect)
 ;   - stdin is channel -1 for backwards compat (headless: stdin_active=0)
 ;   - get_channel_fd() returns socket fd, not channel number
 ;   - Poll skips dead stdin (fd=-1) and output channels (odd numbers)
@@ -73,6 +74,7 @@ section .text
 extern print_cstr
 extern print_u64
 extern stdin_active               ; from repl.asm - 0 if stdin EOF
+extern set_sigpipe_mode           ; from signal.asm - 0=exit, 1=ignore
 
 global channels_init
 global channels_poll
@@ -164,6 +166,9 @@ channels_init:
 
 .init_done:
     mov dword [rel channels_ready], 1
+    ; Enable SIGPIPE ignore mode for TCP operation
+    mov edi, 1
+    call set_sigpipe_mode
     lea rdi, [rel ch_init_msg]
     call print_cstr
     mov eax, 1
