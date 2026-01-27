@@ -16,6 +16,11 @@
 ;   Clears flag at digest completion
 ;   Enables dispatch.asm to emit EVENT_SELF on misses during self-digestion
 ;
+; SELF-MODEL LEARNING (~line 612):
+;   When ST_IS_SELF_REF is set, each token is superposed into ST_SELF_MODEL_VEC
+;   This builds a holographic representation of "what I am" (own code patterns)
+;   Uses holo_gen_vec to generate token vector, holo_superpose_f64 to accumulate
+;
 ; MATURITY GATING:
 ;   Stage 0: stdout/stderr/stdin only
 ;   Stage 1: + read files
@@ -410,6 +415,8 @@ extern print_cstr
 extern print_u64
 extern fault_safe_rsp
 extern fault_safe_rip
+extern holo_gen_vec
+extern holo_superpose_f64
 
 global digest_file
 digest_file:
@@ -607,6 +614,35 @@ digest_file:
 
 .digest_token_ready:
     ; Process token (edx = token hash or class token)
+
+    ; === SELF-MODEL LEARNING: superpose token into self-model if digesting own code ===
+    cmp dword [r14 + STATE_OFFSET + ST_IS_SELF_REF], 0
+    je .skip_self_model_learn
+
+    ; Save token hash and loop state (rcx clobbered by calls)
+    push rdx                      ; save token hash
+    push rcx                      ; save remaining bytes
+    push rbx                      ; save buffer pos
+    sub rsp, 8                    ; alignment (3 pushes = 24, need 8 more for 32)
+
+    ; Generate vector for this token
+    mov edi, edx                  ; token hash as seed
+    sub rsp, 8192                 ; temp vector on stack (1024 * 8)
+    mov rsi, rsp                  ; out = stack buffer
+    call holo_gen_vec
+
+    ; Superpose into self-model: ST_SELF_MODEL_VEC += token_vec
+    lea rdi, [r14 + STATE_OFFSET + ST_SELF_MODEL_VEC]
+    mov rsi, rsp                  ; src = token_vec on stack
+    call holo_superpose_f64
+
+    add rsp, 8192                 ; free temp vector
+    add rsp, 8                    ; alignment
+    pop rbx
+    pop rcx
+    pop rdx                       ; restore token hash
+
+.skip_self_model_learn:
     mov edi, edx
 
     push rcx

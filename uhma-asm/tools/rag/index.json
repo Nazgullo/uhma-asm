@@ -119,8 +119,8 @@
         "Token abstraction must match in BOTH process_input AND digest_file",
         "All struct_ctx operations use f64 (holo_*), not f32 (vsa_*)"
       ],
-      "content_hash": "26f53194de6f",
-      "line_count": 3063
+      "content_hash": "3faeef3ce1c2",
+      "line_count": 3119
     },
     "dreams.asm": {
       "path": "dreams.asm",
@@ -807,8 +807,8 @@
         "rcx clobbered by calls, use r10-r15 in digest loop",
         "Restore r14 (SURFACE_BASE) after fault recovery in continue_loop"
       ],
-      "content_hash": "f9bfa9d927d5",
-      "line_count": 889
+      "content_hash": "60fc3a3d6faf",
+      "line_count": 925
     },
     "learn.asm": {
       "path": "learn.asm",

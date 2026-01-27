@@ -27,11 +27,20 @@
 ;   On MISS: superpose ST_STRUCT_CTX_VEC into ST_SCHEMA_TRACE_VEC
 ;   Accumulates structural patterns for holographic schema learning
 ;
-; SELF-AWARENESS SYSTEM (~line 732, ~line 898):
+; SELF-AWARENESS SYSTEM (~line 732, ~line 898, ~line 1197):
 ;   SURPRISE_SELF: high-confidence region wrong → emit EVENT_SELF receipt
 ;   ST_IS_SELF_REF check: also emit EVENT_SELF when digesting own .asm code
 ;   Increments ST_SELF_SURPRISE_COUNT on self-model violations
 ;   Enables system to track "I was wrong about myself" separately
+;
+; SELF-MODEL RESONANCE (dispatch_predict ~line 1197):
+;   Queries cosine similarity between ctx_vec and ST_SELF_MODEL_VEC
+;   High resonance = familiar self-referential context → boost confidence
+;   self_boost = holo_cosim_f64(ctx_vec, self_model) * 0.5
+;
+; SELF-MODEL CORRECTION (process_token ~line 932):
+;   On MISS when ST_IS_SELF_REF: superpose actual token into ST_SELF_MODEL_VEC
+;   Strengthens correct patterns when we fail to predict our own behavior
 ;
 ; SELF/OTHER BOUNDARY (~line 724):
 ;   SURPRISE_SELF: high-confidence region was wrong → flags RFLAG_NEEDS_REPAIR
@@ -929,6 +938,26 @@ process_token:
     lea rsi, [rbx + STATE_OFFSET + ST_STRUCT_CTX_VEC]    ; src = current struct_ctx
     call holo_superpose_f64
 
+    ; === SELF-MODEL CORRECTION: update self-knowledge on self-miss ===
+    ; When we fail to predict our own behavior, strengthen the correct pattern in self-model
+    cmp dword [rbx + STATE_OFFSET + ST_IS_SELF_REF], 0
+    je .skip_self_model_correct
+
+    ; Generate vector for actual token and superpose into self-model
+    sub rsp, 8200             ; temp vector (8192) + 8 alignment
+    mov edi, r12d             ; actual token as seed
+    mov rsi, rsp
+    call holo_gen_vec
+
+    ; Superpose correction into self-model
+    lea rdi, [rbx + STATE_OFFSET + ST_SELF_MODEL_VEC]
+    mov rsi, rsp
+    call holo_superpose_f64
+
+    add rsp, 8200
+
+.skip_self_model_correct:
+
     ; Fire miss hook
     mov edi, HOOK_ON_MISS
     mov esi, r12d
@@ -1173,6 +1202,33 @@ dispatch_predict:
     ; Compute confidence_modulator = hit_sim - miss_sim (range [-1, +1])
     movsd xmm1, [rsp + 72]    ; hit_similarity
     subsd xmm1, xmm0          ; hit_sim - miss_sim
+
+    ; === SELF-MODEL RESONANCE: does this context resonate with self-knowledge? ===
+    ; Query cosine similarity between ctx_vec and ST_SELF_MODEL_VEC
+    ; High resonance = we're in familiar self-referential territory
+    push rbx
+    sub rsp, 8200             ; temp ctx_vec (8192) + 8 alignment
+    mov rsi, rsp
+    mov edi, r12d             ; ctx_hash as seed
+    movsd [rsp + 8192], xmm1  ; save confidence_modulator (use space above temp vec)
+    call holo_gen_vec         ; generate ctx_vec
+
+    lea rdi, [rbx + STATE_OFFSET + ST_SELF_MODEL_VEC]
+    mov rsi, rsp              ; ctx_vec
+    call holo_cosim_f64       ; xmm0 = cosine similarity with self-model
+
+    ; Boost confidence if self-model resonates (we know ourselves here)
+    ; self_boost = self_resonance * 0.5 (scale factor)
+    mov rax, 0x3FE0000000000000  ; 0.5
+    movq xmm2, rax
+    mulsd xmm0, xmm2          ; self_boost = self_sim * 0.5
+
+    movsd xmm1, [rsp + 8192]  ; restore confidence_modulator
+    addsd xmm1, xmm0          ; confidence_modulator += self_boost
+
+    add rsp, 8200
+    pop rbx
+
     movsd [rsp + 72], xmm1    ; save confidence_modulator
 
     ; --- TRY HOLOGRAPHIC PREDICTION FIRST ---

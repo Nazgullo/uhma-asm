@@ -933,7 +933,9 @@
 ; Self-awareness state fields
 %define ST_IS_SELF_REF      (ST_RECEIPT_END)              ; u32 flag: current token is self-referential
 %define ST_SELF_SURPRISE_COUNT (ST_IS_SELF_REF + 4)       ; u32 count of self-model violations
-%define ST_SELF_AWARENESS_END  (ST_SELF_SURPRISE_COUNT + 4)
+%define ST_SELF_MODEL_VEC   (ST_SELF_SURPRISE_COUNT + 4)  ; f64[1024] holographic self-representation
+%define ST_SELF_MODEL_VEC_SIZE (1024 * 8)                 ; 8KB for 1024-dim f64 vector
+%define ST_SELF_AWARENESS_END  (ST_SELF_MODEL_VEC + ST_SELF_MODEL_VEC_SIZE)
 
 ; Base fidelity by event type (f64 bit patterns)
 ; Higher fidelity = more persistent storage, less decay

@@ -124,14 +124,15 @@ The receipt system IS the causal self-model. Key insight: don't create parallel 
 - Used by `introspect_repair_cycle()` before falling back to hits/misses heuristic
 - Returns recommended event type (specialize vs generalize)
 
-**Self-Awareness System** (EVENT_SELF):
-- `EVENT_SELF` (type 15) = self-model violation event
-- Emitted when SURPRISE_SELF occurs (high-confidence region was wrong)
-- Also emitted during self-reference digestion (.asm files) on MISS
+**Self-Awareness System** (Holographic Self-Model):
+- `ST_SELF_MODEL_VEC` (1024-dim f64) = holographic representation of "what I am"
+- **Learning**: When digesting `.asm` files, token vectors superposed into self-model
+- **Prediction**: dispatch_predict queries `holo_cosim_f64(ctx_vec, self_model)` for resonance
+- **Correction**: On self-miss, actual token superposed into self-model (strengthens correct patterns)
+- `EVENT_SELF` (type 15) emitted on self-model violations (SURPRISE_SELF or self-ref MISS)
 - `ST_IS_SELF_REF` flag set when digesting own source code
 - `ST_SELF_SURPRISE_COUNT` tracks total self-model violations
-- Dream cycle checks EVENT_SELF resonance for self-model schema extraction
-- The system can distinguish "I was wrong about myself" vs "the world surprised me"
+- The system learns itself the same way it learns anything else: holographic superposition + resonance query
 
 ### Unified Trace System
 - One trace (UNIFIED_TRACE_IDX=240) replaces 6 separate traces
