@@ -1,2 +1,35 @@
+# Compiled
 *.o
 uhma
+hub
+
+# Surface files (large, regenerated)
+*.surface
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Memory state (session-specific)
+tools/rag/memory/*.json
+tools/rag/memory/*.npz
+tools/rag/memory/*.dat
+tools/rag/memory/.bootstrapped
+tools/rag/memory/.session_active
+
+# Debug logs
+*_debug.log
+
+# Datasets (large)
+movie_*.txt
+raw_script_urls.txt
+training.txt
+cornell_movie_dialogs_corpus.zip
+
+# Packages (can regenerate)
+HOLO-memory.zip
+UHMAmcp.zip
+
+# OS
+.DS_Store

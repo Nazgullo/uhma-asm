@@ -628,7 +628,7 @@ digest_file:
 
     ; Generate vector for this token
     mov edi, edx                  ; token hash as seed
-    sub rsp, 8192                 ; temp vector on stack (1024 * 8)
+    sub rsp, HOLO_VEC_BYTES                 ; temp vector on stack (HOLO_VEC_BYTES)
     mov rsi, rsp                  ; out = stack buffer
     call holo_gen_vec
 
@@ -641,7 +641,7 @@ digest_file:
     lea rdi, [r14 + STATE_OFFSET + ST_SELF_MODEL_VEC]
     call holo_normalize_f64
 
-    add rsp, 8192                 ; free temp vector
+    add rsp, HOLO_VEC_BYTES                 ; free temp vector
     add rsp, 8                    ; alignment
     pop rbx
     pop rcx

@@ -908,7 +908,7 @@ process_token:
     je .skip_self_model_correct
 
     ; Generate vector for actual token and superpose into self-model
-    sub rsp, 8200             ; temp vector (8192) + 8 alignment
+    sub rsp, (HOLO_VEC_BYTES + 8)             ; temp vector + 8 alignment
     mov edi, r12d             ; actual token as seed
     mov rsi, rsp
     call holo_gen_vec
@@ -922,7 +922,7 @@ process_token:
     lea rdi, [rbx + STATE_OFFSET + ST_SELF_MODEL_VEC]
     call holo_normalize_f64
 
-    add rsp, 8200
+    add rsp, (HOLO_VEC_BYTES + 8)
 
 .skip_self_model_correct:
 
@@ -1175,10 +1175,10 @@ dispatch_predict:
     ; Query cosine similarity between ctx_vec and ST_SELF_MODEL_VEC
     ; High resonance = we're in familiar self-referential territory
     push rbx
-    sub rsp, 8200             ; temp ctx_vec (8192) + 8 alignment
+    sub rsp, (HOLO_VEC_BYTES + 8)             ; temp ctx_vec + 8 alignment
     mov rsi, rsp
     mov edi, r12d             ; ctx_hash as seed
-    movsd [rsp + 8192], xmm1  ; save confidence_modulator (use space above temp vec)
+    movsd [rsp + HOLO_VEC_BYTES], xmm1  ; save confidence_modulator (use space above temp vec)
     call holo_gen_vec         ; generate ctx_vec
 
     lea rdi, [rbx + STATE_OFFSET + ST_SELF_MODEL_VEC]
@@ -1191,10 +1191,10 @@ dispatch_predict:
     movq xmm2, rax
     mulsd xmm0, xmm2          ; self_boost = self_sim * 0.5
 
-    movsd xmm1, [rsp + 8192]  ; restore confidence_modulator
+    movsd xmm1, [rsp + HOLO_VEC_BYTES]  ; restore confidence_modulator
     addsd xmm1, xmm0          ; confidence_modulator += self_boost
 
-    add rsp, 8200
+    add rsp, (HOLO_VEC_BYTES + 8)
     pop rbx
 
     movsd [rsp + 72], xmm1    ; save confidence_modulator
@@ -1217,7 +1217,7 @@ dispatch_predict:
     ; Schema match! Extract filler at position 0 (predicted next token position)
     ; filler ≈ unbind(struct_ctx, ROLE_POS_0)
     push r12                  ; save ctx_hash
-    sub rsp, 8192             ; temp buffer for filler vector
+    sub rsp, HOLO_VEC_BYTES   ; temp buffer for filler vector
     xor edi, edi              ; role_idx = 0 (next token position)
     mov rsi, rsp              ; output buffer
     call schema_extract_var
@@ -1227,7 +1227,7 @@ dispatch_predict:
     call schema_query_filler  ; eax = best matching token (0 if none)
     mov r15d, eax             ; save schema prediction
 
-    add rsp, 8192
+    add rsp, HOLO_VEC_BYTES
     pop r12
 
     test r15d, r15d

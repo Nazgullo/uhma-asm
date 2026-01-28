@@ -31,7 +31,7 @@ section .data
     prompt_str:     db "uhma> ", 0
     prompt_len      equ 6
     banner_str:     db "UHMA x86_64 — Unified Holographic Memory Architecture", 10
-                    db "Surface: 8GB RWX | VSA: 1024-dim f64 | Self-modifying dispatch", 10
+                    db "Surface: 8GB RWX | VSA: 8192-dim f64 | Self-modifying dispatch", 10
                     db "Type 'help' for commands, text to process, or Ctrl-D to exit.", 10, 10, 0
     help_str:       db "Commands:", 10
                     db "  help          Show this help", 10

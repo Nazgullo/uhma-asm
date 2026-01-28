@@ -238,7 +238,7 @@ introspect_scan_regions:
     push r13
     push r14
     push r15
-    sub rsp, 8200               ; temp vector (8192) + 8 alignment (5 pushes = odd)
+    sub rsp, (HOLO_VEC_BYTES + 8)               ; temp vector + 8 alignment (5 pushes = odd)
 
     mov rbx, SURFACE_BASE
     lea r12, [rbx + REGION_TABLE_OFFSET]  ; region table base
@@ -350,7 +350,7 @@ introspect_scan_regions:
     jmp .scan_loop
 
 .scan_done:
-    add rsp, 8200               ; free temp vector + alignment
+    add rsp, (HOLO_VEC_BYTES + 8)               ; free temp vector + alignment
     pop r15
     pop r14
     pop r13

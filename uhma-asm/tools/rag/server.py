@@ -94,8 +94,8 @@ def start_uhma():
         return False
 
 
-def send_to_uhma(text, timeout=10.0):
-    """Send text to UHMA and collect response."""
+def send_to_uhma(text):
+    """Send text to UHMA and collect response. No timeout - waits for prompt."""
     global uhma_process
 
     # Check if process died
@@ -106,17 +106,12 @@ def send_to_uhma(text, timeout=10.0):
     if not uhma_process:
         if not start_uhma():
             return "Error: UHMA not running and failed to start"
-        # Give UHMA time to fully initialize and print banner
         time.sleep(1.5)
-        # Drain the startup banner
-        drained = 0
         while not uhma_output_queue.empty():
             try:
                 uhma_output_queue.get_nowait()
-                drained += 1
             except:
                 break
-        log(f"Drained {drained} startup lines")
 
     # Send input
     log(f"Sending to UHMA: {text}")
@@ -125,32 +120,22 @@ def send_to_uhma(text, timeout=10.0):
             uhma_process.stdin.write(text + "\n")
             uhma_process.stdin.flush()
         except Exception as e:
-            log(f"Error sending: {e}")
             return f"Error sending to UHMA: {e}"
 
-    # Collect output until prompt or timeout
+    # Collect output until prompt or 3s idle (after first output)
     output_lines = []
-    deadline = time.time() + timeout
-    last_output_time = time.time()
-    got_first_output = False
-
-    while time.time() < deadline:
+    last_output = time.time()
+    while True:
         try:
-            line = uhma_output_queue.get(timeout=0.2)
+            line = uhma_output_queue.get(timeout=0.5)
             output_lines.append(line.rstrip())
-            last_output_time = time.time()
-            got_first_output = True
+            last_output = time.time()
             log(f"Got line: {line.rstrip()[:60]}")
-            # Check for prompt (indicates command complete)
             if line.strip().endswith("uhma>") or line.strip() == "uhma>":
                 break
         except queue.Empty:
-            # If we have output and haven't seen more for 0.5s, command is probably done
-            if got_first_output and (time.time() - last_output_time) > 0.5:
-                break
-            # If we haven't seen any output for 2s, something's wrong
-            if not got_first_output and (time.time() - last_output_time) > 2.0:
-                log("No output received after 2s")
+            # If we have output and 3s passed with no new output, done
+            if output_lines and (time.time() - last_output) > 3.0:
                 break
             continue
 
@@ -471,6 +456,102 @@ TOOLS = [
         "name": "quit",
         "description": "Gracefully shutdown UHMA (saves surface)",
         "inputSchema": {"type": "object", "properties": {}}
+    },
+
+    # =========================================================================
+    # Holographic Memory (Claude's cognitive layer)
+    # =========================================================================
+    {
+        "name": "mem_add",
+        "description": "Add entry to holographic memory (finding, failed, success, insight, warning, todo)",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "category": {"type": "string", "description": "Category: finding, failed, success, insight, warning, todo, question, location"},
+                "content": {"type": "string", "description": "What to remember"},
+                "context": {"type": "string", "description": "What were you doing when you learned this?"},
+                "source": {"type": "string", "description": "File:line or tool name (optional)"}
+            },
+            "required": ["category", "content"]
+        }
+    },
+    {
+        "name": "mem_query",
+        "description": "Query holographic memory by semantic similarity",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "What to search for"},
+                "category": {"type": "string", "description": "Limit to category (optional)"},
+                "limit": {"type": "integer", "description": "Max results (default 10)"}
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "mem_outcome",
+        "description": "Record outcome for a memory entry (worked or failed)",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entry_id": {"type": "string", "description": "Entry ID"},
+                "worked": {"type": "boolean", "description": "True if it worked, False if failed"}
+            },
+            "required": ["entry_id", "worked"]
+        }
+    },
+    {
+        "name": "mem_failed",
+        "description": "Get failed approaches (to avoid repeating mistakes)",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "context": {"type": "string", "description": "Current context (optional)"},
+                "limit": {"type": "integer", "description": "Max results (default 10)"}
+            }
+        }
+    },
+    {
+        "name": "mem_success",
+        "description": "Get successful approaches (to reuse what worked)",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "context": {"type": "string", "description": "Current context (optional)"},
+                "limit": {"type": "integer", "description": "Max results (default 10)"}
+            }
+        }
+    },
+    {
+        "name": "mem_state",
+        "description": "Get cognitive state (confidence, confusion, warnings)",
+        "inputSchema": {"type": "object", "properties": {}}
+    },
+    {
+        "name": "mem_summary",
+        "description": "Get holographic memory summary",
+        "inputSchema": {"type": "object", "properties": {}}
+    },
+    {
+        "name": "mem_recent",
+        "description": "Get recent memory entries",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Max results (default 10)"}
+            }
+        }
+    },
+    {
+        "name": "mem_ison",
+        "description": "Export relevant memories as ISON (for context injection)",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "context": {"type": "string", "description": "Current context to match against"},
+                "limit": {"type": "integer", "description": "Max entries (default 10)"}
+            }
+        }
     }
 ]
 
@@ -506,7 +587,9 @@ def handle_tool_call(name, args):
         return send_to_uhma(f"load {args['file']}")
 
     if name == 'eat':
-        return send_to_uhma(f"eat {args['file']}", timeout=60.0)  # Longer timeout for digestion
+        # Async - return immediately, output streams via trace channel
+        send_to_uhma_async(f"eat {args['file']}")
+        return f"Digesting {args['file']} - output streaming via trace channel"
 
     if name == 'export':
         return send_to_uhma(f"export {args['region']}")
@@ -531,10 +614,125 @@ def handle_tool_call(name, args):
             with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
                 f.write(content)
                 tmp_path = f.name
-            result = send_to_uhma(f"eat {tmp_path}", timeout=60.0)
+            result = send_to_uhma(f"eat {tmp_path}")
             return f"Fetched {len(content)} chars from {url}\n\n{result}"
         else:
             return content
+
+    # =========================================================================
+    # Holographic Memory Tools
+    # =========================================================================
+    if name == 'mem_add':
+        from holo_memory import HoloMemory
+        mem = HoloMemory()
+        entry = mem.add(
+            category=args['category'],
+            content=args['content'],
+            context=args.get('context'),
+            source=args.get('source')
+        )
+        return f"Added [{entry.category}] {entry.id}: {entry.content[:80]}"
+
+    if name == 'mem_query':
+        from holo_memory import HoloMemory
+        mem = HoloMemory()
+        results = mem.query(
+            query_text=args['query'],
+            category=args.get('category'),
+            limit=args.get('limit', 10)
+        )
+        if not results:
+            return "No matching memories found"
+        lines = []
+        for entry, sim in results:
+            outcome = "✓" if entry.outcome else ("✗" if entry.outcome is False else "?")
+            lines.append(f"[{sim:.2f}] [{entry.category}] {outcome} {entry.content[:100]}")
+            lines.append(f"       id={entry.id}")
+        return "\n".join(lines)
+
+    if name == 'mem_outcome':
+        from holo_memory import HoloMemory
+        mem = HoloMemory()
+        success = mem.outcome(args['entry_id'], args['worked'])
+        if success:
+            return f"Recorded outcome: {'SUCCESS' if args['worked'] else 'FAILURE'} for {args['entry_id']}"
+        return f"Entry not found: {args['entry_id']}"
+
+    if name == 'mem_failed':
+        from holo_memory import HoloMemory
+        mem = HoloMemory()
+        failed = mem.failed_approaches(
+            context=args.get('context'),
+            limit=args.get('limit', 10)
+        )
+        if not failed:
+            return "No failed approaches recorded"
+        lines = ["FAILED APPROACHES (don't repeat these):"]
+        for entry in failed:
+            lines.append(f"- {entry.content[:150]}")
+            if entry.context:
+                lines.append(f"  context: {entry.context[:80]}")
+        return "\n".join(lines)
+
+    if name == 'mem_success':
+        from holo_memory import HoloMemory
+        mem = HoloMemory()
+        success = mem.successful_approaches(
+            context=args.get('context'),
+            limit=args.get('limit', 10)
+        )
+        if not success:
+            return "No successful approaches recorded"
+        lines = ["SUCCESSFUL APPROACHES (reuse these):"]
+        for entry in success:
+            lines.append(f"- {entry.content[:150]}")
+            if entry.context:
+                lines.append(f"  context: {entry.context[:80]}")
+        return "\n".join(lines)
+
+    if name == 'mem_state':
+        from holo_memory import HoloMemory
+        mem = HoloMemory()
+        state = mem.get_state()
+        lines = ["COGNITIVE STATE:"]
+        lines.append(f"  Confidence: {state['confidence']:.2f}")
+        lines.append(f"  Confusion:  {state['confusion']:.2f}")
+        lines.append(f"  Progress:   {state['progress']:.2f}")
+        lines.append(f"  Repetition: {state['repetition']:.2f}")
+        lines.append(f"  Fatigue:    {state['fatigue']:.2f}")
+        lines.append(f"  Entries:    {state['entry_count']}")
+        lines.append(f"  Hit ratio:  {state['hit_ratio']:.2f}")
+        warnings = state.get('warnings', [])
+        if warnings:
+            lines.append("\nWARNINGS:")
+            for w in warnings:
+                lines.append(f"  ! {w}")
+        return "\n".join(lines)
+
+    if name == 'mem_summary':
+        from holo_memory import HoloMemory
+        mem = HoloMemory()
+        return mem.summary()
+
+    if name == 'mem_recent':
+        from holo_memory import HoloMemory
+        mem = HoloMemory()
+        recent = mem.recent(args.get('limit', 10))
+        if not recent:
+            return "No memory entries"
+        lines = ["RECENT MEMORIES:"]
+        for entry in recent:
+            outcome = "✓" if entry.outcome else ("✗" if entry.outcome is False else "?")
+            lines.append(f"[{entry.category}] {outcome} {entry.content[:100]}")
+        return "\n".join(lines)
+
+    if name == 'mem_ison':
+        from holo_memory import HoloMemory
+        mem = HoloMemory()
+        return mem.to_ison(
+            context=args.get('context'),
+            limit=args.get('limit', 10)
+        )
 
     return f"Unknown tool: {name}"
 
@@ -825,7 +1023,7 @@ def handle_feed_client(client_socket, addr):
     """Handle feed port client - async send, no wait."""
     log(f"Feed client connected from {addr}")
     try:
-        client_socket.settimeout(5.0)
+        client_socket.settimeout(None)
         data = b""
         while True:
             chunk = client_socket.recv(4096)

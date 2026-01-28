@@ -1,0 +1,29 @@
+{
+  "hooks": {
+    "preToolUse": [
+      {
+        "matcher": "Read|Edit|Write|Grep|Glob",
+        "command": ["python3", "tools/rag/hook.py"],
+        "timeout": 5000
+      }
+    ],
+    "postToolUse": [
+      {
+        "matcher": ".*",
+        "command": ["python3", "tools/rag/session_capture.py"],
+        "timeout": 3000
+      }
+    ],
+    "stop": [
+      {
+        "command": ["python3", "tools/rag/session_end.py"],
+        "timeout": 10000
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(python3 tools/rag/*)"
+    ]
+  }
+}

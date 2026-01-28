@@ -6,18 +6,18 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /home/peter/Desktop/STARWARS/uhma-asm/tools/rag/hook.py"
+            "command": "/home/peter/Desktop/STARWARS/uhma-asm/.venv/bin/python3 /home/peter/Desktop/STARWARS/uhma-asm/tools/rag/hook.py"
           }
         ]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "Edit|Write",
+        "matcher": "Edit|Write|Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /home/peter/Desktop/STARWARS/uhma-asm/tools/rag/session_end.py"
+            "command": "/home/peter/Desktop/STARWARS/uhma-asm/.venv/bin/python3 /home/peter/Desktop/STARWARS/uhma-asm/tools/rag/capture.py"
           }
         ]
       }
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "rm -f /home/peter/Desktop/STARWARS/uhma-asm/tools/rag/memory/.session_active"
+            "command": "/home/peter/Desktop/STARWARS/uhma-asm/.venv/bin/python3 /home/peter/Desktop/STARWARS/uhma-asm/tools/rag/session_capture.py"
           }
         ]
       }

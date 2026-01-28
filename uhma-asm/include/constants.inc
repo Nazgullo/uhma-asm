@@ -436,9 +436,9 @@
 ;; VSA Configuration
 ;; ============================================================
 
-%define VSA_DIM             1024
-%define VSA_VEC_BYTES       (VSA_DIM * 8)     ; 8192 bytes per vector (f64)
-%define VSA_MAX_TOKENS      65536
+%define VSA_DIM             8192
+%define VSA_VEC_BYTES       (VSA_DIM * 8)     ; 65536 bytes per vector (f64)
+%define VSA_MAX_TOKENS      16384             ; Reduced to 16K to keep size 1GB
 
 ;; ============================================================
 ;; Holographic Associative Memory Layout (f64 precision)
@@ -448,9 +448,9 @@
 ;; ============================================================
 
 %define HOLO_OFFSET         HOLO_WARM_OFFSET  ; alias for compatibility
-%define HOLO_TRACES         131072            ; 128K traces (expanded from 4096!)
-%define HOLO_DIM            1024              ; elements per trace vector
-%define HOLO_VEC_BYTES      (HOLO_DIM * 8)    ; 8192 bytes per trace (1024 x f64)
+%define HOLO_TRACES         16384             ; Reduced to 16K traces to keep size 1GB
+%define HOLO_DIM            8192              ; elements per trace vector
+%define HOLO_VEC_BYTES      (HOLO_DIM * 8)    ; 65536 bytes per trace (f64)
 %define HOLO_TOTAL          (HOLO_TRACES * HOLO_VEC_BYTES)  ; 1GB in warm zone
 
 ; Vocabulary now in warm zone after VSA embeddings
@@ -468,7 +468,7 @@
 ;; ============================================================
 
 %define CONFIDENCE_VEC_OFFSET META_OFFSET     ; in warm zone metacognition area
-%define CONFIDENCE_VEC_BYTES  HOLO_VEC_BYTES  ; 8192 bytes (1024 x f64)
+%define CONFIDENCE_VEC_BYTES  HOLO_VEC_BYTES  ; 65536 bytes
 %define CONFIDENCE_HIT_WEIGHT  0x3FB999999999999A       ; +0.1 f64
 %define CONFIDENCE_MISS_WEIGHT 0xBFB999999999999A       ; -0.1 f64
 %define CONFIDENCE_DECAY       0x3FEFFAE147AE147B       ; 0.999 f64 (slow decay)
@@ -482,15 +482,15 @@
 
 ;; ============================================================
 ;; Somatic Grounding: Valence Channel in VSA Vectors
-;; The last element of every 1024-dim vector encodes valence
+;; The last element of every vector encodes valence
 ;; (emotional charge). Patterns learned during high-energy states
 ;; get positive valence; those during low-energy get negative.
 ;; This creates "felt sense" of memories — not just associations
 ;; but emotional connotations carried by the pattern itself.
 ;; ============================================================
 
-%define VSA_VALENCE_INDEX       1023              ; last element is valence channel
-%define VSA_VALENCE_OFFSET      (VSA_VALENCE_INDEX * 8)  ; 8184 bytes from start
+%define VSA_VALENCE_INDEX       (VSA_DIM - 1)     ; last element is valence channel
+%define VSA_VALENCE_OFFSET      (VSA_VALENCE_INDEX * 8)
 
 ; Valence encoding constants
 %define VALENCE_MIN             -1.0
@@ -933,8 +933,8 @@
 ; Self-awareness state fields
 %define ST_IS_SELF_REF      (ST_RECEIPT_END)              ; u32 flag: current token is self-referential
 %define ST_SELF_SURPRISE_COUNT (ST_IS_SELF_REF + 4)       ; u32 count of self-model violations
-%define ST_SELF_MODEL_VEC   (ST_SELF_SURPRISE_COUNT + 4)  ; f64[1024] holographic self-representation
-%define ST_SELF_MODEL_VEC_SIZE (1024 * 8)                 ; 8KB for 1024-dim f64 vector
+%define ST_SELF_MODEL_VEC   (ST_SELF_SURPRISE_COUNT + 4)  ; f64[HOLO_DIM] holographic self-representation
+%define ST_SELF_MODEL_VEC_SIZE HOLO_VEC_BYTES             ; Size matches HOLO_VEC_BYTES
 %define ST_SELF_AWARENESS_END  (ST_SELF_MODEL_VEC + ST_SELF_MODEL_VEC_SIZE)
 
 ; Base fidelity by event type (f64 bit patterns)

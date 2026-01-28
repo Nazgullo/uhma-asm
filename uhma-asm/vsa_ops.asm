@@ -59,14 +59,14 @@ section .data
 
 section .bss
     align 32
-    ; Safety template vector (1024 x f64 = 8KB)
-    safety_template:    resq 1024
+    ; Safety template vector (HOLO_DIM x f64)
+    safety_template:    resq HOLO_DIM
 
     ; Dangerous code template vector
-    danger_template:    resq 1024
+    danger_template:    resq HOLO_DIM
 
     ; Scratch vector for encoding
-    scratch_vec:        resq 1024
+    scratch_vec:        resq HOLO_DIM
 
 section .text
 
@@ -516,10 +516,10 @@ encode_code_to_vector:
     mov r13d, esi         ; code_len
     mov r14, rdx          ; out_vec
 
-    ; Zero the output vector (f64: 1024 qwords = 8192 bytes)
+    ; Zero the output vector (f64: HOLO_DIM qwords)
     mov rdi, r14
     xor eax, eax
-    mov ecx, 1024
+    mov ecx, HOLO_DIM
     rep stosq
 
     ; Walk through code, decode each instruction, encode to vector

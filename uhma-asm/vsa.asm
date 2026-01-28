@@ -1,4 +1,4 @@
-; vsa.asm — Vector Symbolic Architecture: 1024-dim f64 holographic operations
+; vsa.asm — Vector Symbolic Architecture: HOLO_DIM-dim f64 holographic operations
 ;
 ; @entry holo_bind_f64(rdi=a, rsi=b, rdx=out) -> void ; XOR-like binding
 ; @entry holo_unbind_f64(rdi=a, rsi=b, rdx=out) -> void ; = bind (HRR self-inverse)
@@ -15,13 +15,13 @@
 ; @entry confidence_query(edi=ctx) -> xmm0=conf
 ; @calledby dispatch.asm, learn.asm, receipt.asm, dreams.asm
 ;
-; STORAGE: HOLO_OFFSET, 256 zones × 8KB (f64[1024] each)
+; STORAGE: HOLO_OFFSET, 256 zones × HOLO_VEC_BYTES (f64[HOLO_DIM] each)
 ;
 ; KEY INSIGHT: unbind = bind in HRR (Holographic Reduced Representation)
 ;   Query: unbind(probe, trace) → resonates with bound content
 ;
 ; GOTCHAS:
-;   - All holo_* funcs use f64[1024], legacy vsa_* use f32[1024]
+;   - All holo_* funcs use f64[HOLO_DIM], legacy vsa_* use f32[HOLO_DIM]
 ;   - holo_gen_vec is deterministic: same seed = same vector
 ;   - Superposition accumulates - trace gets denser, needs decay
 %include "syscalls.inc"
@@ -55,7 +55,7 @@ vsa_init_random:
 
     ; Calculate vector address
     mov rdi, r12
-    shl rdi, 13               ; * 8192 (VSA_VEC_BYTES for f64)
+    shl rdi, 16               ; * 65536 (VSA_VEC_BYTES for f64)
     add rdi, rbx              ; vsa_base + token_id * VSA_VEC_BYTES
 
     ; Fill with random bytes
@@ -512,7 +512,7 @@ vsa_scale:
 global vsa_get_token_vec
 vsa_get_token_vec:
     mov eax, edi
-    shl rax, 13               ; * 8192 (VSA_VEC_BYTES for f64)
+    shl rax, 16               ; * 65536 (VSA_VEC_BYTES for f64)
     mov rcx, SURFACE_BASE + VSA_OFFSET
     add rax, rcx
     ret
@@ -762,7 +762,7 @@ holo_gen_vec:
 
     ; basis_idx = hash & 0xFF
     movzx eax, r12b
-    shl rax, 13               ; * 8192 (VSA_VEC_BYTES for f64 basis)
+    shl rax, 16               ; * 65536 (VSA_VEC_BYTES for f64 basis)
     mov rbx, SURFACE_BASE + VSA_OFFSET
     add rbx, rax              ; rbx = f64 basis vector ptr
 
