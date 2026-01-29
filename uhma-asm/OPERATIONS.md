@@ -517,6 +517,341 @@ HELLO claude
 
 ---
 
+## Real-World Usage Examples
+
+### Example 1: Automated Headless Training
+
+When you can't use interactive mode (scripts, CI, other AI agents):
+
+```bash
+#!/bin/bash
+# train_headless.sh - Non-interactive training
+
+cd /home/peter/Desktop/STARWARS/uhma-asm
+
+# 1. Kill old instances, start fresh
+pkill -9 uhma 2>/dev/null
+sleep 1
+
+# 2. Start headless (enables TCP channels)
+./uhma < /dev/null > uhma_training.log 2>&1 &
+UHMA_PID=$!
+sleep 3
+
+# 3. Verify it's running
+if ! kill -0 $UHMA_PID 2>/dev/null; then
+    echo "UHMA failed to start"
+    exit 1
+fi
+
+# 4. Send commands via TCP (FEED channel: 9999 in, 9998 out)
+echo "eat codebase.txt" | nc -q 1 localhost 9999
+sleep 60
+
+echo "observe" | nc -q 1 localhost 9999
+sleep 10
+
+echo "dream" | nc -q 1 localhost 9999
+sleep 10
+
+# 5. Query status via TCP (QUERY channel: 9997 in, 9996 out)
+echo "status" | nc -q 1 localhost 9997
+nc -w 2 localhost 9996
+
+echo "Training complete. UHMA running as PID $UHMA_PID"
+```
+
+---
+
+### Example 2: Chunked Feeding for Large Files
+
+Large files can overwhelm UHMA. Split into chunks:
+
+```bash
+#!/bin/bash
+# feed_chunked.sh <file> [chunk_lines]
+
+FILE="$1"
+CHUNK_LINES="${2:-500}"  # Default 500 lines per chunk
+
+if [ ! -f "$FILE" ]; then
+    echo "Usage: $0 <file> [chunk_lines]"
+    exit 1
+fi
+
+TOTAL=$(wc -l < "$FILE")
+CHUNKS=$(( (TOTAL + CHUNK_LINES - 1) / CHUNK_LINES ))
+
+echo "Feeding $FILE ($TOTAL lines) in $CHUNKS chunks..."
+
+OFFSET=1
+CHUNK=1
+
+while [ $OFFSET -le $TOTAL ]; do
+    # Extract chunk to temp file
+    sed -n "${OFFSET},$((OFFSET + CHUNK_LINES - 1))p" "$FILE" > /tmp/chunk.txt
+
+    # Feed via TCP
+    echo "eat /tmp/chunk.txt" | nc -q 1 localhost 9999
+
+    echo "  [$CHUNK/$CHUNKS] Lines $OFFSET-$((OFFSET + CHUNK_LINES - 1))"
+
+    sleep 5  # Pause between chunks
+
+    OFFSET=$((OFFSET + CHUNK_LINES))
+    CHUNK=$((CHUNK + 1))
+done
+
+rm -f /tmp/chunk.txt
+echo "Done feeding $FILE"
+```
+
+**Usage:**
+```bash
+# Start UHMA headless first
+./uhma < /dev/null &
+sleep 3
+
+# Feed large file in 500-line chunks
+./feed_chunked.sh movie_conversations.txt 500
+
+# Feed codebase in 300-line chunks (denser content)
+./feed_chunked.sh codebase.txt 300
+```
+
+---
+
+### Example 3: Full Training Pipeline with Log Feedback
+
+Train UHMA on content + its own learning logs (meta-learning):
+
+```bash
+#!/bin/bash
+# full_training.sh - Complete training with log feedback
+
+cd /home/peter/Desktop/STARWARS/uhma-asm
+
+# Config
+CHUNK_LINES=500
+PAUSE_CHUNK=5
+PAUSE_FILE=30
+
+# Start fresh
+pkill -9 uhma 2>/dev/null
+rm -f uhma_training.log
+sleep 1
+
+./uhma < /dev/null > uhma_training.log 2>&1 &
+sleep 3
+
+# Helper: feed file in chunks
+feed_chunked() {
+    local file="$1"
+    local lines=$(wc -l < "$file")
+    local chunks=$(( (lines + CHUNK_LINES - 1) / CHUNK_LINES ))
+    local offset=1
+    local n=1
+
+    echo "[$(date +%H:%M:%S)] Feeding $file ($lines lines, $chunks chunks)"
+
+    while [ $offset -le $lines ]; do
+        sed -n "${offset},$((offset + CHUNK_LINES - 1))p" "$file" > /tmp/chunk.txt
+        echo "eat /tmp/chunk.txt" | nc -q 1 localhost 9999
+        echo "  Chunk $n/$chunks"
+        sleep $PAUSE_CHUNK
+        offset=$((offset + CHUNK_LINES))
+        n=$((n + 1))
+    done
+    rm -f /tmp/chunk.txt
+}
+
+# Helper: query status
+status() {
+    echo "status" | nc -q 1 localhost 9997
+    nc -w 2 localhost 9996 2>/dev/null
+}
+
+# Helper: send command
+cmd() {
+    echo "$1" | nc -q 1 localhost 9999
+    echo "[$(date +%H:%M:%S)] $1"
+}
+
+echo "=== Pass 1: Codebase ==="
+feed_chunked codebase.txt
+sleep $PAUSE_FILE
+status
+
+echo "=== Pass 1: Training Log (meta-learning) ==="
+feed_chunked uhma_training.log
+sleep $PAUSE_FILE
+
+cmd "observe"
+sleep 10
+cmd "dream"
+sleep 10
+status
+
+echo "=== Pass 2: Codebase ==="
+feed_chunked codebase.txt
+sleep $PAUSE_FILE
+
+echo "=== Pass 2: Training Log ==="
+feed_chunked uhma_training.log
+sleep $PAUSE_FILE
+
+cmd "observe"
+sleep 10
+cmd "dream"
+sleep 10
+
+echo "=== Training Complete ==="
+status
+```
+
+---
+
+### Example 4: Continuous Monitoring
+
+Monitor UHMA while it's running:
+
+```bash
+# Option 1: Watch status every 2 minutes
+watch -n 120 'echo "status" | nc -q 1 localhost 9997; nc -w 1 localhost 9996'
+
+# Option 2: Log to file with timestamps
+while true; do
+    echo "=== $(date) ===" >> uhma_monitor.log
+    echo "status" | nc -q 1 localhost 9997
+    nc -w 2 localhost 9996 >> uhma_monitor.log 2>/dev/null
+    sleep 120
+done
+
+# Option 3: Monitor emergence indicators
+watch -n 120 'echo "intro" | nc -q 1 localhost 9997; nc -w 1 localhost 9996'
+```
+
+---
+
+### Example 5: Safe File Feeding (Prevents Kills)
+
+If UHMA gets killed during large file processing:
+
+```bash
+#!/bin/bash
+# safe_feed.sh <file> - Ultra-safe feeding with health checks
+
+FILE="$1"
+CHUNK=200        # Smaller chunks
+PAUSE=10         # Longer pauses
+HEALTH_EVERY=5   # Health check every N chunks
+
+feed_with_health() {
+    local lines=$(wc -l < "$FILE")
+    local offset=1
+    local n=1
+
+    while [ $offset -le $lines ]; do
+        # Health check
+        if [ $((n % HEALTH_EVERY)) -eq 0 ]; then
+            if ! pgrep -x uhma > /dev/null; then
+                echo "UHMA died! Restarting..."
+                ./uhma < /dev/null >> uhma_training.log 2>&1 &
+                sleep 3
+            fi
+        fi
+
+        # Feed chunk
+        sed -n "${offset},$((offset + CHUNK - 1))p" "$FILE" > /tmp/safe_chunk.txt
+        echo "eat /tmp/safe_chunk.txt" | nc -q 1 localhost 9999 2>/dev/null
+
+        echo "Chunk $n (lines $offset-$((offset + CHUNK - 1)))"
+        sleep $PAUSE
+
+        offset=$((offset + CHUNK))
+        n=$((n + 1))
+    done
+}
+
+feed_with_health
+rm -f /tmp/safe_chunk.txt
+```
+
+---
+
+### Example 6: Interactive Session via TCP
+
+Connect interactively to headless UHMA:
+
+```bash
+# Terminal 1: Start UHMA headless
+./uhma < /dev/null > uhma.log 2>&1 &
+
+# Terminal 2: Interactive query session
+# (Opens persistent connection to query channel)
+while true; do
+    read -p "uhma> " cmd
+    [ "$cmd" = "quit" ] && break
+    echo "$cmd" | nc -q 1 localhost 9997
+    nc -w 2 localhost 9996
+done
+
+# Terminal 3: Watch feed output (optional)
+nc localhost 9998
+```
+
+---
+
+### Example 7: Prepare Training Files
+
+```bash
+# Create codebase.txt from all assembly files
+cat *.asm include/*.inc > codebase.txt
+echo "Created codebase.txt ($(wc -l < codebase.txt) lines)"
+
+# Create smaller test file
+head -1000 movie_conversations.txt > test_corpus.txt
+
+# Verify files
+ls -lh codebase.txt movie_conversations.txt test_corpus.txt
+```
+
+---
+
+### Example 8: Checkpoint and Restore
+
+```bash
+# Save checkpoint before risky operation
+echo "save checkpoint_before_experiment" | nc -q 1 localhost 9999
+sleep 2
+
+# Do experiment...
+echo "eat experimental_data.txt" | nc -q 1 localhost 9999
+
+# If things go wrong, restore
+echo "load checkpoint_before_experiment" | nc -q 1 localhost 9999
+```
+
+---
+
+### TCP Channel Quick Reference
+
+| Action | Command |
+|--------|---------|
+| Send to FEED | `echo "CMD" \| nc -q 1 localhost 9999` |
+| Read FEED output | `nc -w 2 localhost 9998` |
+| Send to QUERY | `echo "CMD" \| nc -q 1 localhost 9997` |
+| Read QUERY output | `nc -w 2 localhost 9996` |
+| Send to DEBUG | `echo "CMD" \| nc -q 1 localhost 9995` |
+| Read DEBUG output | `nc -w 2 localhost 9994` |
+
+**Channel routing:**
+- FEED (9999/9998): `eat`, `dream`, `observe`, `compact`, `save`, `load`
+- QUERY (9997/9996): `status`, `why`, `misses`, `intro`, `self`, `presence`, `drives`
+- DEBUG (9995/9994): `receipts`, `trace`
+
+---
+
 ## Quick Reference Card
 
 ```
