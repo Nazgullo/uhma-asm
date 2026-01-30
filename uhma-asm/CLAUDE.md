@@ -424,6 +424,36 @@ npx localtunnel --port 8080             # localtunnel
 - **Files**: `tools/rag/memory/entries.json`, `current_state.md`
 - Hooks auto-inject recent memory at session start, auto-save at session end
 
+## Claude Code Session Memory
+
+### "holo" Command
+Type `holo` (or `holo: <note>`) to force Claude to save the current session to holographic memory.
+
+**What gets saved:**
+- Problems investigated and root causes found
+- Bugs fixed (with code examples of wrong vs right)
+- Decisions made and why
+- Gotchas discovered
+
+**What does NOT get saved:**
+- "Read file X" noise
+- Verbose explanations (compressed to essence)
+
+### Circuit Breaker (Autonomous Safety)
+The hook system tracks action-outcome pairs with semantic similarity:
+- **Momentum**: Rises with successes, falls with failures
+- **Warning**: First loop detection gives one chance to recover
+- **Hard Stop**: Confirmed loop halts autonomous operation
+
+Triggers:
+- Same action failing with same error 3+ times
+- Momentum critically low (< 0.1) with 5+ failures
+
+Reset after hard stop: `rm tools/rag/memory/.hook_state.json`
+
+### Auto-Save
+Sessions auto-save every 30 minutes of activity.
+
 ## Common Commands
 ```bash
 # Interactive session

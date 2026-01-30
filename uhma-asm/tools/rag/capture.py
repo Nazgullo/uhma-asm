@@ -1,24 +1,27 @@
 #!/usr/bin/env python3
 """
-capture.py — PostToolUse hook for automatic memory capture.
+capture.py — PostToolUse hook for circuit breaker + memory capture.
 
-Analyzes tool results and stores learnings in holographic memory:
-- Edit/Write failures → 'failed' category
-- Successful patterns → 'finding' category
-- Error messages → extracted and stored
-- File context → associated with entries
-
-This is the WRITE side of memory. hook.py is the READ side.
+Records action-outcome pairs for intelligent loop detection:
+- Tracks (action_signature, outcome_signature, success) tuples
+- Feeds hook.py circuit breaker via shared state file
+- Stores semantic failures in holographic memory
 """
 
 import sys
 import json
 import re
+import hashlib
 from pathlib import Path
 from datetime import datetime
 
 SCRIPT_DIR = Path(__file__).parent
+MEMORY_DIR = SCRIPT_DIR / 'memory'
 DEBUG_LOG = SCRIPT_DIR / 'capture_debug.log'
+STATE_FILE = MEMORY_DIR / '.hook_state.json'
+
+# Tools that matter for loop detection (not Read/Grep/Glob)
+TRACKED_TOOLS = {'Edit', 'Write', 'NotebookEdit', 'Bash'}
 
 def log_debug(msg):
     try:
@@ -27,12 +30,102 @@ def log_debug(msg):
     except:
         pass
 
+# =============================================================================
+# Semantic Hashing (must match hook.py)
+# =============================================================================
+
+def semantic_hash(text, granularity=3):
+    """Create semantic hash for fuzzy matching."""
+    if not text:
+        return ""
+    text = text.lower().strip()
+    noise = {'the', 'a', 'an', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'is', 'was', 'be'}
+    tokens = [t for t in text.split() if t not in noise and len(t) > 2]
+    shingles = set()
+    joined = ' '.join(tokens[:20])
+    for i in range(len(joined) - granularity + 1):
+        shingles.add(joined[i:i+granularity])
+    return hashlib.md5('|'.join(sorted(shingles)).encode()).hexdigest()[:12]
+
+def action_signature(tool_name, tool_input):
+    """Create semantic signature of an action."""
+    parts = [tool_name]
+    if fp := tool_input.get('file_path') or tool_input.get('path'):
+        parts.append(Path(fp).name)
+    if old := tool_input.get('old_string'):
+        parts.append(f"old:{semantic_hash(old)}")
+    if new := tool_input.get('new_string'):
+        parts.append(f"new:{semantic_hash(new)}")
+    if cmd := tool_input.get('command'):
+        parts.append(f"cmd:{semantic_hash(cmd)}")
+    return '|'.join(parts)
+
+def outcome_signature(error_msg):
+    """Create semantic signature of an outcome."""
+    if not error_msg:
+        return "success"
+    return f"err:{semantic_hash(error_msg)}"
+
+# =============================================================================
+# State Management
+# =============================================================================
+
+def load_state():
+    """Load hook state."""
+    default = {
+        'momentum': 0.5,
+        'action_outcomes': [],
+        'warning_issued': False,
+        'hard_stopped': False
+    }
+    try:
+        if STATE_FILE.exists():
+            state = json.loads(STATE_FILE.read_text())
+            for k in default:
+                if k not in state:
+                    state[k] = default[k]
+            return state
+    except:
+        pass
+    return default
+
+def save_state(state):
+    """Save hook state."""
+    try:
+        MEMORY_DIR.mkdir(exist_ok=True)
+        STATE_FILE.write_text(json.dumps(state, indent=2))
+    except Exception as e:
+        log_debug(f"Failed to save state: {e}")
+
+def record_outcome(state, action_sig, outcome_sig, success):
+    """Record action-outcome for circuit breaker."""
+    state['action_outcomes'].append({
+        'action': action_sig,
+        'outcome': outcome_sig,
+        'success': success,
+        'time': datetime.now().isoformat()
+    })
+    state['action_outcomes'] = state['action_outcomes'][-20:]  # Keep last 20
+
+    # Update momentum
+    if success:
+        state['momentum'] = min(1.0, state.get('momentum', 0.5) + 0.1)
+        state['warning_issued'] = False
+    else:
+        state['momentum'] = max(0.0, state.get('momentum', 0.5) * 0.9 - 0.05)
+
+    log_debug(f"Recorded: {action_sig[:30]} -> {outcome_sig} (momentum: {state['momentum']:.2f})")
+    return state
+
+# =============================================================================
+# Error Extraction
+# =============================================================================
+
 def extract_error(text: str) -> str:
     """Extract error message from tool output."""
     if not text:
         return None
 
-    # Common error patterns
     patterns = [
         r'error:\s*(.+?)(?:\n|$)',
         r'Error:\s*(.+?)(?:\n|$)',
@@ -40,33 +133,43 @@ def extract_error(text: str) -> str:
         r'FAILED:\s*(.+?)(?:\n|$)',
         r'exception:\s*(.+?)(?:\n|$)',
         r'Traceback.*?(\w+Error: .+?)(?:\n|$)',
+        r'command not found',
+        r'No such file or directory',
+        r'Permission denied',
     ]
 
     for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
         if match:
-            return match.group(1).strip()[:200]
+            return match.group(1).strip()[:200] if match.lastindex else match.group(0)[:200]
 
     return None
 
-def extract_context(hook_data: dict) -> str:
-    """Extract context from tool data."""
-    tool_name = hook_data.get('tool_name', '')
-    tool_input = hook_data.get('tool_input', {})
+def is_failure(result_content: str) -> tuple:
+    """Check if result indicates failure. Returns (is_failure, error_msg)."""
+    if not result_content:
+        return False, None
 
-    parts = [tool_name]
+    result_str = str(result_content)
 
-    # File path
-    file_path = tool_input.get('file_path') or tool_input.get('path', '')
-    if file_path:
-        parts.append(Path(file_path).name)
+    # Extract specific error
+    error = extract_error(result_str)
+    if error:
+        return True, error
 
-    # Command
-    command = tool_input.get('command', '')
-    if command:
-        parts.append(command[:50])
+    # Check for failure indicators
+    lower = result_str.lower()
+    if any(x in lower for x in ['error:', 'failed:', 'exception:', 'traceback']):
+        lines = result_str.split('\n')
+        for line in lines:
+            if any(x in line.lower() for x in ['error', 'failed', 'exception']):
+                return True, line[:200]
 
-    return ' '.join(parts)
+    return False, None
+
+# =============================================================================
+# Memory Storage
+# =============================================================================
 
 def store_memory(category: str, content: str, context: str, source: str = None):
     """Store entry in holographic memory."""
@@ -81,11 +184,19 @@ def store_memory(category: str, content: str, context: str, source: str = None):
         log_debug(f"Store failed: {e}")
         return None
 
-def analyze_and_capture(hook_data: dict):
-    """Analyze tool result and capture learnings."""
+# =============================================================================
+# Main Processing
+# =============================================================================
+
+def process_tool_result(hook_data: dict):
+    """Process tool result: record outcome + optionally store memory."""
     tool_name = hook_data.get('tool_name', '')
     tool_input = hook_data.get('tool_input', {})
     tool_result = hook_data.get('tool_result', {})
+
+    # Only track modifying tools for circuit breaker
+    if tool_name not in TRACKED_TOOLS:
+        return
 
     # Get result content
     result_content = ''
@@ -96,56 +207,36 @@ def analyze_and_capture(hook_data: dict):
     elif isinstance(tool_result, str):
         result_content = tool_result
 
-    context = extract_context(hook_data)
-    file_path = tool_input.get('file_path') or tool_input.get('path', '')
-    source = Path(file_path).name if file_path else tool_name
+    # Determine if failure
+    failed, error_msg = is_failure(result_content)
 
-    # Check for errors
-    error = extract_error(str(result_content))
-    if error:
-        store_memory('failed', error, context=context, source=source)
-        return
+    # Create signatures
+    action_sig = action_signature(tool_name, tool_input)
+    outcome_sig = outcome_signature(error_msg if failed else None)
 
-    # Check for explicit failure indicators
-    result_str = str(result_content).lower()
-    if any(x in result_str for x in ['error', 'failed', 'exception', 'traceback']):
-        # Extract meaningful part
-        lines = str(result_content).split('\n')
-        error_lines = [l for l in lines if any(x in l.lower() for x in ['error', 'failed', 'exception'])]
-        if error_lines:
-            store_memory('failed', error_lines[0][:200], context=context, source=source)
-        return
+    # Record outcome for circuit breaker
+    state = load_state()
+    state = record_outcome(state, action_sig, outcome_sig, success=not failed)
+    save_state(state)
 
-    # For Edit operations - capture what was changed
-    if tool_name == 'Edit':
-        old_string = tool_input.get('old_string', '')[:100]
-        new_string = tool_input.get('new_string', '')[:100]
-        if old_string and new_string and 'success' in result_str:
-            # Successful edit - store as finding if it looks significant
-            if len(new_string) > 20:
-                content = f"Changed in {source}: {old_string[:50]} → {new_string[:50]}"
-                store_memory('finding', content, context=context, source=source)
+    # Store failures in holographic memory
+    if failed and error_msg:
+        file_path = tool_input.get('file_path') or tool_input.get('path', '')
+        source = Path(file_path).name if file_path else tool_name
+        context = f"{tool_name} {source}"
+        store_memory('failed', error_msg, context=context, source=source)
 
-    # For Bash - capture successful commands with interesting output
-    elif tool_name == 'Bash':
-        command = tool_input.get('command', '')
-        if command and len(result_content) > 50:
-            # Don't store trivial outputs
-            if not any(x in command for x in ['echo', 'cat', 'ls']):
-                # Store command patterns that worked
-                if 'error' not in result_str and 'failed' not in result_str:
-                    pass  # Don't auto-store all bash - too noisy
+# =============================================================================
+# Main
+# =============================================================================
 
-# Main execution
 log_debug("Capture hook invoked")
 
 try:
     hook_data = json.load(sys.stdin)
-    log_debug(f"Received: {json.dumps(hook_data)[:300]}")
+    log_debug(f"Tool: {hook_data.get('tool_name', 'unknown')}")
 except (json.JSONDecodeError, EOFError) as e:
     log_debug(f"JSON parse error: {e}")
     sys.exit(0)
 
-analyze_and_capture(hook_data)
-
-# No output needed for PostToolUse capture
+process_tool_result(hook_data)
