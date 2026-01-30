@@ -109,6 +109,7 @@ extern resonant_extract_token
 extern emit_receipt_simple
 extern emit_receipt_full
 extern receipt_resonate
+extern cc_trace_resonate
 
 ;; ============================================================
 ;; dispatch_init
@@ -1196,6 +1197,18 @@ dispatch_predict:
 
     add rsp, (HOLO_VEC_BYTES + 8)
     pop rbx
+
+    ; === CC TRACE BOOST: boost confidence for Claude-like patterns ===
+    ; Query resonance with accumulated Claude patterns
+    movsd [rsp + 72], xmm1    ; save confidence_modulator temporarily
+    mov edi, r12d             ; ctx_hash
+    call cc_trace_resonate    ; xmm0 = CC resonance
+    ; cc_boost = cc_resonance * 0.3 (moderate boost for Claude patterns)
+    mov rax, 0x3FD3333333333333  ; 0.3 f64
+    movq xmm2, rax
+    mulsd xmm0, xmm2
+    movsd xmm1, [rsp + 72]    ; restore confidence_modulator
+    addsd xmm1, xmm0          ; confidence_modulator += cc_boost
 
     movsd [rsp + 72], xmm1    ; save confidence_modulator
 
