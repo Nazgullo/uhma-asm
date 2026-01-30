@@ -1164,6 +1164,8 @@
 %define ST_CC_TOKEN_COUNT   ST_CC_TRACE_END                   ; u64 tokens from CC
 %define ST_CC_UNIT_COUNT    (ST_CC_TOKEN_COUNT + 8)           ; u64 semantic units from CC
 %define ST_CC_END           (ST_CC_UNIT_COUNT + 8)
+%define ST_CC_INPUT_MODE    ST_CC_END                         ; u8 flag: 1=emit CC receipts during input
+%define ST_CC_SECTION_END   (ST_CC_INPUT_MODE + 8)            ; padded to 8 bytes
 
 ; Fidelity for CC events (high persistence - Claude patterns should last)
 %define FIDELITY_CC         0x3FEE666666666666                ; 0.95 - very persistent

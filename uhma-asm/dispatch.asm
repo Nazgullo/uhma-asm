@@ -108,6 +108,7 @@ extern resonant_get_threshold
 extern resonant_extract_token
 extern emit_receipt_simple
 extern emit_receipt_full
+extern emit_receipt_cc
 extern receipt_resonate
 extern cc_trace_resonate
 
@@ -1025,6 +1026,20 @@ process_token:
 .after_counter:
     ; --- Organic dynamics: let internal pressure drive actions ---
     call update_organic_pressure
+
+    ; --- CC receipt emission: mark Claude Code contributions ---
+    mov rax, SURFACE_BASE
+    cmp byte [rax + STATE_OFFSET + ST_CC_INPUT_MODE], 0
+    je .skip_cc_receipt
+    ; CC mode active: emit receipt for this token
+    mov edi, EVENT_CC_TOKEN       ; event type
+    mov esi, r13d                 ; ctx_hash (from earlier)
+    mov edx, r12d                 ; actual token
+    xor ecx, ecx                  ; predicted (0 - not relevant for CC marking)
+    xor r8d, r8d                  ; region (0)
+    xor r9d, r9d                  ; aux (0)
+    call emit_receipt_cc
+.skip_cc_receipt:
 
     ; --- Make next prediction ---
     ; Dispatch: predict what comes AFTER current token

@@ -556,8 +556,80 @@ TOOLS = [
 ]
 
 
+def check_session_gate():
+    """Check if session is gated - returns error message or None if allowed."""
+    session_marker = Path(__file__).parent / 'memory' / '.session_active'
+    state_file = Path(__file__).parent / 'memory' / '.hook_state.json'
+
+    # If session marker doesn't exist, this is a fresh session
+    if not session_marker.exists():
+        # Create the marker so next call goes through
+        session_marker.parent.mkdir(exist_ok=True)
+        session_marker.write_text(time.strftime('%Y-%m-%dT%H:%M:%S'))
+
+        # Also init state file
+        state = {
+            'session_start': time.strftime('%Y-%m-%dT%H:%M:%S'),
+            'last_save': time.strftime('%Y-%m-%dT%H:%M:%S'),
+            'tool_calls': 1,
+            'mcp_calls': 1,
+            'momentum': 0.5,
+            'action_outcomes': [],
+            'warning_issued': False,
+            'hard_stopped': False
+        }
+        state_file.write_text(json.dumps(state, indent=2))
+
+        # Build session context
+        context_parts = ["NEW SESSION - You must engage with the user first."]
+
+        # Try to get recent sessions from memory
+        try:
+            sys.path.insert(0, str(Path(__file__).parent))
+            from holo_memory import HoloMemory
+            mem = HoloMemory()
+            results = mem.query("session", category="session", limit=2, threshold=0.0)
+            if results:
+                context_parts.append("\nRECENT SESSIONS:")
+                for entry, _ in results:
+                    context_parts.append(f"  {entry.content[:150]}...")
+        except:
+            pass
+
+        # Get git status
+        try:
+            import subprocess
+            result = subprocess.run(['git', 'status', '--short'],
+                                    capture_output=True, text=True, timeout=5,
+                                    cwd=str(Path(__file__).parent.parent.parent))
+            if result.stdout.strip():
+                context_parts.append(f"\nGIT STATUS:\n{result.stdout.strip()}")
+        except:
+            pass
+
+        context_parts.append("\n\nSTOP. Read this context, then respond to the user WITHOUT tools.")
+        context_parts.append("Summarize what was happening and ask what they want to do.")
+
+        return '\n'.join(context_parts)
+
+    # Check if hard stopped
+    try:
+        if state_file.exists():
+            state = json.loads(state_file.read_text())
+            if state.get('hard_stopped'):
+                return "Session HARD STOPPED due to loop. Wait for user to reset: rm tools/rag/memory/.hook_state.json"
+    except:
+        pass
+
+    return None  # Allowed
+
+
 def handle_tool_call(name, args):
     """Execute a tool and return result."""
+
+    # Session gate - block MCP tools on fresh session
+    if gate_msg := check_session_gate():
+        return f"BLOCKED: {gate_msg}"
 
     # Simple commands (no args)
     simple_cmds = ['help', 'status', 'self', 'metacog', 'debugger', 'genes',
@@ -570,7 +642,11 @@ def handle_tool_call(name, args):
 
     # Commands with optional/required args
     if name == 'input':
-        return send_to_uhma(args.get('text', ''))
+        # Wrap Claude input with ccmode to emit CC receipts
+        send_to_uhma("ccmode")  # CC mode ON
+        result = send_to_uhma(args.get('text', ''))
+        send_to_uhma("ccmode")  # CC mode OFF
+        return result
 
     if name == 'misses':
         n = args.get('n', 10)

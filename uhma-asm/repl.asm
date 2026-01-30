@@ -71,6 +71,8 @@ section .data
     listen_enabled_msg: db "[RECEIPT] Listeners enabled (ring+print)", 10, 0
     bye_str:        db "Surface frozen. Goodbye.", 10, 0
     trace_next_msg: db "[JOURNEY] Will trace next token. Type text to trace, 'trace' to show.", 10, 0
+    ccmode_on_msg:  db "[CC MODE] ON - Claude Code tokens will emit CC receipts", 10, 0
+    ccmode_off_msg: db "[CC MODE] OFF - normal input mode", 10, 0
     unknown_str:    db "Unknown command. Type 'help'.", 10, 0
     status_hdr:     db "--- Status ---", 10, 0
     maturity_hdr:   db "--- Maturity (Developmental Stage) ---", 10, 0
@@ -557,6 +559,21 @@ repl_run:
     jmp .not_trace
 .not_trace:
 
+    ; "ccmode" (toggle Claude Code input mode)
+    cmp dword [rbx], 'ccmo'
+    jne .not_ccmode
+    cmp word [rbx + 4], 'de'
+    jne .not_ccmode
+    movzx eax, byte [rbx + 6]
+    test eax, eax
+    jz .cmd_ccmode
+    cmp eax, ' '
+    je .cmd_ccmode
+    cmp eax, 10
+    je .cmd_ccmode
+    jmp .not_ccmode
+.not_ccmode:
+
     ; "metacog" (7-char match: m-e-t-a-c-o-g)
     cmp dword [rbx], 'meta'
     jne .not_metacog
@@ -882,6 +899,21 @@ repl_run:
     ; Set flag to trace next token (0xFFFFFFFF means "trace next")
     mov dword [rax + STATE_OFFSET + ST_JOURNEY_TOKEN], 0xFFFFFFFF
     lea rdi, [rel trace_next_msg]
+    call print_cstr
+    jmp .loop
+
+.cmd_ccmode:
+    ; Toggle Claude Code input mode (ST_CC_INPUT_MODE)
+    mov rax, SURFACE_BASE
+    xor byte [rax + STATE_OFFSET + ST_CC_INPUT_MODE], 1  ; toggle 0↔1
+    cmp byte [rax + STATE_OFFSET + ST_CC_INPUT_MODE], 0
+    je .ccmode_off
+    ; CC mode now ON
+    lea rdi, [rel ccmode_on_msg]
+    call print_cstr
+    jmp .loop
+.ccmode_off:
+    lea rdi, [rel ccmode_off_msg]
     call print_cstr
     jmp .loop
 
