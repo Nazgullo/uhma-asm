@@ -2003,55 +2003,56 @@ emit_receipt_cc:
     push r12
     push r13
     push r14
-    sub rsp, HOLO_VEC_BYTES + 24  ; temp vector + locals
+    sub rsp, (HOLO_VEC_BYTES * 2) + 8  ; TWO temp vectors + confidence
+    ; Layout: [rsp] = vec1, [rsp + HOLO_VEC_BYTES] = vec2, [rsp + 2*HOLO_VEC_BYTES] = conf
 
     mov rbx, SURFACE_BASE
     mov r12d, edi             ; event_type (CC_TOKEN or CC_UNIT)
     mov r13d, esi             ; ctx_hash
     mov r14d, edx             ; token_id
-    movsd [rsp + HOLO_VEC_BYTES], xmm0  ; save confidence
+    movsd [rsp + (HOLO_VEC_BYTES * 2)], xmm0  ; save confidence
 
     ; === First emit to unified trace via emit_receipt_simple ===
     mov edi, r12d
     mov esi, r13d
     mov edx, r14d
-    movsd xmm0, [rsp + HOLO_VEC_BYTES]
+    movsd xmm0, [rsp + (HOLO_VEC_BYTES * 2)]
     call emit_receipt_simple
 
     ; === Now superpose into CC-specific trace ===
     ; Build receipt vector: bind(event, bind(ctx, token))
 
-    ; Generate context vector
+    ; Generate context vector into vec1
     mov edi, r13d
-    lea rsi, [rsp]            ; temp on stack
+    lea rsi, [rsp]            ; vec1
     call holo_gen_vec
 
-    ; Generate token vector
+    ; Generate token vector into vec2
     mov edi, r14d
-    lea rsi, [rsp + HOLO_VEC_BYTES + 8]  ; another temp area
+    lea rsi, [rsp + HOLO_VEC_BYTES]  ; vec2
     call holo_gen_vec
 
-    ; Bind ctx ⊗ token → temp
+    ; Bind ctx ⊗ token → vec1
     lea rdi, [rsp]
-    lea rsi, [rsp + HOLO_VEC_BYTES + 8]
-    lea rdx, [rsp]            ; overwrite with result
+    lea rsi, [rsp + HOLO_VEC_BYTES]
+    lea rdx, [rsp]            ; overwrite vec1 with result
     call holo_bind_f64
 
-    ; Generate event vector
+    ; Generate event vector into vec2
     mov edi, r12d
     add edi, TRACE_EVENT_SEED
-    lea rsi, [rsp + HOLO_VEC_BYTES + 8]
+    lea rsi, [rsp + HOLO_VEC_BYTES]
     call holo_gen_vec
 
-    ; Bind event ⊗ (ctx⊗token) → final receipt vec
-    lea rdi, [rsp + HOLO_VEC_BYTES + 8]
+    ; Bind event ⊗ (ctx⊗token) → vec1
+    lea rdi, [rsp + HOLO_VEC_BYTES]
     lea rsi, [rsp]
     lea rdx, [rsp]
     call holo_bind_f64
 
     ; Scale by confidence (fidelity)
     lea rdi, [rsp]
-    movsd xmm0, [rsp + HOLO_VEC_BYTES]
+    movsd xmm0, [rsp + (HOLO_VEC_BYTES * 2)]
     call holo_scale_f64
 
     ; Superpose into ST_CC_TRACE_VEC
@@ -2070,7 +2071,7 @@ emit_receipt_cc:
     inc qword [rbx + STATE_OFFSET + ST_CC_UNIT_COUNT]
 
 .cc_done:
-    add rsp, HOLO_VEC_BYTES + 24
+    add rsp, (HOLO_VEC_BYTES * 2) + 8
     pop r14
     pop r13
     pop r12

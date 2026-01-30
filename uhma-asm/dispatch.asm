@@ -1035,9 +1035,8 @@ process_token:
     mov edi, EVENT_CC_TOKEN       ; event type
     mov esi, r13d                 ; ctx_hash (from earlier)
     mov edx, r12d                 ; actual token
-    xor ecx, ecx                  ; predicted (0 - not relevant for CC marking)
-    xor r8d, r8d                  ; region (0)
-    xor r9d, r9d                  ; aux (0)
+    mov rax, 0x3FF0000000000000   ; 1.0 f64 (high confidence for Claude input)
+    movq xmm0, rax
     call emit_receipt_cc
 .skip_cc_receipt:
 
