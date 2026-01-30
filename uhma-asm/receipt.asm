@@ -1990,3 +1990,118 @@ trace_hit_miss_ratio:
     add rsp, 16
     pop rbx
     ret
+
+;; ============================================================
+;; emit_receipt_cc(edi=event, esi=ctx, edx=token, xmm0=conf)
+;; Emit receipt for Claude Code token/unit.
+;; Superposes into ST_CC_TRACE_VEC in addition to unified trace.
+;; Use EVENT_CC_TOKEN (16) or EVENT_CC_UNIT (17).
+;; ============================================================
+global emit_receipt_cc
+emit_receipt_cc:
+    push rbx
+    push r12
+    push r13
+    push r14
+    sub rsp, HOLO_VEC_BYTES + 24  ; temp vector + locals
+
+    mov rbx, SURFACE_BASE
+    mov r12d, edi             ; event_type (CC_TOKEN or CC_UNIT)
+    mov r13d, esi             ; ctx_hash
+    mov r14d, edx             ; token_id
+    movsd [rsp + HOLO_VEC_BYTES], xmm0  ; save confidence
+
+    ; === First emit to unified trace via emit_receipt_simple ===
+    mov edi, r12d
+    mov esi, r13d
+    mov edx, r14d
+    movsd xmm0, [rsp + HOLO_VEC_BYTES]
+    call emit_receipt_simple
+
+    ; === Now superpose into CC-specific trace ===
+    ; Build receipt vector: bind(event, bind(ctx, token))
+
+    ; Generate context vector
+    mov edi, r13d
+    lea rsi, [rsp]            ; temp on stack
+    call holo_gen_vec
+
+    ; Generate token vector
+    mov edi, r14d
+    lea rsi, [rsp + HOLO_VEC_BYTES + 8]  ; another temp area
+    call holo_gen_vec
+
+    ; Bind ctx ⊗ token → temp
+    lea rdi, [rsp]
+    lea rsi, [rsp + HOLO_VEC_BYTES + 8]
+    lea rdx, [rsp]            ; overwrite with result
+    call holo_bind_f64
+
+    ; Generate event vector
+    mov edi, r12d
+    add edi, TRACE_EVENT_SEED
+    lea rsi, [rsp + HOLO_VEC_BYTES + 8]
+    call holo_gen_vec
+
+    ; Bind event ⊗ (ctx⊗token) → final receipt vec
+    lea rdi, [rsp + HOLO_VEC_BYTES + 8]
+    lea rsi, [rsp]
+    lea rdx, [rsp]
+    call holo_bind_f64
+
+    ; Scale by confidence (fidelity)
+    lea rdi, [rsp]
+    movsd xmm0, [rsp + HOLO_VEC_BYTES]
+    call holo_scale_f64
+
+    ; Superpose into ST_CC_TRACE_VEC
+    lea rdi, [rbx + STATE_OFFSET + ST_CC_TRACE_VEC]
+    lea rsi, [rsp]
+    call holo_superpose_f64
+
+    ; === Update CC counters ===
+    cmp r12d, EVENT_CC_TOKEN
+    jne .check_unit
+    inc qword [rbx + STATE_OFFSET + ST_CC_TOKEN_COUNT]
+    jmp .cc_done
+.check_unit:
+    cmp r12d, EVENT_CC_UNIT
+    jne .cc_done
+    inc qword [rbx + STATE_OFFSET + ST_CC_UNIT_COUNT]
+
+.cc_done:
+    add rsp, HOLO_VEC_BYTES + 24
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; cc_trace_resonate(edi=ctx) → xmm0 (similarity)
+;; Query ST_CC_TRACE_VEC for resonance with context.
+;; Used during prediction to boost Claude-like patterns.
+;; ============================================================
+global cc_trace_resonate
+cc_trace_resonate:
+    push rbx
+    sub rsp, HOLO_VEC_BYTES + 8
+
+    mov rbx, SURFACE_BASE
+
+    ; Generate context probe vector
+    lea rsi, [rsp]
+    call holo_gen_vec
+
+    ; Dot with CC trace
+    lea rdi, [rbx + STATE_OFFSET + ST_CC_TRACE_VEC]
+    lea rsi, [rsp]
+    call holo_dot_f64
+
+    ; Clamp negative to 0
+    xorpd xmm1, xmm1
+    maxsd xmm0, xmm1
+
+    add rsp, HOLO_VEC_BYTES + 8
+    pop rbx
+    ret
