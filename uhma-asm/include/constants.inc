@@ -1156,6 +1156,18 @@
 %define ST_SCHEMA_EXTRACTS  (ST_SCHEMA_MATCHES + 4)       ; u32 total variable extractions
 %define ST_SCHEMA_END       (ST_SCHEMA_EXTRACTS + 4)
 
+; Claude Code pattern trace - accumulates semantic units from CC
+; Used to let UHMA learn Claude's patterns specifically
+%define ST_CC_TRACE_VEC     ST_SCHEMA_END                     ; 1024 x f64 = 8KB
+%define ST_CC_TRACE_SIZE    HOLO_VEC_BYTES                    ; 8192 bytes
+%define ST_CC_TRACE_END     (ST_CC_TRACE_VEC + ST_CC_TRACE_SIZE)
+%define ST_CC_TOKEN_COUNT   ST_CC_TRACE_END                   ; u64 tokens from CC
+%define ST_CC_UNIT_COUNT    (ST_CC_TOKEN_COUNT + 8)           ; u64 semantic units from CC
+%define ST_CC_END           (ST_CC_UNIT_COUNT + 8)
+
+; Fidelity for CC events (high persistence - Claude patterns should last)
+%define FIDELITY_CC         0x3FEE666666666666                ; 0.95 - very persistent
+
 ; Location IDs for tracing - comprehensive coverage
 ; Format: TRACE_<module>_<function> = base, entry=base, exit=base+1
 ; Each function gets 2 IDs: entry and exit
