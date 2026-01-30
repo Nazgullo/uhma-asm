@@ -928,7 +928,9 @@
 %define EVENT_GENERALIZE    13    ; context was generalized (broader matching)
 %define EVENT_SPECIALIZE    14    ; context was specialized (narrower matching)
 %define EVENT_SELF          15    ; self-model violation (introspective surprise)
-%define EVENT_TYPE_COUNT    16    ; total event types
+%define EVENT_CC_TOKEN      16    ; token from Claude Code (external consciousness)
+%define EVENT_CC_UNIT       17    ; semantic unit from Claude Code (8-token chunk)
+%define EVENT_TYPE_COUNT    18    ; total event types
 
 ; Self-awareness state fields
 %define ST_IS_SELF_REF      (ST_RECEIPT_END)              ; u32 flag: current token is self-referential
