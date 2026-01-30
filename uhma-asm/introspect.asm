@@ -36,6 +36,10 @@
 %include "constants.inc"
 
 section .data
+    ; Batch mode flag - when set, tick_workers returns immediately
+    global batch_mode
+    batch_mode:         dq 0
+
     intro_hdr:          db "[INTROSPECT] ", 0
     intro_decode_msg:   db "Decoded region: ctx=0x", 0
     intro_pred_msg:     db " pred=0x", 0
@@ -533,6 +537,10 @@ decay_anticipatory:
 ;; ============================================================
 global update_organic_pressure
 update_organic_pressure:
+    ; Check batch mode - skip organic triggers during training
+    cmp qword [rel batch_mode], 0
+    jne .organic_skip
+
     push rbx
     push r12
     sub rsp, 8                  ; alignment
@@ -732,6 +740,9 @@ update_organic_pressure:
 
     ; Fire self-repair cycle
     call introspect_repair_cycle
+
+.organic_skip:
+    ret
 
 .pressure_done:
     add rsp, 8
@@ -1206,6 +1217,10 @@ global tick_workers
 tick_workers:
 global tick_regulators          ; legacy alias
 tick_regulators:
+    ; Check batch mode - skip all autonomous work if set
+    cmp qword [rel batch_mode], 0
+    jne .batch_skip
+
     push rbx
     push r12
     push r13
@@ -1361,6 +1376,10 @@ tick_regulators:
     movss [rbx + STATE_OFFSET + ST_PRESENCE + PRES_FATIGUE * 4], xmm0
 
     inc r12d
+
+.batch_skip:
+    xor eax, eax              ; return 0 workers in batch mode
+    ret
 
 .workers_done:
     mov eax, r12d             ; return workers activated

@@ -51,6 +51,7 @@ section .data
                     db "  intro         Show introspective state (SELF-AWARE reading)", 10
                     db "  observe       Trigger observation cycle (builds self-model)", 10
                     db "  dream         Trigger dream/consolidation cycle", 10
+                    db "  batch         Toggle batch mode (disable autonomous workers)", 10
                     db "  compact       Compact condemned regions", 10
                     db "  save <file>   Save surface to file", 10
                     db "  load <file>   Restore surface from file", 10
@@ -122,6 +123,9 @@ section .bss
 section .data
 global stdin_active
     stdin_active:   dd 1              ; 0 if stdin hit EOF
+    batch_msg:      db "[BATCH] Mode: ", 0
+    batch_on:       db "ON (autonomous workers disabled)", 10, 0
+    batch_off_str:  db "OFF (autonomous workers enabled)", 10, 0
 
 section .text
 
@@ -151,6 +155,7 @@ extern persist_save
 extern persist_load
 extern drives_show
 extern tick_workers            ; from introspect.asm - autonomous idle processing
+extern batch_mode              ; from introspect.asm - when set, skip autonomous workers
 extern presence_show
 extern vocab_count
 extern holo_dot_f64
@@ -432,6 +437,14 @@ repl_run:
     jne .not_save
     jmp .cmd_save
 .not_save:
+
+    ; "batch" - toggle batch mode (disables autonomous workers for training)
+    cmp dword [rbx], 'batc'
+    jne .not_batch
+    cmp byte [rbx + 4], 'h'
+    jne .not_batch
+    jmp .cmd_batch
+.not_batch:
 
     ; "load"
     cmp dword [rbx], 'load'
@@ -769,6 +782,22 @@ repl_run:
     ; Get filename after "save "
     lea rdi, [rbx + 5]
     call persist_save
+    jmp .loop
+
+.cmd_batch:
+    ; Toggle batch mode - disables autonomous workers for training
+    xor qword [rel batch_mode], 1
+    lea rdi, [rel batch_msg]
+    call print_cstr
+    mov rdi, [rel batch_mode]
+    test rdi, rdi
+    jz .batch_off
+    lea rdi, [rel batch_on]
+    jmp .batch_print
+.batch_off:
+    lea rdi, [rel batch_off_str]
+.batch_print:
+    call print_cstr
     jmp .loop
 
 .cmd_load:
