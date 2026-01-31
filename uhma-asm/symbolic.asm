@@ -17,6 +17,11 @@
 ;   Log everything for post-hoc analysis of emergence.
 ;   Track "anomalous" patterns that work despite looking wrong.
 ;
+; RFLAG_ANALYZED PATTERN:
+;   sym_scan_for_discoveries sets RFLAG_ANALYZED after scanning each region.
+;   modify.asm clears RFLAG_ANALYZED when region is modified.
+;   This allows efficient re-scanning of only modified regions.
+;
 ; LOG BUFFERS:
 ;   sym_log_buf[256]: circular buffer of modifications (32B each)
 ;   disc_log_buf[64]: patterns that "shouldn't work" but do

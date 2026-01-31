@@ -24,6 +24,7 @@
 ; GENERALIZE:
 ;   Mask low bits of context hash (broader matching)
 ;   Converts dispatch pattern toward schema-like behavior
+;   Clears RFLAG_ANALYZED so region gets rescanned by sym_scan_for_discoveries
 ;
 ; CAUSAL RECEIPTS:
 ;   Each modification emits receipt with aux=accuracy*1000 for causal tracking
