@@ -42,7 +42,10 @@ for ((loop=1; loop<=LOOPS; loop++)); do
     # Build command file
     {
         echo "batch"
-        for f in "$CORPUS"/*.txt; do [ -f "$f" ] && echo "eat $f"; done
+        # Recursively find all .txt files in corpus and subdirectories
+        find "$CORPUS" -type f -name "*.txt" | sort | while read f; do
+            echo "eat $f"
+        done
 
         # Consolidation: observe then dream
         if [ $IS_CONSOLIDATE -eq 1 ]; then
