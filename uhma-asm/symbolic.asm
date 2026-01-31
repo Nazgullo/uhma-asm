@@ -486,17 +486,25 @@ sym_is_anomalous:
 ;; sym_scan_for_discoveries — Scan all regions for emergent patterns
 ;; Called periodically to find things that work despite being "wrong"
 ;; ============================================================
+; Maximum age (in steps) for regions to be scanned
+; 5000 steps = scan regions from last ~5 training cycles
+%define SYM_SCAN_WINDOW 5000
+
 global sym_scan_for_discoveries
 sym_scan_for_discoveries:
     push rbx
     push r12
     push r13
     push r14
+    push r15
 
     mov rbx, SURFACE_BASE
     lea r12, [rbx + REGION_TABLE_OFFSET]
     lea rax, [rbx + STATE_OFFSET + ST_REGION_COUNT]
     mov r13d, [rax]
+    ; Get TOTAL steps (survives restarts) for recency check
+    ; SHDR_TOTAL_STEPS is in the surface header, not STATE section
+    mov r15d, [rbx + SHDR_TOTAL_STEPS]  ; total steps ever
 
     xor r14d, r14d          ; index
 
@@ -504,19 +512,27 @@ sym_scan_for_discoveries:
     cmp r14d, r13d
     jge .done
 
-    ; Get region entry
+    ; Get region table entry pointer
     imul rdi, r14, RTE_SIZE
     add rdi, r12
+    push rdi                ; save RTE pointer
 
     ; Skip condemned
     movzx eax, word [rdi + RTE_FLAGS]
     test eax, RFLAG_CONDEMNED
-    jnz .next
+    jnz .next_pop
+
+    ; Only scan recent regions (created within last SYM_SCAN_WINDOW steps)
+    mov eax, [rdi + RTE_BIRTH]
+    mov ecx, r15d
+    sub ecx, eax            ; age = current_step - birth
+    cmp ecx, SYM_SCAN_WINDOW
+    ja .next_pop            ; skip old regions
 
     ; Get header address
     mov rdi, [rdi + RTE_ADDR]
     test rdi, rdi
-    jz .next
+    jz .next_pop
 
     ; Check if anomalous
     push rdi
@@ -524,7 +540,7 @@ sym_scan_for_discoveries:
     pop rdi
 
     cmp eax, 5              ; Anomaly threshold
-    jl .next
+    jl .next_pop
 
     ; Found something interesting!
     push rdi
@@ -536,11 +552,14 @@ sym_scan_for_discoveries:
     mov edx, [rdi + RHDR_HITS]  ; survival metric
     call sym_record_discovery
 
+.next_pop:
+    pop rdi                 ; discard saved RTE pointer
 .next:
     inc r14d
     jmp .scan_loop
 
 .done:
+    pop r15
     pop r14
     pop r13
     pop r12

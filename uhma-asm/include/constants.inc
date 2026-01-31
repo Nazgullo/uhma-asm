@@ -182,6 +182,7 @@
 %define RFLAG_NURSERY       0x0004
 %define RFLAG_CONDEMNED     0x0008
 %define RFLAG_NEEDS_REPAIR  0x0010  ; Self-surprise: region violated self-model, needs introspection
+%define RFLAG_ANALYZED      0x0020  ; Symbolic analysis cached, skip in dream scan unless modified
 
 ;; ============================================================
 ;; Region Table Entry (32 bytes)
