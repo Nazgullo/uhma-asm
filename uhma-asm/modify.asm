@@ -371,6 +371,8 @@ modify_generalize:
     mov rsi, [rax + RTE_ADDR]
     mov dword [rsi + RHDR_HITS], 0
     mov dword [rsi + RHDR_MISSES], 0
+    ; Clear RFLAG_ANALYZED so region gets rescanned after modification
+    and word [rax + RTE_FLAGS], ~RFLAG_ANALYZED
 
 .fail:
     pop r12

@@ -518,17 +518,12 @@ sym_scan_for_discoveries:
     add rdi, r12
     push rdi                ; save RTE pointer
 
-    ; Skip condemned
+    ; Skip condemned or already analyzed (not modified since last scan)
     movzx eax, word [rdi + RTE_FLAGS]
     test eax, RFLAG_CONDEMNED
     jnz .next_pop
-
-    ; Only scan recent regions (created within last SYM_SCAN_WINDOW steps)
-    mov eax, [rdi + RTE_BIRTH]
-    mov ecx, r15d
-    sub ecx, eax            ; age = current_step - birth
-    cmp ecx, SYM_SCAN_WINDOW
-    ja .next_pop            ; skip old regions
+    test eax, RFLAG_ANALYZED
+    jnz .next_pop           ; already scanned, not modified since
 
     ; Get header address
     mov rdi, [rdi + RTE_ADDR]
@@ -541,7 +536,7 @@ sym_scan_for_discoveries:
     pop rdi
 
     cmp eax, 5              ; Anomaly threshold
-    jl .next_pop
+    jl .mark_analyzed       ; not anomalous, but still mark as scanned
 
     ; Found something interesting!
     push rdi
@@ -552,6 +547,12 @@ sym_scan_for_discoveries:
     pop rdi
     mov edx, [rdi + RHDR_HITS]  ; survival metric
     call sym_record_discovery
+
+.mark_analyzed:
+    ; Mark region as analyzed (will be cleared if modified)
+    pop rdi                 ; get RTE pointer back
+    push rdi                ; keep it for .next_pop
+    or word [rdi + RTE_FLAGS], RFLAG_ANALYZED
 
 .next_pop:
     pop rdi                 ; discard saved RTE pointer
