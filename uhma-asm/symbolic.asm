@@ -502,9 +502,10 @@ sym_scan_for_discoveries:
     lea r12, [rbx + REGION_TABLE_OFFSET]
     lea rax, [rbx + STATE_OFFSET + ST_REGION_COUNT]
     mov r13d, [rax]
-    ; Get TOTAL steps (survives restarts) for recency check
-    ; SHDR_TOTAL_STEPS is in the surface header, not STATE section
-    mov r15d, [rbx + SHDR_TOTAL_STEPS]  ; total steps ever
+    ; Get current step for recency check (same source as RTE_BIRTH)
+    ; NOTE: Was SHDR_TOTAL_STEPS but that's stale until freeze - caused underflow
+    ; when SHDR_TOTAL_STEPS < RTE_BIRTH (fresh surface or mid-session)
+    mov r15d, [rbx + STATE_OFFSET + ST_GLOBAL_STEP]
 
     xor r14d, r14d          ; index
 
