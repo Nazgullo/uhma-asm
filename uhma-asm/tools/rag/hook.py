@@ -660,8 +660,9 @@ if state.get('hard_stopped'):
     should_block = True
     block_reason = "Session HARD STOPPED due to loop. Wait for user to reset."
 
-# BLOCK on holo trigger
-if 'MANDATORY-ACTION type="holo-save"' in '\n'.join(output_parts):
+# BLOCK only on MANUAL holo trigger (user typed "holo"), not auto-save
+# Auto-save should inject context, not block
+if check_holo_trigger():  # Only if user explicitly said "holo"
     should_block = True
     block_reason = f"""STOP. User triggered 'holo' - save session first.
 

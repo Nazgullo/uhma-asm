@@ -45,12 +45,24 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime
 
-# Try to import sentence-transformers for semantic encoding
-try:
-    from sentence_transformers import SentenceTransformer
-    HAVE_EMBEDDINGS = True
-except ImportError:
-    HAVE_EMBEDDINGS = False
+# Lazy-load embeddings: only import when actually needed for queries
+# This avoids 800MB+ memory hit on every hook call
+HAVE_EMBEDDINGS = False
+_SentenceTransformer = None  # Will be set on first use
+
+def _get_sentence_transformer():
+    """Lazy-load SentenceTransformer only when needed."""
+    global HAVE_EMBEDDINGS, _SentenceTransformer
+    if _SentenceTransformer is not None:
+        return _SentenceTransformer
+    try:
+        from sentence_transformers import SentenceTransformer
+        _SentenceTransformer = SentenceTransformer
+        HAVE_EMBEDDINGS = True
+        return _SentenceTransformer
+    except ImportError:
+        HAVE_EMBEDDINGS = False
+        return None
 
 # ============================================================================
 # Configuration
@@ -169,24 +181,38 @@ class SemanticEncoder:
     def __init__(self):
         self.model = None
         self.projection = None  # Project from embedding dim to HOLO_DIM
+        self._init_attempted = False
 
-        if HAVE_EMBEDDINGS:
-            try:
-                # Use a small, fast model
-                self.model = SentenceTransformer('all-MiniLM-L6-v2')
-                embed_dim = self.model.get_sentence_embedding_dimension()
-                # Create stable projection matrix (seeded for reproducibility)
-                rng = np.random.default_rng(42)
-                self.projection = rng.standard_normal((embed_dim, HOLO_DIM))
-                # Normalize columns
-                for i in range(HOLO_DIM):
-                    self.projection[:, i] /= np.linalg.norm(self.projection[:, i])
-            except Exception as e:
-                print(f"[holo] Embedding init failed: {e}")
-                self.model = None
+    def _lazy_init(self):
+        """Load embedding model on first use (not at import time)."""
+        if self._init_attempted:
+            return
+        self._init_attempted = True
+
+        SentenceTransformer = _get_sentence_transformer()
+        if SentenceTransformer is None:
+            return
+
+        try:
+            # Use a small, fast model
+            self.model = SentenceTransformer('all-MiniLM-L6-v2')
+            embed_dim = self.model.get_sentence_embedding_dimension()
+            # Create stable projection matrix (seeded for reproducibility)
+            rng = np.random.default_rng(42)
+            self.projection = rng.standard_normal((embed_dim, HOLO_DIM))
+            # Normalize columns
+            for i in range(HOLO_DIM):
+                self.projection[:, i] /= np.linalg.norm(self.projection[:, i])
+        except Exception as e:
+            print(f"[holo] Embedding init failed: {e}")
+            self.model = None
 
     def encode(self, text: str) -> np.ndarray:
         """Encode text to 1024-dim holographic vector."""
+        # Lazy-load embeddings on first encode call
+        if not self._init_attempted:
+            self._lazy_init()
+
         if self.model is not None:
             # Get embedding and project to HOLO_DIM
             embedding = self.model.encode(text, convert_to_numpy=True)
