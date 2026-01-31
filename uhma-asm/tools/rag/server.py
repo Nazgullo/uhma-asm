@@ -557,62 +557,18 @@ TOOLS = [
 
 
 def check_session_gate():
-    """Check if session is gated - returns error message or None if allowed."""
+    """Check if session is gated - returns error message or None if allowed.
+
+    Coordination with hooks:
+    - Hooks (hook.py) run BEFORE MCP tools execute (PreToolUse)
+    - Hooks create/update .session_active marker and .hook_state.json
+    - If hooks fail, marker will be stale - we detect this and log warning
+    - Only HARD STOP actually blocks; stale hooks = degraded mode (still works)
+    """
     session_marker = Path(__file__).parent / 'memory' / '.session_active'
     state_file = Path(__file__).parent / 'memory' / '.hook_state.json'
 
-    # If session marker doesn't exist, this is a fresh session
-    if not session_marker.exists():
-        # Create the marker so next call goes through
-        session_marker.parent.mkdir(exist_ok=True)
-        session_marker.write_text(time.strftime('%Y-%m-%dT%H:%M:%S'))
-
-        # Also init state file
-        state = {
-            'session_start': time.strftime('%Y-%m-%dT%H:%M:%S'),
-            'last_save': time.strftime('%Y-%m-%dT%H:%M:%S'),
-            'tool_calls': 1,
-            'mcp_calls': 1,
-            'momentum': 0.5,
-            'action_outcomes': [],
-            'warning_issued': False,
-            'hard_stopped': False
-        }
-        state_file.write_text(json.dumps(state, indent=2))
-
-        # Build session context
-        context_parts = ["NEW SESSION - You must engage with the user first."]
-
-        # Try to get recent sessions from memory
-        try:
-            sys.path.insert(0, str(Path(__file__).parent))
-            from holo_memory import HoloMemory
-            mem = HoloMemory()
-            results = mem.query("session", category="session", limit=2, threshold=0.0)
-            if results:
-                context_parts.append("\nRECENT SESSIONS:")
-                for entry, _ in results:
-                    context_parts.append(f"  {entry.content[:150]}...")
-        except:
-            pass
-
-        # Get git status
-        try:
-            import subprocess
-            result = subprocess.run(['git', 'status', '--short'],
-                                    capture_output=True, text=True, timeout=5,
-                                    cwd=str(Path(__file__).parent.parent.parent))
-            if result.stdout.strip():
-                context_parts.append(f"\nGIT STATUS:\n{result.stdout.strip()}")
-        except:
-            pass
-
-        context_parts.append("\n\nSTOP. Read this context, then respond to the user WITHOUT tools.")
-        context_parts.append("Summarize what was happening and ask what they want to do.")
-
-        return '\n'.join(context_parts)
-
-    # Check if hard stopped
+    # Check for hard stop - this DOES block
     try:
         if state_file.exists():
             state = json.loads(state_file.read_text())
@@ -621,7 +577,29 @@ def check_session_gate():
     except:
         pass
 
-    return None  # Allowed
+    # Check if hooks are working (marker should be fresh)
+    # If marker missing or older than 5 minutes, hooks may be down
+    hooks_working = False
+    try:
+        if session_marker.exists():
+            marker_time = session_marker.stat().st_mtime
+            age_seconds = time.time() - marker_time
+            hooks_working = age_seconds < 300  # 5 minutes
+    except:
+        pass
+
+    if not hooks_working:
+        # Hooks may be down - log warning but DON'T block
+        # This is degraded mode: MCP works but no context injection
+        log("WARNING: Session marker stale/missing - hooks may not be running")
+        # Create marker ourselves so we don't spam warnings
+        try:
+            session_marker.parent.mkdir(exist_ok=True)
+            session_marker.write_text(f"mcp-fallback:{time.strftime('%Y-%m-%dT%H:%M:%S')}")
+        except:
+            pass
+
+    return None  # Allowed - we don't block on hook failure
 
 
 def handle_tool_call(name, args):
@@ -855,11 +833,23 @@ def handle_request(request):
             send_error(id, -32601, f"Unknown method: {method}")
 
 
+import logging
+from logging.handlers import RotatingFileHandler
+
+# Ring buffer log - keeps last 1MB, 2 backups (3MB total max)
+_log_handler = RotatingFileHandler(
+    "/tmp/uhma_mcp_debug.log",
+    maxBytes=1024*1024,  # 1MB per file
+    backupCount=2        # Keep 2 old files
+)
+_log_handler.setFormatter(logging.Formatter('%(asctime)s: %(message)s'))
+_logger = logging.getLogger('uhma_mcp')
+_logger.addHandler(_log_handler)
+_logger.setLevel(logging.DEBUG)
+
 def log(msg):
-    """Debug logging to file"""
-    with open("/tmp/uhma_mcp_debug.log", "a") as f:
-        f.write(f"{time.time()}: {msg}\n")
-        f.flush()
+    """Debug logging to rotating file (max 3MB total)"""
+    _logger.debug(msg)
 
 
 # TCP server for GUI connections

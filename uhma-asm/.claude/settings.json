@@ -2,7 +2,7 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Edit|Write|Read|Grep|Glob|Task|Bash",
+        "matcher": "Edit|Write|Read|Grep|Glob|Task|Bash|mcp__uhma__.*",
         "hooks": [
           {
             "type": "command",

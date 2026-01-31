@@ -1,125 +1,42 @@
 #!/usr/bin/env python3
 """
-session_capture.py — Stop hook for SEMANTIC session recording.
+session_capture.py — 3-layer holographic session recording.
 
-Extracts meaningful learnings from conversation, not just file touches:
-- Bugs mentioned → 'bug' category
-- Fixes applied → 'fix' category
-- Insights/gotchas → 'insight' category
-- Failed approaches → 'failed' category
-- Successful patterns → 'success' category
+Uses UHMA's holographic paradigm: encode → superpose → let decay handle forgetting.
+NO regex compression - the VSA encoding IS the compression.
 
-This ensures future Claude instances learn from past sessions.
+3 Layers:
+  session_high: Brief session summary (what happened overall)
+  session_mid:  User requests + key responses (the dialogue substance)
+  session_low:  Findings/successes/failures (the learnings)
+
+Semantic search is FREE via cosine similarity on traces.
+Decay is the forgetting mechanism - no need to pre-filter.
 """
 
 import sys
 import json
-import re
 from pathlib import Path
 from datetime import datetime
+from typing import List, Dict, Tuple, Optional
 
 SCRIPT_DIR = Path(__file__).parent
 DEBUG_LOG = SCRIPT_DIR / 'capture_debug.log'
 SESSION_MARKER = SCRIPT_DIR / 'memory' / '.session_active'
 
-# Patterns for semantic extraction
-BUG_PATTERNS = [
-    r'bug[:\s]+(.{20,200})',
-    r'error[:\s]+(.{20,200})',
-    r'problem[:\s]+(.{20,200})',
-    r'issue[:\s]+(.{20,200})',
-    r'broken[:\s]+(.{20,200})',
-    r'corrupted[:\s]+(.{20,200})',
-    r'wrong[:\s]+(.{20,200})',
-    r"doesn't work[:\s]*(.{10,200})",
-    r"isn't working[:\s]*(.{10,200})",
-    r'INT64_MIN|INT64_MAX|uninitialized|segfault|crash',
-]
+# Max entries per layer per session (prevent flooding)
+MAX_HIGH = 1      # One summary per session
+MAX_MID = 20      # Key exchanges
+MAX_LOW = 30      # Detailed learnings
 
-FIX_PATTERNS = [
-    r'fix[:\s]+(.{20,200})',
-    r'fixed[:\s]+(.{20,200})',
-    r'solution[:\s]+(.{20,200})',
-    r'resolved[:\s]+(.{20,200})',
-    r'the fix is[:\s]+(.{20,200})',
-    r'to fix this[:\s]+(.{20,200})',
-    r'changed.*?to.*?(?:fix|solve|resolve)',
-]
-
-INSIGHT_PATTERNS = [
-    r'gotcha[:\s]+(.{20,200})',
-    r'learned[:\s]+(.{20,200})',
-    r'insight[:\s]+(.{20,200})',
-    r'key insight[:\s]+(.{20,200})',
-    r'important[:\s]+(.{20,200})',
-    r'remember[:\s]+(.{20,200})',
-    r'always (.{20,100})',
-    r'never (.{20,100})',
-    r'must (.{20,100})',
-]
-
-FAILED_PATTERNS = [
-    r"didn't work[:\s]*(.{10,200})",
-    r"doesn't help[:\s]*(.{10,200})",
-    r'failed approach[:\s]+(.{20,200})',
-    r'wrong approach[:\s]+(.{20,200})',
-    r'that was wrong[:\s]*(.{10,200})',
-]
 
 def log_debug(msg):
     try:
         with open(DEBUG_LOG, 'a') as f:
-            f.write(f"[{datetime.now().isoformat()}] SESSION_CAPTURE: {msg}\n")
+            f.write(f"[{datetime.now().isoformat()}] STENO: {msg}\n")
     except:
         pass
 
-def extract_semantic_content(text: str) -> list:
-    """Extract bugs, fixes, insights from text."""
-    findings = []
-    text_lower = text.lower()
-
-    # Extract bugs
-    for pattern in BUG_PATTERNS:
-        for match in re.finditer(pattern, text, re.IGNORECASE):
-            content = match.group(1) if match.lastindex else match.group(0)
-            content = content.strip()[:200]
-            if len(content) > 15:
-                findings.append(('bug', content))
-
-    # Extract fixes
-    for pattern in FIX_PATTERNS:
-        for match in re.finditer(pattern, text, re.IGNORECASE):
-            content = match.group(1) if match.lastindex else match.group(0)
-            content = content.strip()[:200]
-            if len(content) > 15:
-                findings.append(('fix', content))
-
-    # Extract insights
-    for pattern in INSIGHT_PATTERNS:
-        for match in re.finditer(pattern, text, re.IGNORECASE):
-            content = match.group(1) if match.lastindex else match.group(0)
-            content = content.strip()[:200]
-            if len(content) > 15:
-                findings.append(('insight', content))
-
-    # Extract failed approaches
-    for pattern in FAILED_PATTERNS:
-        for match in re.finditer(pattern, text, re.IGNORECASE):
-            content = match.group(1) if match.lastindex else match.group(0)
-            content = content.strip()[:200]
-            if len(content) > 15:
-                findings.append(('failed', content))
-
-    # Deduplicate by content similarity
-    seen = set()
-    unique = []
-    for cat, content in findings:
-        key = content[:50].lower()
-        if key not in seen:
-            seen.add(key)
-            unique.append((cat, content))
-
-    return unique[:20]  # Limit per session
 
 def get_memory():
     """Get holographic memory instance."""
@@ -127,15 +44,13 @@ def get_memory():
     from holo_memory import get_memory as gm
     return gm()
 
-def extract_session_data(transcript_path: str) -> dict:
-    """Extract key data from session transcript."""
+
+def extract_transcript(transcript_path: str) -> Dict:
+    """Extract conversation from transcript into structured data."""
     data = {
-        'user_messages': [],
-        'assistant_messages': [],  # NEW: capture assistant text for semantic extraction
-        'files_modified': set(),
-        'files_read': set(),
-        'commands_run': [],
-        'errors': [],
+        'user_messages': [],      # What user asked
+        'assistant_texts': [],    # What I said (text only, not tool calls)
+        'tool_actions': [],       # What I did (Edit, Write, Bash)
         'session_id': None,
         'start_time': None,
         'end_time': None,
@@ -146,214 +61,244 @@ def extract_session_data(transcript_path: str) -> dict:
         log_debug(f"Transcript not found: {transcript_path}")
         return data
 
-    with open(transcript, 'r') as f:
-        for line in f:
-            try:
-                entry = json.loads(line.strip())
-                if not isinstance(entry, dict):
-                    continue
-            except json.JSONDecodeError:
-                continue
+    try:
+        lines = transcript.read_text().strip().split('\n')
+    except Exception as e:
+        log_debug(f"Read error: {e}")
+        return data
 
-            # Session metadata
-            if not data['session_id']:
-                data['session_id'] = entry.get('sessionId')
+    for line in lines:
+        try:
+            entry = json.loads(line.strip())
+        except:
+            continue
+
+        if not isinstance(entry, dict):
+            continue
+
+        # Session metadata
+        if not data['session_id']:
+            data['session_id'] = entry.get('sessionId', '')[:12]
+
+        timestamp = entry.get('timestamp', '')
+        if timestamp:
             if not data['start_time']:
-                data['start_time'] = entry.get('timestamp')
-            data['end_time'] = entry.get('timestamp')
+                data['start_time'] = timestamp
+            data['end_time'] = timestamp
 
-            # User messages (type == 'user')
-            if entry.get('type') == 'user':
-                msg = entry.get('message', {})
-                if not isinstance(msg, dict):
-                    continue
-                content = msg.get('content')
-                if isinstance(content, str) and len(content) > 10:
-                    data['user_messages'].append(content[:500])
-                elif isinstance(content, list):
-                    for item in content:
-                        if isinstance(item, dict) and item.get('type') == 'text':
-                            text = item.get('text', '')
-                            if len(text) > 10:
-                                data['user_messages'].append(text[:500])
+        entry_type = entry.get('type', '')
 
-            # Assistant messages - extract text for semantic analysis
-            if entry.get('type') == 'assistant':
-                msg = entry.get('message', {})
-                if not isinstance(msg, dict):
-                    continue
-                content = msg.get('content', [])
-                if isinstance(content, str) and len(content) > 20:
-                    data['assistant_messages'].append(content[:1000])
-                elif isinstance(content, list):
-                    for item in content:
-                        if isinstance(item, dict) and item.get('type') == 'text':
-                            text = item.get('text', '')
-                            if len(text) > 20:
-                                data['assistant_messages'].append(text[:1000])
-
-            # Tool results for files (successful edits/writes)
-            tool_result = entry.get('toolUseResult')
-            if isinstance(tool_result, dict):
-                file_path = tool_result.get('filePath', '')
-                if file_path and 'success' in str(tool_result).lower():
-                    data['files_modified'].add(file_path)
-
-            # Assistant tool_use entries
-            if entry.get('type') == 'assistant':
-                msg = entry.get('message', {})
-                if not isinstance(msg, dict):
-                    continue
-                content = msg.get('content', [])
-                if not isinstance(content, list):
-                    continue
-
+        # User messages - capture fully (these are instructions)
+        if entry_type == 'user':
+            msg = entry.get('message', {})
+            content = msg.get('content', '')
+            if isinstance(content, str) and len(content.strip()) > 10:
+                # Skip tool results and system messages
+                if not content.startswith('<') and not content.startswith('{'):
+                    data['user_messages'].append(content.strip())
+            elif isinstance(content, list):
                 for item in content:
-                    if not isinstance(item, dict):
-                        continue
-                    if item.get('type') != 'tool_use':
-                        continue
+                    if isinstance(item, dict) and item.get('type') == 'text':
+                        text = item.get('text', '').strip()
+                        if len(text) > 10 and not text.startswith('<'):
+                            data['user_messages'].append(text)
 
-                    name = item.get('name', '')
-                    inp = item.get('input', {})
-                    if not isinstance(inp, dict):
-                        continue
+        # Assistant messages - capture text (not tool calls)
+        elif entry_type == 'assistant':
+            msg = entry.get('message', {})
+            content = msg.get('content', [])
 
-                    # Track reads
-                    if name == 'Read':
-                        fp = inp.get('file_path', '')
-                        if fp:
-                            data['files_read'].add(fp)
-
-                    # Track edits/writes
-                    elif name in ('Edit', 'Write'):
-                        fp = inp.get('file_path', '')
-                        if fp:
-                            data['files_modified'].add(fp)
-
-                    # Track commands
-                    elif name == 'Bash':
-                        cmd = inp.get('command', '')
-                        if cmd and len(cmd) > 5:
-                            data['commands_run'].append(cmd[:200])
-
-    # Convert sets to lists
-    data['files_modified'] = list(data['files_modified'])
-    data['files_read'] = list(data['files_read'])
+            if isinstance(content, str) and len(content.strip()) > 30:
+                data['assistant_texts'].append(content.strip())
+            elif isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict):
+                        if item.get('type') == 'text':
+                            text = item.get('text', '').strip()
+                            if len(text) > 30:
+                                data['assistant_texts'].append(text)
+                        elif item.get('type') == 'tool_use':
+                            # Track meaningful tool actions
+                            tool_name = item.get('name', '')
+                            tool_input = item.get('input', {})
+                            if tool_name in ('Edit', 'Write', 'Bash'):
+                                action = format_tool_action(tool_name, tool_input)
+                                if action:
+                                    data['tool_actions'].append(action)
 
     return data
 
-def create_session_summary(data: dict) -> str:
-    """Create human-readable session summary."""
+
+def format_tool_action(tool_name: str, tool_input: Dict) -> Optional[str]:
+    """Format tool action concisely."""
+    if tool_name == 'Edit':
+        fp = tool_input.get('file_path', '')
+        fname = Path(fp).name if fp else '?'
+        return f"Edited {fname}"
+    elif tool_name == 'Write':
+        fp = tool_input.get('file_path', '')
+        fname = Path(fp).name if fp else '?'
+        return f"Wrote {fname}"
+    elif tool_name == 'Bash':
+        cmd = tool_input.get('command', '')[:60]
+        if cmd:
+            return f"Ran: {cmd}"
+    return None
+
+
+def generate_session_summary(data: Dict) -> str:
+    """Generate high-level session summary from data."""
     parts = []
 
-    # User requests
+    # What was the session about?
     if data['user_messages']:
-        parts.append("USER REQUESTS:")
-        for msg in data['user_messages'][:10]:  # Limit
-            parts.append(f"  - {msg[:200]}")
+        # First user message often sets the topic
+        first_msg = data['user_messages'][0][:200]
+        parts.append(f"Started with: {first_msg}")
 
-    # Files modified
-    if data['files_modified']:
-        parts.append("\nFILES MODIFIED:")
-        for f in data['files_modified'][:20]:
-            parts.append(f"  - {Path(f).name}")
+    # What was done?
+    if data['tool_actions']:
+        unique_files = set()
+        for action in data['tool_actions']:
+            if 'Edited' in action or 'Wrote' in action:
+                parts_action = action.split()
+                if len(parts_action) >= 2:
+                    unique_files.add(parts_action[1])
+        if unique_files:
+            parts.append(f"Modified: {', '.join(list(unique_files)[:5])}")
 
-    # Key commands
-    if data['commands_run']:
-        unique_cmds = list(dict.fromkeys(data['commands_run']))[:10]
-        parts.append("\nKEY COMMANDS:")
-        for cmd in unique_cmds:
-            parts.append(f"  - {cmd[:100]}")
+    # How many exchanges?
+    parts.append(f"Exchanges: {len(data['user_messages'])} user, {len(data['assistant_texts'])} assistant")
 
-    return '\n'.join(parts)
+    return " | ".join(parts) if parts else "Empty session"
 
-def store_session(data: dict):
-    """Store session data in holographic memory with SEMANTIC extraction."""
+
+def extract_learnings(assistant_texts: List[str]) -> List[Tuple[str, str]]:
+    """
+    Extract learnings from assistant text.
+    Returns list of (category, content) tuples.
+
+    NO regex compression - we store the actual substance and let
+    holographic encoding handle similarity/compression.
+    """
+    learnings = []
+
+    for text in assistant_texts:
+        # Look for explicit statements (these are the substance)
+        text_lower = text.lower()
+
+        # Problems found
+        if any(marker in text_lower for marker in ['the problem is', 'the issue is', 'the bug is', 'found that', 'discovered']):
+            # Store the whole paragraph that contains the finding
+            learnings.append(('finding', text[:500]))
+
+        # Solutions applied
+        if any(marker in text_lower for marker in ['fixed by', 'solved by', 'the fix is', 'changed to', 'updated to']):
+            learnings.append(('success', text[:500]))
+
+        # Things that didn't work
+        if any(marker in text_lower for marker in ["didn't work", "failed", "still broken", "doesn't fix"]):
+            learnings.append(('failed', text[:500]))
+
+        # Insights/understanding
+        if any(marker in text_lower for marker in ['because', 'the reason', 'this means', 'insight:']):
+            learnings.append(('insight', text[:500]))
+
+    return learnings
+
+
+def store_holographic(data: Dict):
+    """
+    Store session data using 3-layer holographic approach.
+
+    Layer 1 (session_high): One summary entry
+    Layer 2 (session_mid): User requests + key assistant responses
+    Layer 3 (session_low): Extracted learnings (findings, successes, failures)
+    """
     mem = get_memory()
-    session_id = data.get('session_id', 'unknown')[:12]
+    session_id = data.get('session_id', 'unknown')
+    ctx = f"session:{session_id}"
+    stored = {'high': 0, 'mid': 0, 'low': 0}
 
-    # Combine all text for semantic extraction
-    all_text = '\n'.join(data.get('user_messages', []))
-    all_text += '\n' + '\n'.join(data.get('assistant_messages', []))
+    # === Layer 1: Session Summary (session_high) ===
+    summary = generate_session_summary(data)
+    if summary:
+        mem.add(
+            category='session',
+            content=summary,
+            context=ctx,
+            source='session_capture:high'
+        )
+        stored['high'] = 1
+        log_debug(f"HIGH: {summary[:80]}")
 
-    # SEMANTIC EXTRACTION - the important part!
-    semantic_findings = extract_semantic_content(all_text)
-    for category, content in semantic_findings:
+    # === Layer 2: User Requests + Key Tool Actions (session_mid) ===
+    # Store user messages as requests
+    for msg in data['user_messages'][:MAX_MID]:
+        mem.add(
+            category='request',
+            content=msg[:500],
+            context=ctx,
+            source='session_capture:mid'
+        )
+        stored['mid'] += 1
+
+    # Store significant tool actions
+    for action in data['tool_actions'][:10]:
+        mem.add(
+            category='location',
+            content=action,
+            context=ctx,
+            source='session_capture:mid'
+        )
+        stored['mid'] += 1
+
+    log_debug(f"MID: {stored['mid']} entries")
+
+    # === Layer 3: Learnings (session_low) ===
+    learnings = extract_learnings(data['assistant_texts'])
+    for category, content in learnings[:MAX_LOW]:
         mem.add(
             category=category,
             content=content,
-            context=f"session {session_id}",
-            source=f"session:{session_id}"
+            context=ctx,
+            source='session_capture:low'
         )
-        log_debug(f"Stored [{category}]: {content[:50]}...")
+        stored['low'] += 1
 
-    # Store session summary (but briefer)
-    summary = create_session_summary(data)
-    if summary and len(semantic_findings) == 0:
-        # Only store raw summary if no semantic content found
-        mem.add(
-            category='session',
-            content=summary[:1000],
-            context=f"session {session_id}",
-            source=f"session:{session_id}"
-        )
+    log_debug(f"LOW: {stored['low']} entries")
 
-    # Store user requests ONLY if they look like tasks (not chit-chat)
-    task_keywords = ['fix', 'add', 'create', 'implement', 'debug', 'find', 'check', 'update', 'change']
-    for msg in data['user_messages'][:5]:
-        msg_lower = msg.lower()
-        if any(kw in msg_lower for kw in task_keywords) and len(msg) > 20:
-            mem.add(
-                category='request',
-                content=msg[:300],
-                context=f"task request in session {session_id}",
-                source=f"session:{session_id}"
-            )
-
-    # DON'T store "Modified: filename" spam - useless
-    # Instead, store files only if they had significant changes
-    if len(data.get('files_modified', [])) <= 3:
-        for f in data['files_modified']:
-            fname = Path(f).name
-            mem.add(
-                category='location',
-                content=f"Modified: {fname}",
-                context=f"session {session_id}",
-                source=fname
-            )
-
-    # Decay old traces to prevent saturation
+    # Apply decay to all traces (natural forgetting)
     mem.decay_traces()
 
-    log_debug(f"Session {session_id}: {len(semantic_findings)} semantic, {len(data.get('user_messages',[]))} msgs")
+    log_debug(f"Stored: high={stored['high']}, mid={stored['mid']}, low={stored['low']}")
+    return stored
+
 
 def clear_session_marker():
     """Clear session marker for next session."""
     if SESSION_MARKER.exists():
         SESSION_MARKER.unlink()
 
-# Main execution
-log_debug("Session capture hook invoked")
+
+# === Main execution ===
+log_debug("Holographic session capture invoked")
 
 try:
     hook_data = json.load(sys.stdin)
-    log_debug(f"Received hook data: {list(hook_data.keys())}")
+    log_debug(f"Hook data keys: {list(hook_data.keys())}")
 except (json.JSONDecodeError, EOFError) as e:
     log_debug(f"No hook data: {e}")
     hook_data = {}
 
-# Get transcript path
 transcript_path = hook_data.get('transcript_path', '')
 
 if transcript_path:
     log_debug(f"Capturing from: {transcript_path}")
-    session_data = extract_session_data(transcript_path)
-    store_session(session_data)
+    data = extract_transcript(transcript_path)
+    store_holographic(data)
 else:
-    log_debug("No transcript_path in hook data")
+    log_debug("No transcript_path provided")
 
-# Always clear session marker
 clear_session_marker()
-
-log_debug("Session capture complete")
+log_debug("Holographic session capture complete")
