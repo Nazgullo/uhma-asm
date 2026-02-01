@@ -138,36 +138,65 @@ get_maturity_stage() {
 }
 
 # Get files to feed based on maturity stage
+# Uses 'file' command to detect text files, no arbitrary size limits
 get_exploration_files() {
     local stage="$1"
-    local files=""
+    local search_path=""
+    local max_depth=""
+    local max_files=""
 
     case "$stage" in
         0)  # Infant - only uhma-asm folder
-            files=$(find /home/peter/Desktop/STARWARS/uhma-asm -maxdepth 2 \
-                -type f \( -name "*.txt" -o -name "*.asm" -o -name "*.md" \) \
-                2>/dev/null | shuf | head -50)
+            search_path="/home/peter/Desktop/STARWARS/uhma-asm"
+            max_depth=3
+            max_files=100
             ;;
-        1)  # Child - add Desktop
-            files=$(find /home/peter/Desktop -maxdepth 3 \
-                -type f \( -name "*.txt" -o -name "*.md" -o -name "*.py" -o -name "*.sh" \) \
-                ! -path "*/\.*" 2>/dev/null | shuf | head -100)
+        1)  # Child - Desktop
+            search_path="/home/peter/Desktop"
+            max_depth=4
+            max_files=200
             ;;
-        2)  # Adolescent - add home folder
-            files=$(find /home/peter -maxdepth 3 \
-                -type f \( -name "*.txt" -o -name "*.md" -o -name "*.py" -o -name "*.sh" -o -name "*.c" -o -name "*.h" \) \
-                ! -path "*/\.*" ! -path "*/.cache/*" ! -path "*/.local/*" \
-                2>/dev/null | shuf | head -200)
+        2)  # Adolescent - home folder
+            search_path="/home/peter"
+            max_depth=4
+            max_files=300
             ;;
         *)  # Adult - broader exploration
-            files=$(find /home/peter -maxdepth 4 \
-                -type f \( -name "*.txt" -o -name "*.md" -o -name "*.py" -o -name "*.sh" -o -name "*.c" -o -name "*.h" -o -name "*.json" -o -name "*.yaml" -o -name "*.toml" \) \
-                ! -path "*/\.*" ! -path "*/.cache/*" ! -path "*/.local/*" ! -path "*/node_modules/*" \
-                2>/dev/null | shuf | head -300)
+            search_path="/home/peter"
+            max_depth=5
+            max_files=500
             ;;
     esac
 
-    echo "$files"
+    # Find all regular files, filter to text-readable ones
+    find "$search_path" -maxdepth "$max_depth" -type f \
+        ! -path "*/\.*" \
+        ! -path "*/.cache/*" \
+        ! -path "*/.local/share/*" \
+        ! -path "*/node_modules/*" \
+        ! -path "*/__pycache__/*" \
+        ! -path "*.surface" \
+        ! -path "*.dat" \
+        ! -path "*.bin" \
+        ! -path "*.o" \
+        ! -path "*.so" \
+        ! -path "*.a" \
+        ! -path "*.pyc" \
+        ! -path "*.class" \
+        ! -path "*.jar" \
+        ! -path "*.zip" \
+        ! -path "*.tar*" \
+        ! -path "*.gz" \
+        ! -path "*.png" \
+        ! -path "*.jpg" \
+        ! -path "*.jpeg" \
+        ! -path "*.gif" \
+        ! -path "*.mp3" \
+        ! -path "*.mp4" \
+        ! -path "*.wav" \
+        ! -path "*.pdf" \
+        ! -path "*.exe" \
+        2>/dev/null | shuf | head -"$max_files"
 }
 
 # Live autonomous mode - self-feeding based on maturity
@@ -221,13 +250,6 @@ live_mode() {
         while IFS= read -r file; do
             [ -f "$file" ] || continue
             file_num=$((file_num + 1))
-
-            # Skip very large files (>1MB)
-            local fsize
-            fsize=$(stat -c%s "$file" 2>/dev/null || echo 0)
-            if [ "$fsize" -gt 1048576 ]; then
-                continue
-            fi
 
             log "  [$file_num] $(basename "$file")"
             feed_cmd "eat $file"
