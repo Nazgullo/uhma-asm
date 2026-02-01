@@ -37,8 +37,9 @@
 
 section .data
     ; Batch mode flag - when set, tick_workers returns immediately
+    ; Default=1 for training (use "batch" command to toggle off for interactive)
     global batch_mode
-    batch_mode:         dq 0
+    batch_mode:         dq 1
 
     intro_hdr:          db "[INTROSPECT] ", 0
     intro_decode_msg:   db "Decoded region: ctx=0x", 0
@@ -1253,6 +1254,10 @@ tick_regulators:
 
 .skip_bootstrap:
     ; === STARTUP CONSOLIDATION ===
+    ; Skip if batch mode (training shouldn't auto-dream)
+    cmp qword [rel batch_mode], 0
+    jne .skip_startup_dream
+
     ; If we have prior knowledge (regions > 100) and haven't consolidated, trigger dream
     cmp qword [rel startup_consolidation_done], 0
     jne .skip_startup_dream
