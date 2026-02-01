@@ -137,66 +137,14 @@ get_maturity_stage() {
     echo "${stage:-0}"
 }
 
-# Get files to feed based on maturity stage
-# Uses 'file' command to detect text files, no arbitrary size limits
-get_exploration_files() {
+# Get exploration path based on maturity stage
+get_exploration_path() {
     local stage="$1"
-    local search_path=""
-    local max_depth=""
-    local max_files=""
-
     case "$stage" in
-        0)  # Infant - only uhma-asm folder
-            search_path="/home/peter/Desktop/STARWARS/uhma-asm"
-            max_depth=3
-            max_files=100
-            ;;
-        1)  # Child - Desktop
-            search_path="/home/peter/Desktop"
-            max_depth=4
-            max_files=200
-            ;;
-        2)  # Adolescent - home folder
-            search_path="/home/peter"
-            max_depth=4
-            max_files=300
-            ;;
-        *)  # Adult - broader exploration
-            search_path="/home/peter"
-            max_depth=5
-            max_files=500
-            ;;
+        0) echo "/home/peter/Desktop/STARWARS/uhma-asm" ;;
+        1) echo "/home/peter/Desktop" ;;
+        *) echo "/home/peter" ;;
     esac
-
-    # Find all regular files, filter to text-readable ones
-    find "$search_path" -maxdepth "$max_depth" -type f \
-        ! -path "*/\.*" \
-        ! -path "*/.cache/*" \
-        ! -path "*/.local/share/*" \
-        ! -path "*/node_modules/*" \
-        ! -path "*/__pycache__/*" \
-        ! -path "*.surface" \
-        ! -path "*.dat" \
-        ! -path "*.bin" \
-        ! -path "*.o" \
-        ! -path "*.so" \
-        ! -path "*.a" \
-        ! -path "*.pyc" \
-        ! -path "*.class" \
-        ! -path "*.jar" \
-        ! -path "*.zip" \
-        ! -path "*.tar*" \
-        ! -path "*.gz" \
-        ! -path "*.png" \
-        ! -path "*.jpg" \
-        ! -path "*.jpeg" \
-        ! -path "*.gif" \
-        ! -path "*.mp3" \
-        ! -path "*.mp4" \
-        ! -path "*.wav" \
-        ! -path "*.pdf" \
-        ! -path "*.exe" \
-        2>/dev/null | shuf | head -"$max_files"
 }
 
 # Live autonomous mode - self-feeding based on maturity
@@ -210,6 +158,7 @@ live_mode() {
 
     local live_cycle=0
     local last_stage=-1
+    local file_count=0
 
     while true; do
         live_cycle=$((live_cycle + 1))
@@ -217,71 +166,57 @@ live_mode() {
         # Check maturity stage
         local stage
         stage=$(get_maturity_stage)
+        local explore_path
+        explore_path=$(get_exploration_path "$stage")
 
         if [ "$stage" != "$last_stage" ]; then
             log "=== MATURITY STAGE: $stage ==="
-            case "$stage" in
-                0) log "  Infant - exploring uhma-asm folder" ;;
-                1) log "  Child - expanding to Desktop" ;;
-                2) log "  Adolescent - exploring home folder" ;;
-                *) log "  Adult - broad exploration enabled" ;;
-            esac
+            log "  Exploring: $explore_path"
             last_stage="$stage"
         fi
 
-        log "=== LIVE CYCLE $live_cycle (Stage $stage) ==="
+        log "=== LIVE CYCLE $live_cycle ==="
 
-        # Get files appropriate for current maturity
-        local files
-        files=$(get_exploration_files "$stage")
-
-        local file_count
-        file_count=$(echo "$files" | grep -c . || echo 0)
-
-        if [ "$file_count" -eq 0 ]; then
-            log "No files found for exploration, waiting..."
-            sleep 30
-            continue
-        fi
-
-        log "Exploring $file_count files..."
-
-        local file_num=0
-        while IFS= read -r file; do
+        # Walk through ALL files in exploration path
+        # UHMA's eat command handles what it can process
+        while IFS= read -r -d '' file; do
             [ -f "$file" ] || continue
-            file_num=$((file_num + 1))
+            file_count=$((file_count + 1))
 
-            log "  [$file_num] $(basename "$file")"
+            log "  [$file_count] $file"
             feed_cmd "eat $file"
+            sleep 1
 
-            # Shorter pause in live mode
-            sleep 2
-
-            # Periodic consolidation (every 20 files)
-            if [ $((file_num % 20)) -eq 0 ]; then
-                log "  Mini-consolidation..."
+            # Consolidation every 50 files
+            if [ $((file_count % 50)) -eq 0 ]; then
+                log "  Consolidating at $file_count files..."
                 feed_cmd "observe"
+                sleep 5
+                feed_cmd "dream"
                 sleep 5
             fi
 
-            maybe_save
-        done <<< "$files"
+            # Save every 100 files
+            if [ $((file_count % 100)) -eq 0 ]; then
+                feed_cmd "save live_$file_count"
+                sleep 2
+            fi
 
-        # End of live cycle - consolidate
-        log "=== LIVE CYCLE $live_cycle COMPLETE ==="
+        done < <(find "$explore_path" -type f -print0 2>/dev/null)
+
+        # End of cycle - full consolidation
+        log "=== LIVE CYCLE $live_cycle COMPLETE ($file_count files total) ==="
         feed_cmd "observe"
         sleep 10
         feed_cmd "dream"
         sleep 10
-        feed_cmd "save live_$live_cycle"
+        feed_cmd "save live_cycle_$live_cycle"
         sleep 2
 
-        # Cleanup old live saves (keep last 5)
-        ls -t live_* 2>/dev/null | tail -n +6 | xargs -r rm -f || true
+        # Cleanup old saves (keep last 10)
+        ls -t live_* 2>/dev/null | tail -n +11 | xargs -r rm -f || true
 
         LAST_CONSOLIDATE=$(date +%s)
-
-        # Brief pause before next cycle
         sleep 5
     done
 }
