@@ -32,7 +32,8 @@
 
 section .data
     ; UHMA command (for spawning if not running)
-    mcp_cmd:        db "../uhma", 0
+    ; NOTE: GUI should be run from project root: ./gui/uhma-viz
+    mcp_cmd:        db "./uhma", 0
     mcp_arg1:       db 0              ; no args needed
     mcp_arg2:       db 0
     mcp_arg3:       db 0
@@ -402,31 +403,48 @@ mcp_call_feed:
     mov edi, MCP_CH_FEED    ; channel 0
     jmp mcp_call_ch
 
-;; mcp_call_ch — Call MCP tool on specific channel
-;; edi = channel number (0-3)
+;; mcp_call_ch — Call MCP tool on specific channel pair
+;; edi = logical channel (0=FEED, 1=QUERY, 2=DEBUG)
 ;; rsi = tool name (C string)
 ;; rdx = arguments JSON (C string, can be empty or null)
 ;; Returns: rax = pointer to response text (in resp_buf)
+;;
+;; CHANNEL PAIRING: logical_channel maps to socket pair:
+;;   FEED(0):  send socket[0] (9999), recv socket[1] (9998)
+;;   QUERY(1): send socket[2] (9997), recv socket[3] (9996)
+;;   DEBUG(2): send socket[4] (9995), recv socket[5] (9994)
 mcp_call_ch:
     push rbx
     push r12
     push r13
     push r14
     push r15
-    sub rsp, 8              ; 5 pushes (odd) + 8 = 48, aligned
+    push rbp
+    sub rsp, 8              ; 6 pushes (even) + 8 = 56, aligned
 
-    mov r14d, edi           ; channel
+    mov r14d, edi           ; logical channel (0-2)
     mov r12, rsi            ; tool name
     mov r13, rdx            ; args
 
-    ; Check channel valid
-    lea rax, [rel mcp_sock_valid]
-    cmp dword [rax + r14 * 4], 0
+    ; Map logical channel to socket indices
+    ; input_idx = logical_channel * 2
+    ; output_idx = logical_channel * 2 + 1
+    mov eax, r14d
+    shl eax, 1              ; eax = logical * 2 = input socket index
+    mov ebp, eax            ; save input index in ebp
+    inc eax                 ; eax = output socket index
+
+    ; Check both sockets valid
+    lea rcx, [rel mcp_sock_valid]
+    cmp dword [rcx + rbp * 4], 0    ; input socket valid?
+    je .ch_no_response
+    cmp dword [rcx + rax * 4], 0    ; output socket valid?
     je .ch_no_response
 
-    ; Get socket for channel
-    lea rax, [rel mcp_sockets]
-    mov r15d, [rax + r14 * 4]  ; socket fd
+    ; Get both socket FDs
+    lea rcx, [rel mcp_sockets]
+    mov r15d, [rcx + rbp * 4]       ; r15 = input socket (for send)
+    mov ebx, [rcx + rax * 4]        ; ebx = output socket (for recv)
 
     ; Build plain text command: "command args\n"
     ; UHMA expects plain text, not JSON-RPC
@@ -459,29 +477,29 @@ mcp_call_ch:
     mov byte [rdi], 10          ; newline
     mov byte [rdi + 1], 0
 
-    ; Send request via TCP on selected channel
+    ; Send request via TCP on INPUT socket
     lea rdi, [rel req_buf]
     call strlen
     mov rdx, rax                ; length
-    mov edi, r15d               ; socket fd
+    mov edi, r15d               ; INPUT socket fd (send here)
     lea rsi, [rel req_buf]
     xor ecx, ecx                ; flags = 0
     call send
 
-    ; Read response via TCP
-    mov edi, r15d
+    ; Read response via TCP from OUTPUT socket
+    mov edi, ebx                ; OUTPUT socket fd (recv here)
     lea rsi, [rel resp_buf]
     mov edx, 65535
     xor ecx, ecx
     call recv
-    mov rbx, rax                ; bytes read
+    mov r14, rax                ; bytes read (use r14, ebx is output socket)
 
     ; Null terminate response and return it
     ; UHMA returns plain text, no JSON parsing needed
-    cmp rbx, 0
+    cmp r14, 0
     jle .ch_no_response
     lea rax, [rel resp_buf]
-    mov byte [rax + rbx], 0
+    mov byte [rax + r14], 0
     jmp .ch_done
 
 .ch_no_response:
@@ -491,6 +509,7 @@ mcp_call_ch:
 
 .ch_done:
     add rsp, 8
+    pop rbp
     pop r15
     pop r14
     pop r13
