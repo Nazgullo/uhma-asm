@@ -1,40 +1,41 @@
 #!/usr/bin/env python3
 """
-Holographic Memory System for Claude Code
-==========================================
+holo_memory.py — Holographic memory system for Claude Code (replicates UHMA VSA)
 
-Replicates UHMA's VSA architecture for temporal continuity,
-memory persistence, and common sense cognitive layer.
+@entry HoloMemory()                              Main class, auto-loads from disk
+@entry mem.add(category, content, context) -> id Store entry with VSA encoding
+@entry mem.query(text, limit, threshold) -> list Query by semantic similarity
+@entry mem.outcome(entry_id, worked) -> None     Log success/failure for entry
+@entry mem.get_state() -> str                    Get cognitive state (confused/progressing/etc)
+@entry mem.decay_traces() -> None                Apply decay to all category traces
+@entry mem.to_ison(limit) -> str                 Export for context injection
+@entry get_memory() -> HoloMemory                Singleton accessor
 
-Architecture (from UHMA):
-  - 1024-dim f64 vectors (orthogonal bases)
-  - bind/unbind/superpose/cosine operations
-  - 8-dim receipt trace (event, ctx, content, outcome, source, aux, session, time)
-  - Category traces (findings, failures, insights, etc.)
-  - Forced context injection via hooks
+@calls numpy (VSA vector operations)
+@calls sentence_transformers (optional, for semantic embeddings)
+@calledby hook.py, capture.py, context.py, query.py, session_capture.py
 
-Key insight: orthogonal random vectors allow superposition without interference.
-Query by unbinding - only matching patterns resonate.
+STORAGE: tools/rag/memory/
+  holo_entries.json   Structured entries (JSON)
+  holo_surface.dat    6GB VSA surface (mmap'd, sparse)
+  holo_traces.npz     Category trace vectors
+  holo_state.json     System state
 
-Usage:
-    from holo_memory import HoloMemory
-    mem = HoloMemory()
+CATEGORIES (with decay rates):
+  finding=0.95, failed=0.90, success=0.95, insight=0.95, warning=0.92,
+  session=0.85, location=0.98, question=0.80, todo=0.85, context=0.70
 
-    # Store
-    mem.add('finding', 'rcx is caller-saved', context='register debugging')
-    mem.add('failed', 'tried XORing somatic with context', context='dispatch fix')
+VSA OPERATIONS:
+  bind(a,b)      XOR-like binding (element-wise multiply of signs)
+  unbind(a,b)    Same as bind (self-inverse in HRR)
+  superpose(a,b) Element-wise add
+  cosim(a,b)     Cosine similarity (normalized dot product)
 
-    # Query by context resonance
-    relevant = mem.query('debugging register clobbering')
-
-    # Log outcomes
-    mem.outcome(entry_id, worked=True)
-
-    # Get state
-    state = mem.get_state()  # confused? repeating? progressing?
-
-    # Export for injection (ISON format)
-    ison = mem.to_ison(limit=10)
+GOTCHAS:
+  - Embeddings are lazy-loaded (800MB+ memory) - only on first query()
+  - 1024-dim f64 vectors (same as UHMA's HOLO_DIM)
+  - Decay is the forgetting mechanism - no manual pruning needed
+  - get_memory() returns singleton - safe to call repeatedly
 """
 
 import json

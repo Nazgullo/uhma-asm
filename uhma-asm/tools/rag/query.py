@@ -1,17 +1,33 @@
 #!/usr/bin/env python3
 """
-Query holographic memory for context about files, functions, or concepts.
+query.py — CLI tool to query holographic memory
 
-Usage:
-  python query.py search <query>       # Search holographic memory
-  python query.py gotchas [filter]     # List all gotchas/warnings
-  python query.py recent [n]           # Show recent entries
-  python query.py state                # Show cognitive state
-  python query.py summary              # Full memory summary
-  python query.py failed [context]     # Show failed approaches
-  python query.py success [context]    # Show successful approaches
+@entry cmd_search(query) -> None       Search by semantic similarity
+@entry cmd_gotchas(filter) -> None     List all gotchas/warnings
+@entry cmd_recent(n) -> None           Show N most recent entries
+@entry cmd_state() -> None             Show cognitive state
+@entry cmd_summary() -> None           Full memory summary
+@entry cmd_failed(context) -> None     Show failed approaches
+@entry cmd_success(context) -> None    Show successful approaches
 
-All queries now use holographic memory (not index.json).
+@calls holo_memory.py:HoloMemory
+@calledby user CLI
+
+USAGE:
+  python query.py search <query>       Search holographic memory
+  python query.py gotchas [filter]     List all gotchas/warnings
+  python query.py recent [n]           Show recent entries (default 10)
+  python query.py state                Show cognitive state
+  python query.py summary              Full memory summary
+  python query.py failed [context]     Show failed approaches
+  python query.py success [context]    Show successful approaches
+
+NOTE: All queries use holographic memory (index.json is deprecated).
+
+GOTCHAS:
+  - Default threshold 0.15 for search results
+  - 'state' shows: confused, repeating, progressing, or stable
+  - 'failed' category has faster decay (0.90) than others
 """
 
 import sys

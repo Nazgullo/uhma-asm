@@ -1,17 +1,29 @@
 #!/usr/bin/env python3
 """
-session_capture.py — 3-layer holographic session recording.
+session_capture.py — 3-layer holographic session recording
 
-Uses UHMA's holographic paradigm: encode → superpose → let decay handle forgetting.
-NO regex compression - the VSA encoding IS the compression.
+@entry capture_session(transcript) -> None  Parse and store session
+@entry extract_requests(text) -> list       Extract user requests
+@entry extract_learnings(text) -> list      Extract findings/failures
 
-3 Layers:
+@calls holo_memory.py:HoloMemory.add()
+@calledby hook.py (on "holo" trigger or auto-save)
+
+3 FIDELITY LAYERS:
   session_high: Brief session summary (what happened overall)
   session_mid:  User requests + key responses (the dialogue substance)
   session_low:  Findings/successes/failures (the learnings)
 
-Semantic search is FREE via cosine similarity on traces.
-Decay is the forgetting mechanism - no need to pre-filter.
+PARADIGM (from UHMA):
+  encode → superpose → let decay handle forgetting
+  NO regex compression - VSA encoding IS the compression
+  Semantic search is FREE via cosine similarity
+
+GOTCHAS:
+  - Reads transcript from ~/.claude/projects/*/uuid.jsonl
+  - Parses JSON lines format (one message per line)
+  - Decay handles forgetting - no manual pruning needed
+  - session category has 0.85 decay rate
 """
 
 import sys

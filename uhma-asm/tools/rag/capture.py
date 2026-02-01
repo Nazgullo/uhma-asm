@@ -1,11 +1,34 @@
 #!/usr/bin/env python3
 """
-capture.py — PostToolUse hook for circuit breaker + memory capture.
+capture.py — PostToolUse hook for circuit breaker feedback + memory capture
 
-Records action-outcome pairs for intelligent loop detection:
-- Tracks (action_signature, outcome_signature, success) tuples
-- Feeds hook.py circuit breaker via shared state file
-- Stores semantic failures in holographic memory
+@entry main()                          Called by Claude Code after every tool use
+@entry record_outcome(tool, input, output, success) Record action-outcome pair
+@entry update_momentum(success) -> float Update circuit breaker momentum
+
+@calls holo_memory.py:HoloMemory (stores semantic failures)
+@calls hook.py (shares state via STATE_FILE for loop detection)
+@calledby Claude Code PostToolUse hook (configured in .claude/settings.json)
+
+CONFIG: ~/.claude/settings.json hooks.postToolUse = ["python3", "tools/rag/capture.py"]
+
+STATE_FILE: tools/rag/memory/.hook_state.json (shared with hook.py)
+
+TRACKED_TOOLS: Edit, Write, NotebookEdit, Bash (not Read/Grep/Glob)
+
+FLOW:
+  1. Receive JSON from stdin (tool name, input, output)
+  2. Check if tool is tracked (Edit/Write/Bash)
+  3. Compute action signature (hash of tool+input)
+  4. Compute outcome signature (hash of output)
+  5. Update STATE_FILE with (action, outcome, success) tuple
+  6. On failure: store in holographic memory as 'failed' category
+
+GOTCHAS:
+  - Reads from stdin (JSON), no stdout output
+  - Only Edit/Write/Bash outcomes count for loop detection
+  - Shares STATE_FILE with hook.py - both must use same format
+  - Failures stored in holo memory for future context injection
 """
 
 import sys

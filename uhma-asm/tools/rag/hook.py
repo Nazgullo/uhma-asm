@@ -1,19 +1,34 @@
 #!/usr/bin/env python3
 """
-hook.py — PreToolUse hook with intelligent circuit breaker
+hook.py — PreToolUse hook for Claude Code context injection + circuit breaker
 
-Features:
-1. Session start injection (git status, failed approaches)
-2. Manual "holo" trigger - user types "holo" to save session
-3. Auto-save every 30 min of activity
-4. SMART circuit breaker - detects actual loops, not just file access counts
+@entry main()                          Called by Claude Code on every tool use
+@entry inject_session_context() -> str Inject git status, recent sessions, learnings
+@entry check_holo_trigger(msg) -> str  Detect "holo" in user message, save session
+@entry reset_state()                   Reset circuit breaker state
 
-Circuit breaker logic:
-- Tracks (action, outcome) pairs with semantic similarity
-- Detects REPEATED FAILED ATTEMPTS at same thing
-- Has momentum: successes raise threshold, failures lower it
-- Only Edit/Bash outcomes count (not Reads)
-- Warns before hard stop, allows recovery
+@calls holo_memory.py:HoloMemory (session saves, context queries)
+@calls capture.py (PostToolUse tracking for circuit breaker)
+@calledby Claude Code PreToolUse hook (configured in .claude/settings.json)
+
+CONFIG: ~/.claude/settings.json hooks.preToolUse = ["python3", "tools/rag/hook.py"]
+
+CIRCUIT BREAKER:
+  - Tracks (action, outcome) pairs with semantic similarity
+  - Detects REPEATED FAILED ATTEMPTS at same thing (3+ failures)
+  - Momentum: successes raise threshold, failures lower it
+  - Warns before hard stop, allows one recovery chance
+  - Reset: rm tools/rag/memory/.hook_state.json
+
+TRIGGERS:
+  - Session start: Injects git status, recent sessions, failed approaches
+  - "holo" in message: Manual save to holographic memory
+  - Auto-save: Every 30 min of activity
+
+GOTCHAS:
+  - Reads from stdin (JSON), writes additionalContext to stdout (JSON)
+  - STATE_FILE tracks momentum/failures across tool calls
+  - Only Edit/Bash outcomes count for loop detection (not Read/Grep)
 """
 import sys
 import json

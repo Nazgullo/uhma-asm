@@ -1,14 +1,26 @@
 #!/usr/bin/env python3
 """
-Context injection for Claude Code - Holographic Memory Version.
+context.py — Context injection for Claude Code via holographic memory
 
-Queries holographic memory for relevant context before:
-1. Editing a file
-2. Calling a function
-3. Searching for something
+@entry context_before_edit(filename) -> str    Get context before editing file
+@entry context_for_function(funcname) -> str   Get context for function
+@entry context_for_search(query) -> str        Get context for search
 
-All context now comes from the holographic memory traces,
-not the static index.json.
+@calls holo_memory.py:HoloMemory.query()
+@calledby hook.py (PreToolUse context injection)
+
+QUERIES HOLOGRAPHIC MEMORY FOR:
+  - Relevant gotchas/warnings for the file
+  - Previous failures when editing similar files
+  - Insights about the code area
+
+NOTE: All context now comes from holographic memory traces,
+      not the static index.json (deprecated).
+
+GOTCHAS:
+  - Returns empty string if no relevant context found
+  - Threshold 0.2 for relevance (cosine similarity)
+  - Queries by filename stem, not full path
 """
 
 import sys

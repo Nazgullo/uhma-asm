@@ -1,11 +1,32 @@
 #!/usr/bin/env python3
 """
-digest_codebase.py — Ingest entire UHMA codebase into holographic memory.
+digest_codebase.py — Ingest UHMA codebase into holographic memory
 
-Creates multi-fidelity layers:
-  - code_high: File-level (name, purpose, entry points)
-  - code_mid: Function-level (signatures, what it does)
-  - code_low: Implementation details (key code patterns)
+@entry main()                           Run full codebase ingestion
+@entry extract_asm_info(path) -> dict   Parse .asm file header/functions
+@entry ingest_file(path, mem) -> None   Store file info at 3 fidelity levels
+
+@calls holo_memory.py:HoloMemory.add()
+@calledby user CLI (one-time setup)
+
+MULTI-FIDELITY LAYERS:
+  code_high: File-level (name, purpose, entry points)
+  code_mid:  Function-level (signatures, what it does)
+  code_low:  Implementation details (key code patterns)
+
+EXTRACTS FROM .ASM FILES:
+  - @entry lines (exported functions)
+  - @calls/@calledby (dependencies)
+  - GOTCHAS section
+  - STATE fields used
+
+USAGE:
+  python digest_codebase.py            # Run once to populate memory
+
+GOTCHAS:
+  - Run once after major codebase changes
+  - Overwrites existing code_* entries
+  - Parses header format from first 50 lines of .asm files
 """
 
 import sys

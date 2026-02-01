@@ -1,10 +1,26 @@
 #!/usr/bin/env python3
 """
-Session end hook - decay traces and clear session marker.
+session_end.py — Session end hook for holographic memory maintenance
 
-Actions:
-1. Apply decay to holographic memory traces
-2. Clear session marker for next session
+@entry main()              Called at session end
+@entry decay_memory()      Apply decay to all holographic traces
+@entry clear_marker()      Clear session marker for next session
+
+@calls holo_memory.py:HoloMemory.decay_traces()
+@calledby Claude Code session end (configured in settings)
+
+ACTIONS:
+  1. Apply decay to holographic memory traces (category-specific rates)
+  2. Clear SESSION_MARKER for next session detection
+
+DECAY RATES (per category):
+  finding=0.95, failed=0.90, success=0.95, insight=0.95, warning=0.92,
+  session=0.85, location=0.98, question=0.80, todo=0.85, context=0.70
+
+GOTCHAS:
+  - SESSION_MARKER at tools/rag/memory/.session_active
+  - Decay is multiplicative (trace *= decay_rate)
+  - Fast-decaying categories: question (0.80), context (0.70)
 """
 
 import sys
