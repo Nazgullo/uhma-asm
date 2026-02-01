@@ -8,6 +8,12 @@
 ; @entry mcp_get_status() -> rax=status_json_ptr
 ; @calledby gui/visualizer.asm
 ;
+; DUAL MODE OPERATION:
+;   Mode 1: GUI spawns ./uhma directly (simple, for exploration)
+;   Mode 2: User starts ./feed.sh first (training mode with consolidation)
+;   GUI auto-detects: if ports 9999-9994 respond, connects to existing UHMA
+;   If no UHMA running, GUI spawns ./uhma automatically
+;
 ; CHANNEL PAIRS (client perspective - write to input, read from output):
 ;   FEED:  write 9999 (CH0) → read 9998 (CH1) - eat, dream, observe
 ;   QUERY: write 9997 (CH2) → read 9996 (CH3) - status, why, misses
@@ -22,14 +28,15 @@
 ; GOTCHAS:
 ;   - Response buffer is static, overwritten each call
 ;   - Stack alignment: ODD pushes → sub rsp must be multiple of 16
+;   - UHMA blocks if output ports not drained - GUI must read responses
 
 section .data
-    ; MCP server command (for spawning if not running)
-    mcp_cmd:        db "python3", 0
-    mcp_arg1:       db "../tools/rag/server.py", 0
-    mcp_arg2:       db "--multi", 0
-    mcp_arg3:       db "6", 0         ; 6 channels
-    mcp_arg4:       db "9999", 0      ; base port
+    ; UHMA command (for spawning if not running)
+    mcp_cmd:        db "./uhma", 0
+    mcp_arg1:       db 0              ; no args needed
+    mcp_arg2:       db 0
+    mcp_arg3:       db 0
+    mcp_arg4:       db 0
     mcp_argv:       dq 0, 0, 0, 0, 0, 0  ; filled at runtime
 
     ; TCP connection params (6-channel)
@@ -55,10 +62,10 @@ section .data
     fmt_int:        db "%d", 0
 
     ; Error messages
-    err_connect:    db "MCP: connect failed, spawning server...", 10, 0
-    err_spawn:      db "MCP: spawn failed", 10, 0
-    err_socket:     db "MCP: socket failed", 10, 0
-    msg_connected:  db "MCP: connected (%d channels)", 10, 0
+    err_connect:    db "GUI: no UHMA found, spawning ./uhma...", 10, 0
+    err_spawn:      db "GUI: failed to spawn UHMA (try ./feed.sh first)", 10, 0
+    err_socket:     db "GUI: socket error", 10, 0
+    msg_connected:  db "GUI: connected to UHMA (%d channels)", 10, 0
 
 section .bss
     ; TCP sockets (6-channel)
@@ -269,7 +276,7 @@ mcp_init:
     pop rbx
     ret
 
-;; Spawn MCP server in multi-channel mode
+;; Spawn UHMA directly (creates 6 TCP channels itself)
 ;; Returns: eax=1 success, 0 failure
 .spawn_server:
     push rbx
@@ -287,18 +294,10 @@ mcp_init:
     jmp .spawn_done
 
 .child:
-    ; Build argv: python3 server.py --multi 4 9999
+    ; Build argv: ./uhma (no extra args - UHMA creates 6 TCP channels itself)
     lea rax, [rel mcp_cmd]
     mov [rel mcp_argv], rax
-    lea rax, [rel mcp_arg1]
-    mov [rel mcp_argv + 8], rax
-    lea rax, [rel mcp_arg2]
-    mov [rel mcp_argv + 16], rax
-    lea rax, [rel mcp_arg3]
-    mov [rel mcp_argv + 24], rax
-    lea rax, [rel mcp_arg4]
-    mov [rel mcp_argv + 32], rax
-    mov qword [rel mcp_argv + 40], 0
+    mov qword [rel mcp_argv + 8], 0   ; NULL terminate argv
 
     ; Exec
     lea rdi, [rel mcp_cmd]
