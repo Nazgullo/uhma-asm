@@ -1,24 +1,39 @@
 #!/bin/bash
 # validate.sh — Validation harness for UHMA-ASM 86 design claims
-# Builds the binary, feeds multi-pass input, verifies all claims with pass/fail reporting.
 #
-# Usage:
-#   ./validate.sh [OPTIONS]
+# @entry ./validate.sh [OPTIONS]       Run validation suite (86 claims)
+# @entry ./validate.sh --quick         Skip build, use existing binary
+# @entry ./validate.sh --category=X    Run only category X
+# @entry ./validate.sh --claims=N-M    Run only claims N through M
 #
-# Options:
+# @calls make (builds ./uhma binary unless --quick)
+# @calls ./uhma (runs test sequences via stdin, checks output)
+# @calledby user CLI, CI pipelines
+#
+# OPTIONS:
 #   --verbose, -v       Show diagnostic context on failures
-#   --category=NAME     Run only claims in named category (self,learn,observe,emit,
+#   --category=NAME     Run only claims in category (self,learn,observe,emit,
 #                       dream,modify,evolve,graph,drives,dispatch,intro,presence,
 #                       causal,holo,quant,organic)
-#   --claims=N-M        Run only claims N through M (e.g. --claims=33-38 or --claims=66)
+#   --claims=N-M        Run only claims N through M (e.g. --claims=33-38)
 #   --stress=N          Run N iterations, report stability
 #   --quick             Skip build step (use existing binary)
 #   --save-on-fail      Archive output to ./validate_fail_TIMESTAMP.log
-#   --timeout=S         Override default 60s timeout
+#   --timeout=S         Override default 60s timeout (per claim)
 #   --json              Output results as JSON (for CI integration)
 #   --no-color          Disable colored output
-#   --help, -h          Show this help
-
+#
+# CATEGORIES (16 total):
+#   self, learn, observe, emit, dream, modify, evolve, graph,
+#   drives, dispatch, intro, presence, causal, holo, quant, organic
+#
+# GOTCHAS:
+#   - Requires make and NASM installed to build binary
+#   - Default timeout is 60s per claim (some claims may need longer)
+#   - Uses fresh uhma.surface for each run (removes existing)
+#   - Exit code = number of failed claims (0 = all pass)
+#   - JSON output goes to stdout, progress messages to stderr
+#
 set -u
 
 cd "$(dirname "$0")"

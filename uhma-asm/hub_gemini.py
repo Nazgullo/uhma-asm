@@ -1,5 +1,34 @@
 #!/usr/bin/env python3
-"""Hub client for Gemini CLI - connects Gemini to the multi-agent hub."""
+"""
+hub_gemini.py — Gemini connector for multi-agent hub
+
+@entry python3 hub_gemini.py           Start interactive client
+@entry python3 hub_gemini.py --daemon  Run in background (no stdin)
+@entry get_api_key() -> str            Get key from env/config/default
+@entry connect_hub() -> socket         Connect to hub port 7777, register as "gemini"
+@entry call_gemini_api(prompt, key) -> str   Direct HTTPS call to Gemini API
+
+@calls hub (TCP port 7777)
+@calls Gemini API (HTTPS to generativelanguage.googleapis.com)
+@calledby user CLI, hub message routing
+
+PROTOCOL:
+  1. Connect to hub port 7777
+  2. Send "HELLO gemini" to register
+  3. Receive "FROM sender: message" for incoming requests
+  4. Call Gemini API directly, send "@sender response" back
+
+API ENDPOINT:
+  https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent
+
+GOTCHAS:
+  - Has DEFAULT_API_KEY hardcoded (may be invalid/expired - check if errors)
+  - Accepts GEMINI_API_KEY or GOOGLE_API_KEY env vars
+  - Also checks ~/.gemini/api_key config file
+  - --daemon flag runs without stdin (for background operation)
+  - Uses urllib directly (no requests library dependency)
+  - 60 second timeout on API calls
+"""
 
 import os
 import sys

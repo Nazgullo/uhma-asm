@@ -1,5 +1,29 @@
 #!/usr/bin/env python3
-"""Hub client for Claude CLI - connects Claude to the multi-agent hub."""
+"""
+hub_claude.py — Claude connector for multi-agent hub
+
+@entry python3 hub_claude.py        Start interactive client
+@entry get_api_key() -> str         Get key from env/config/prompt
+@entry connect_hub() -> socket      Connect to hub port 7777, register as "claude"
+@entry call_claude(prompt, key) -> str   Call claude CLI subprocess
+
+@calls hub (TCP port 7777)
+@calls claude CLI (subprocess with -p flag)
+@calledby user CLI, hub message routing
+
+PROTOCOL:
+  1. Connect to hub port 7777
+  2. Send "HELLO claude" to register
+  3. Receive "FROM sender: message" for incoming requests
+  4. Call claude CLI, send "@sender response" back
+
+GOTCHAS:
+  - Requires ANTHROPIC_API_KEY env var or ~/.anthropic/api_key file
+  - Hub must be running first (./hub)
+  - claude CLI must be installed and in PATH
+  - 60 second timeout on claude subprocess calls
+  - Uses non-blocking socket with select() for message processing
+"""
 
 import os
 import sys

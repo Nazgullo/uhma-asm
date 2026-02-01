@@ -1,10 +1,50 @@
 #!/bin/bash
+# feed.sh — Universal UHMA training script (replaces 8 old scripts)
 #
-# Universal UHMA Feeding Script
-# Replaces: feed_chunks.sh, feed_interactive.sh, feed_small.sh, feed_visible.sh,
-#           train_loop.sh, train.sh, train_uhma.sh, mastery_loop.sh
+# @entry ./feed.sh [OPTIONS]           Start training
+# @entry ./feed.sh --shutdown [NAME]   Graceful shutdown
+# @entry ./feed.sh --dry-run           Preview without running
 #
-
+# @calls ./uhma (binary via TCP ports 9999/9998/9997/9996/9995/9994)
+# @calls nc (netcat for TCP communication)
+# @calls claude CLI (spawned on 5 consecutive failures)
+# @calledby user CLI, cron, automation scripts
+#
+# OPTIONS:
+#   --corpus DIR      Directory with .txt files (default: corpus/)
+#   --pause N         Seconds between files (default: 5)
+#   --consolidate N   Minutes between observe+dream (default: 30)
+#   --save-every N    Minutes between checkpoints (default: 30)
+#   --order ORDER     alpha|random|reverse (default: alpha)
+#   --cycles N        Number of cycles, 0=infinite (default: 0)
+#   --mastery         Alias for --cycles 0 --self-learn
+#   --live            Enter autonomous mode after training
+#   --live-pause N    Seconds to wait before live mode (default: 10)
+#   --shutdown [NAME] Graceful shutdown with optional save name
+#
+# FUNCTIONS:
+#   start_drainers()              Start persistent TCP drainers for output ports
+#   stop_drainers()               Kill drainer processes
+#   soft_shutdown(save_name)      Save state, send quit, wait 10s, SIGTERM/SIGKILL
+#   uhma_send(port, cmd)          Fire-and-forget TCP send (drainers handle output)
+#   feed_cmd(cmd)                 Send to FEED_IN (9999)
+#   query_cmd(cmd)                Send to QUERY_IN (9997)
+#   start_uhma()                  Start UHMA, wait for ports, start drainers
+#   live_mode()                   Autonomous exploration based on maturity stage
+#
+# TCP PORTS (paired input→output):
+#   FEED:  9999→9998  (eat, dream, observe, save, quit)
+#   QUERY: 9997→9996  (status, why, misses)
+#   DEBUG: 9995→9994  (receipts, trace)
+#
+# GOTCHAS:
+#   - Output ports MUST be continuously drained or UHMA blocks forever
+#   - Use "timeout 2 nc -N ... || true" (exit 124 triggers set -e)
+#   - batch_mode=1 must be set in UHMA binary or startup dream blocks feed
+#   - ls cleanup commands need "|| true" for pipefail compatibility
+#   - Ctrl+C triggers soft_shutdown via trap (saves state before exit)
+#   - Live mode expands exploration path based on maturity (0=uhma-asm, 1=Desktop, 2+=home)
+#
 set -euo pipefail
 
 # Defaults
