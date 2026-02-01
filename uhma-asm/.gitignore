@@ -20,6 +20,34 @@ tools/rag/memory/.session_active
 
 # Debug logs
 *_debug.log
+*.log
+*.out
+
+# Runtime/temp files
+*.pid
+ALERT_CLAUDE.txt
+interrupted
+loop*
+checkpoint_*
+cycle_*
+live_*
+shutdown_*
+
+# Old training scripts (superseded by feed.sh)
+feed_clean.py
+feed_pty.py
+mastery.py
+watchdog.py
+train_fifo.py
+mastery_script.out
+
+# Training corpus (user data)
+corpus/
+corpus_tiny/
+codebase.txt
+
+# Backups
+*.backup
 
 # Datasets (large)
 movie_*.txt
