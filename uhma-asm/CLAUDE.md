@@ -683,6 +683,22 @@ After training, UHMA can enter autonomous self-exploration mode:
    - **Stage 1 (Child)**: `/home/peter/Desktop`
    - **Stage 2+ (Adolescent/Adult)**: `/home/peter`
 
+### Soft Shutdown
+```bash
+# Graceful shutdown (saves state, sends quit, waits for exit)
+./feed.sh --shutdown              # Auto-named: shutdown_YYYYMMDD_HHMMSS
+./feed.sh --shutdown my_save      # Custom name
+
+# Ctrl+C during training also uses soft_shutdown
+```
+
+**Shutdown sequence:**
+1. `save <name>` → saves state to file
+2. `quit` → UHMA calls `surface_freeze` (sync to disk) then exits
+3. Wait up to 10s for graceful exit
+4. SIGTERM fallback → SIGKILL only if needed
+5. Stop drainers, clean PID files
+
 ### Session 2026-02-01 Fixes
 - Rewrote `uhma_send()` to use persistent drainers + fire-and-forget
 - Changed `nc -q 1` to `timeout 2 nc -N || true`
@@ -690,3 +706,4 @@ After training, UHMA can enter autonomous self-exploration mode:
 - Set `batch_mode=1` default in introspect.asm
 - Added skip-startup-dream check when batch_mode=1
 - Added live autonomous mode with maturity-based exploration
+- Added `soft_shutdown()` function and `--shutdown` option
