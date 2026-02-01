@@ -1,25 +1,19 @@
 ; genes.asm — Gene Pool: metabolic recycling of condemned regions
 ;
-; ENTRY POINTS:
-;   gene_pool_init()                  - zero out gene pool
-;   gene_extract(region_ptr)          - extract ctx/token/fitness from dying region
-;   gene_pool_add(ctx, token, fitness)- add gene, replace lowest if full
-;   gene_pool_sample()                → ctx in eax, token in edx (or 0 if empty)
-;   gene_pool_show()                  - display pool status and top genes
+; @entry gene_pool_init() -> void                     ; zero out gene pool
+; @entry gene_extract(rdi=region_ptr) -> void         ; extract from dying region
+; @entry gene_pool_add(edi=ctx, esi=token, xmm0=fitness) -> void
+; @entry gene_pool_sample() -> eax=ctx, edx=token     ; 0 if empty
+; @entry gene_pool_show() -> void                     ; display pool status
 ;
-; GENE STRUCTURE (16 bytes each):
-;   [0-3]  ctx_hash   - context hash pattern matched
-;   [4-7]  token_id   - predicted token
-;   [8-15] fitness    - f64 fitness at time of death (hits/(hits+miss))
+; @calls introspect_region, sys_getrandom
+; @calledby surface.asm:region_condemn, evolve.asm:evolve_from_gene_pool
 ;
-; POOL POLICY:
-;   Fixed size: GENE_POOL_SIZE entries (default 64)
-;   When full: find lowest-fitness gene, replace if new gene is fitter
-;   Minimum fitness threshold: gene_min_fitness (0.05) to avoid junk
-;
-; CALLED BY:
-;   surface.asm: region_condemn() extracts gene before death
-;   evolve.asm:  evolve_from_gene_pool() resurrects genes
+; GOTCHAS:
+;   - Gene = 16B: ctx_hash(4) + token_id(4) + fitness_f64(8)
+;   - Pool size: GENE_POOL_SIZE (64), replaces lowest fitness when full
+;   - Minimum fitness 0.05 to avoid storing junk genes
+;   - Genes extracted at region death, resurrected by evolve
 ;
 %include "syscalls.inc"
 %include "constants.inc"

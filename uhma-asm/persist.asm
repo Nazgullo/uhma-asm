@@ -1,29 +1,20 @@
 ; persist.asm — Save/restore surface state to/from file
 ;
-; ENTRY POINTS:
-;   persist_save(filename)            - save surface to file
-;   persist_load(filename)            - restore surface from file
-;   gene_export(filename)             - export gene pool to portable format
-;   gene_import(filename)             - import gene pool from file
-;   gene_auto_export()                - periodic auto-save of genes
-;   gene_scan_library(dir_path)       - scan directory for importable genes
+; @entry persist_save(rdi=filename) -> void         ; save surface to file
+; @entry persist_load(rdi=filename) -> void         ; restore from file
+; @entry gene_export(rdi=filename) -> void          ; export gene pool
+; @entry gene_import(rdi=filename) -> void          ; import gene pool
+; @entry gene_auto_export() -> void                 ; periodic auto-save
+; @entry gene_scan_library(rdi=dir_path) -> void    ; scan for importable genes
 ;
-; FILE FORMAT (persist_save/load):
-;   [0-7]   magic "UHMA" + padding
-;   [8-15]  version (currently 2)
-;   [16+]   state block
-;   [+]     region table
-;   [+]     dispatch region (bootstrap to alloc_ptr)
-;   [+]     holographic arena (vocab, traces)
+; @calls fire_hook (HOOK_SAVE, HOOK_LOAD)
+; @calledby repl.asm:save/load, boot.asm:auto-restore
 ;
-; GENE EXPORT FORMAT:
-;   Portable JSON-like format for sharing learned patterns
-;   Contains: ctx_hash, token_id, fitness, optional metadata
-;
-; HOOKS FIRED:
-;   HOOK_SAVE before save, HOOK_LOAD after successful load
-;
-; CALLED BY: repl.asm (save/load commands), boot.asm (auto-restore)
+; GOTCHAS:
+;   - File format: magic "UHMA" + ver(2) + state + regions + dispatch + holo
+;   - Gene export: portable JSON-like (ctx_hash, token_id, fitness, metadata)
+;   - HOOK_SAVE fires before save, HOOK_LOAD fires after successful load
+;   - Version 2 includes holographic arena and vocabulary
 ;
 %include "syscalls.inc"
 %include "constants.inc"

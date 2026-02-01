@@ -1,37 +1,22 @@
 ; modify.asm — Self-modification primitives: prune, promote, specialize, generalize
 ;
-; ENTRY POINTS:
-;   modify_prune(region_idx)          - mark region as CONDEMNED
-;   modify_promote(region_idx)        - boost region's activation
-;   modify_specialize(region_idx)     - duplicate region with narrower context
-;   modify_generalize(region_idx)     - relax context matching (mask bits)
-;   modify_restructure()              - batch restructuring when coherence low
-;   clear_connections_to(region_idx)  - remove all references to region
-;   log_causal(cause_idx, effect_idx) - record causal relationship
+; @entry modify_prune(edi=region_idx) -> void       ; mark CONDEMNED
+; @entry modify_promote(edi=region_idx) -> void     ; boost activation
+; @entry modify_specialize(edi=region_idx) -> void  ; dup with narrower ctx
+; @entry modify_generalize(edi=region_idx) -> void  ; relax ctx matching
+; @entry modify_restructure() -> void               ; batch restructure
+; @entry clear_connections_to(edi=region_idx) -> void
+; @entry log_causal(edi=cause_idx, esi=effect_idx) -> void
 ;
-; PRUNE FLOW:
-;   Set RHDR_FLAGS |= RFLAG_CONDEMNED → region_compact() will reclaim later
-;   Gene extraction happens before final death (in region_condemn)
+; @calls region_condemn, fire_hook, emit_dispatch_pattern, emit_receipt_full
+; @calledby drives.asm, evolve.asm, observe.asm, dreams.asm, introspect.asm
 ;
-; PROMOTE FLOW:
-;   activation = min(1.0, activation + mod_boost_val)
-;   Higher activation = more likely to be called during spread
-;
-; SPECIALIZE:
-;   Copy region, tighten context hash (fewer bits masked)
-;   Creates more specific pattern matcher
-;
-; GENERALIZE:
-;   Mask low bits of context hash (broader matching)
-;   Converts dispatch pattern toward schema-like behavior
-;   Clears RFLAG_ANALYZED so region gets rescanned by sym_scan_for_discoveries
-;
-; CAUSAL RECEIPTS:
-;   Each modification emits receipt with aux=accuracy*1000 for causal tracking
-;   EVENT_PRUNE, EVENT_PROMOTE, EVENT_SPECIALIZE, EVENT_GENERALIZE
-;   This allows meta_recommend_strategy() to learn which modifications help
-;
-; CALLED BY: drives.asm, evolve.asm, observe.asm, dreams.asm, introspect.asm
+; GOTCHAS:
+;   - Prune: sets RFLAG_CONDEMNED, region_compact() reclaims later
+;   - Promote: activation = min(1.0, activation + 0.5)
+;   - Specialize: copy + tighten ctx hash (fewer bits masked)
+;   - Generalize: mask low bits, clears RFLAG_ANALYZED for rescan
+;   - All mods emit causal receipts (EVENT_PRUNE, etc.) for meta_recommend
 ;
 %include "syscalls.inc"
 %include "constants.inc"

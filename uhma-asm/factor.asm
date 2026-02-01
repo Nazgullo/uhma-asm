@@ -1,27 +1,22 @@
 ; factor.asm — Subroutine extraction: find common suffixes, create shared code
 ;
-; ENTRY POINTS:
-;   factor_init()                       - init subroutine table
-;   factor_suffix()                     - main: scan regions, extract shared suffixes
-;   find_common_suffix(r1, r2)          → eax=common suffix length
-;   emit_subroutine(code_ptr, len)      → rax=new RTYPE_SUBROUTINE region
-;   rewrite_to_call(region, sub_addr)   - replace suffix with CALL
-;   verify_valid_call(addr)             → eax=1 if addr points to valid sub
-;   subroutines_show()                  - list all extracted subroutines
-;   garbage_collect_subroutines()       - remove subroutines with 0 callers
+; @entry factor_init() -> void                      ; init subroutine table
+; @entry factor_suffix() -> void                    ; scan + extract shared suffixes
+; @entry find_common_suffix(rdi=r1, rsi=r2) -> eax  ; common suffix length
+; @entry emit_subroutine(rdi=code_ptr, esi=len) -> rax ; new RTYPE_SUBROUTINE
+; @entry rewrite_to_call(rdi=region, rsi=sub_addr) -> void
+; @entry verify_valid_call(rdi=addr) -> eax         ; 1=valid, 0=invalid
+; @entry subroutines_show() -> void                 ; list all subroutines
+; @entry garbage_collect_subroutines() -> void      ; remove 0-caller subs
 ;
-; ALGORITHM (O(n) hash-based grouping):
-;   1. Hash last 8 bytes of each region's code
-;   2. Group regions by hash into suffix_registry
-;   3. For each group with 2+ members, verify byte equality
-;   4. Extract matching suffix as RTYPE_SUBROUTINE
-;   5. Rewrite original regions to CALL the subroutine
+; @calls region_alloc, region_find_by_addr
+; @calledby dreams.asm:consolidation, repl.asm:cmd_factor
 ;
-; DATA STRUCTURES:
-;   subroutine_table[64]:  16B each (addr, len, caller_count, code_hash)
-;   suffix_registry[]:     hash + region_ptr pairs for O(1) grouping
-;
-; CALLED BY: dreams.asm (consolidation phase), repl.asm (factor command)
+; GOTCHAS:
+;   - O(n) algorithm: hash last 8 bytes → group → verify byte equality
+;   - subroutine_table[64]: 16B each (addr, len, caller_count, code_hash)
+;   - Rewrites original regions to CALL the new subroutine
+;   - GC removes subroutines with caller_count=0
 ;
 %include "syscalls.inc"
 %include "constants.inc"

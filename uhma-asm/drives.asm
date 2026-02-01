@@ -1,23 +1,22 @@
 ; drives.asm — Homeostatic drive system: thresholds, goals, actions
 ;
-; ENTRY POINTS:
-;   drives_check()               - check all drives vs thresholds, trigger actions
-;   drives_show()                - display current drive levels and thresholds
-;   drives_set_threshold(id,val) - set threshold for drive id
+; @entry drives_check() -> void ; check drives vs thresholds, trigger actions
+; @entry drives_show() -> void ; display current drive levels (REPL "drives")
+; @entry drives_set_threshold(edi=id, xmm0=val) -> void
+;
+; @calledby introspect.asm:update_organic_pressure
+; @calledby repl.asm:cmd_drives
 ;
 ; DRIVES (f32 values in ST_DRIVES[]):
-;   [0] Accuracy   - prediction hit rate, triggers exploration when low
-;   [1] Efficiency - resource usage, triggers pruning when low
-;   [2] Novelty    - pattern diversity, triggers context rotation when low
-;   [3] Coherence  - graph/holo agreement, triggers alignment when low
+;   [0] Accuracy   - prediction hit rate → GOAL_EXPLORATION when low
+;   [1] Efficiency - resource usage → GOAL_EFFICIENCY, region_compact()
+;   [2] Novelty    - pattern diversity → GOAL_NOVELTY, rotate context
+;   [3] Coherence  - graph/holo agreement → GOAL_COHERENCE, modify_restructure()
 ;
-; ACTIONS:
-;   Accuracy low  → set GOAL_EXPLORATION, increase exploration
-;   Efficiency low → set GOAL_EFFICIENCY, call region_compact()
-;   Novelty low   → set GOAL_NOVELTY, rotate context
-;   Coherence low → set GOAL_COHERENCE, call modify_restructure()
-;
-; CALLED BY: introspect.asm (update_organic_pressure), repl.asm (periodic)
+; GOTCHAS:
+;   - Drive values are f32, thresholds in ST_DRIVE_THRESHOLDS[]
+;   - Actions only fire when drive < threshold
+;   - Goals set in ST_CURRENT_GOAL (single active goal)
 ;
 %include "syscalls.inc"
 %include "constants.inc"

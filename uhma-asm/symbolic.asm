@@ -1,34 +1,23 @@
 ; symbolic.asm — Symbolic observation: log modifications, block only crashes
 ;
-; ENTRY POINTS:
-;   sym_init()                        - init observation system
-;   sym_check_write(addr, size)       → eax=1(allowed)/0(blocked unmapped)
-;   sym_observe_mod(addr, size, type) - log modification to circular buffer
-;   sym_record_anomaly(addr, desc)    - record unusual-but-working pattern
-;   sym_record_discovery(addr, hash, steps) - log "shouldn't work" pattern
-;   sym_get_stats()                   → ptr to stats struct
-;   sym_hash_pattern(addr, len)       → eax=pattern hash
-;   sym_analyze_region(hdr)           - full symbolic analysis of region
-;   sym_is_anomalous(addr)            → eax=1 if addr is known anomaly
-;   sym_scan_for_discoveries()        - find patterns that survived unexpectedly
+; @entry sym_init() -> void                         ; init observation system
+; @entry sym_check_write(rdi=addr, esi=size) -> eax ; 1=allowed, 0=blocked
+; @entry sym_observe_mod(rdi=addr, esi=size, edx=type) -> void ; log to buffer
+; @entry sym_record_anomaly(rdi=addr, rsi=desc) -> void
+; @entry sym_record_discovery(rdi=addr, esi=hash, edx=steps) -> void
+; @entry sym_get_stats() -> rax                     ; ptr to stats struct
+; @entry sym_hash_pattern(rdi=addr, esi=len) -> eax ; pattern hash
+; @entry sym_analyze_region(rdi=hdr) -> void        ; full analysis
+; @entry sym_is_anomalous(rdi=addr) -> eax          ; 1 if known anomaly
+; @entry sym_scan_for_discoveries() -> void         ; find surviving patterns
 ;
-; PHILOSOPHY:
-;   OBSERVE, don't constrain. Only block writes to unmapped/critical memory.
-;   Log everything for post-hoc analysis of emergence.
-;   Track "anomalous" patterns that work despite looking wrong.
+; @calledby emit.asm, modify.asm, evolve.asm (before any code change)
 ;
-; RFLAG_ANALYZED PATTERN:
-;   sym_scan_for_discoveries sets RFLAG_ANALYZED after scanning each region.
-;   modify.asm clears RFLAG_ANALYZED when region is modified.
-;   This allows efficient re-scanning of only modified regions.
-;
-; LOG BUFFERS:
-;   sym_log_buf[256]: circular buffer of modifications (32B each)
-;   disc_log_buf[64]: patterns that "shouldn't work" but do
-;
-; STATS: sym_mod_count, sym_blocked_count, sym_anomaly_count
-;
-; CALLED BY: emit.asm, modify.asm, evolve.asm (before any code change)
+; GOTCHAS:
+;   - OBSERVE, don't constrain - only block writes to unmapped memory
+;   - sym_log_buf[256]: circular buffer (32B each), disc_log_buf[64]: discoveries
+;   - RFLAG_ANALYZED set after scan, cleared on modify → efficient re-scanning
+;   - Stats: sym_mod_count, sym_blocked_count, sym_anomaly_count
 ;
 %include "syscalls.inc"
 %include "constants.inc"

@@ -1,30 +1,23 @@
 ; maturity.asm — Developmental stage gating: earn capabilities through stability
 ;
-; ENTRY POINTS:
-;   maturity_init()                   - set Stage 0, init mastery tracking
-;   maturity_update(accuracy, stability, coherence) - update EMA metrics
-;   maturity_check_advance()          - check if ready to advance stage
-;   gate_syscall(syscall_num)         → eax=1(allowed)/0(blocked) for stage
-;   gate_fd_write(fd)                 → eax=1 if write allowed
-;   gate_fd_read(fd)                  → eax=1 if read allowed
-;   get_maturity_level()              → eax=current stage (0-2)
-;   get_mastery_metrics()             → pointer to metrics struct
+; @entry maturity_init() -> void                    ; set Stage 0
+; @entry maturity_update(xmm0=acc, xmm1=stab, xmm2=coh) -> void ; update EMA
+; @entry maturity_check_advance() -> void           ; check stage advance
+; @entry gate_syscall(edi=syscall_num) -> eax       ; 1=allowed, 0=blocked
+; @entry gate_fd_write(edi=fd) -> eax               ; 1=allowed
+; @entry gate_fd_read(edi=fd) -> eax                ; 1=allowed
+; @entry get_maturity_level() -> eax                ; current stage (0-2)
+; @entry get_mastery_metrics() -> rax               ; ptr to metrics struct
 ;
-; STAGES:
-;   Stage 0 (Infant): Internal only - surface, timestamps, REPL I/O
-;   Stage 1 (Aware):  + read external files (/proc/self, data files)
-;   Stage 2 (Active): + write files, spawn processes (with checks)
+; @calls fire_hook
+; @calledby io.asm:gate_fd_*, repl.asm:status, dispatch.asm:periodic
 ;
-; ADVANCEMENT CRITERIA (must sustain for thresh_window steps):
-;   accuracy  >= 75% prediction hit rate
-;   stability >= 80% metabolic stability
-;   coherence >= 70% graph-holo agreement
-;
-; MASTERY TRACKING:
-;   Uses EMA (alpha=0.01) for rolling averages
-;   mastery_window_count, mastery_above_thresh counters
-;
-; CALLED BY: io.asm (gate_fd_*), repl.asm (status), dispatch.asm (periodic)
+; GOTCHAS:
+;   - Stage 0 (Infant): internal only - surface, timestamps, REPL I/O
+;   - Stage 1 (Aware): + read external files
+;   - Stage 2 (Active): + write files, spawn processes
+;   - Advancement: sustain 75%acc/80%stab/70%coh for thresh_window steps
+;   - Uses EMA (alpha=0.01) for rolling metric averages
 ;
 %include "syscalls.inc"
 %include "constants.inc"

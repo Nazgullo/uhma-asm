@@ -1,23 +1,23 @@
 ; decode.asm — x86 instruction decoder for self-reading and verification
 ;
-; ENTRY POINTS:
-;   decode_instruction_length(ptr)        → eax=length in bytes
-;   decode_instruction_full(ptr, out_buf) → fills DecodedInstr struct
-;   decode_region_instructions(hdr, out)  → decode all instrs in region
-;   count_region_instructions(hdr)        → eax=instruction count
-;   classify_opcode(opcode)               → eax=OpClass enum
+; @entry decode_instruction_length(rdi=ptr) -> eax=length in bytes
+; @entry decode_instruction_full(rdi=ptr, rsi=out_buf) -> fills DecodedInstr struct
+; @entry decode_region_instructions(rdi=hdr, rsi=out) -> decode all instrs in region
+; @entry count_region_instructions(rdi=hdr) -> eax=instruction count
+; @entry classify_opcode(edi=opcode) -> eax=OpClass enum
 ;
-; DATA FLOW:
-;   Raw bytes → REX detection → opcode dispatch → ModR/M → SIB → displ → imm
-;   Output: length, opcode class, registers used, memory access info
+; @calledby verify.asm:verify_modification (abstract interpretation)
+; @calledby introspect.asm:introspect_region (semantic analysis)
+; @calledby factor.asm:factor_suffix (suffix length detection)
 ;
-; OPCODE CLASSES (used by verify.asm):
-;   OP_CMP, OP_JCC, OP_MOV, OP_CALL, OP_RET, OP_SYSCALL, OP_PUSH, OP_POP, etc.
+; FLOW: Raw bytes → REX detection → opcode dispatch → ModR/M → SIB → displ → imm
 ;
-; CALLED BY:
-;   verify.asm:  verify_modification() for abstract interpretation
-;   introspect.asm: introspect_region() for semantic analysis
-;   factor.asm: suffix length detection
+; OPCODE CLASSES: OP_CMP, OP_JCC, OP_MOV, OP_CALL, OP_RET, OP_SYSCALL, OP_PUSH, OP_POP
+;
+; GOTCHAS:
+;   - REX prefix (0x40-0x4F) extends register set to r8-r15
+;   - ModR/M byte required for most instructions
+;   - SIB byte only when ModR/M.rm == 4
 ;
 %include "syscalls.inc"
 %include "constants.inc"

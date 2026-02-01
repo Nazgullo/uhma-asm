@@ -1,34 +1,25 @@
 ; vsa_ops.asm — Code-to-Vector: geometric safety via high-dim embeddings
 ;
-; ENTRY POINTS:
-;   init_safety_vectors()             - build safety/danger template vectors
-;   opcode_to_hash(opcode)            → eax=deterministic hash for opcode
-;   opcode_to_vector(opcode, out_vec) - write 1024-dim f64 vector for opcode
-;   classify_opcode_vec(opcode)       → category + safety weight
-;   encode_code_to_vector(ptr, len, out) - encode code block to vector
-;   check_code_safety(vec)            → xmm0=dot(vec, safety_template)
-;   check_code_danger(vec)            → xmm0=dot(vec, danger_template)
-;   code_vectors_similar(v1, v2)      → xmm0=cosine similarity
-;   get_safety_template()             → rax=ptr to safety template
-;   get_danger_template()             → rax=ptr to danger template
-;   encode_region_to_vector(hdr, out) - encode full region to vector
-;   verify_code_geometric(ptr, len)   → eax=1 if geometrically safe
+; @entry init_safety_vectors() -> void              ; build safety/danger templates
+; @entry opcode_to_hash(edi=opcode) -> eax          ; deterministic hash
+; @entry opcode_to_vector(edi=opcode, rsi=out_vec) -> void ; 1024-dim f64
+; @entry classify_opcode_vec(edi=opcode) -> eax     ; category + safety weight
+; @entry encode_code_to_vector(rdi=ptr, esi=len, rdx=out) -> void
+; @entry check_code_safety(rdi=vec) -> xmm0         ; dot(vec, safety_template)
+; @entry check_code_danger(rdi=vec) -> xmm0         ; dot(vec, danger_template)
+; @entry code_vectors_similar(rdi=v1, rsi=v2) -> xmm0 ; cosine similarity
+; @entry get_safety_template() -> rax               ; ptr to safety template
+; @entry get_danger_template() -> rax               ; ptr to danger template
+; @entry encode_region_to_vector(rdi=hdr, rsi=out) -> void
+; @entry verify_code_geometric(rdi=ptr, esi=len) -> eax ; 1 if safe
 ;
-; PHILOSOPHY ("One Math"):
-;   Every x86 instruction → 1024-dim f64 vector
-;   Safety = DotProduct(Code, SafeTemplate) > threshold
-;   Learning = superposition (CodeTrace += Code)
-;   No if-statements for safety, just linear algebra
+; @calledby verify.asm:verify_geometric_gate, vsa.asm:learning
 ;
-; OPCODE CATEGORIES:
-;   Data movement (1.0), arithmetic (0.8), logic (0.8), comparison (0.6)
-;   Control flow (0.4), memory (0.5), system (-1.0 = dangerous)
-;
-; TEMPLATES:
-;   safety_template[1024]: high values in safe dimensions
-;   danger_template[1024]: high values for syscall/interrupt/privileged
-;
-; CALLED BY: verify.asm (verify_geometric_gate), vsa.asm (learning)
+; GOTCHAS:
+;   - "One Math": every x86 → 1024-dim f64, safety = dot product > threshold
+;   - Categories: data_mov(1.0), arith(0.8), logic(0.8), cmp(0.6), ctrl(0.4), sys(-1.0)
+;   - safety_template[1024]: safe dims high, danger_template[1024]: syscall/int high
+;   - No if-statements for safety, just linear algebra
 ;
 %include "syscalls.inc"
 %include "constants.inc"

@@ -1,26 +1,18 @@
 ; gate.asm — Predictive gating: test modifications in sandbox before commit
 ;
-; ENTRY POINTS:
-;   gate_test_modification(region_ptr, mod_type, arg) → eax=1(pass)/0(fail)
-;   gate_check_region(region_ptr)                     → eax=1(valid)/0(invalid)
+; @entry gate_test_modification(rdi=region_ptr, esi=mod_type, rdx=arg) -> eax
+;        ; Returns 1=pass, 0=fail
+; @entry gate_check_region(rdi=region_ptr) -> eax  ; 1=valid, 0=invalid
 ;
-; PROCESS:
-;   1. Copy region to ST_NURSERY buffer (sandbox)
-;   2. Apply proposed modification to sandbox copy
-;   3. Run test cases against sandbox
-;   4. Compare accuracy/behavior before vs after
-;   5. Return pass/fail without touching original
+; @calls fire_hook
+; @calledby evolve.asm:evolve_mutate, evolve.asm:evolve_crossover
+; @calledby modify.asm:modify_specialize, modify.asm:modify_generalize
 ;
-; MODIFICATION TYPES:
-;   MOD_MUTATE, MOD_SPECIALIZE, MOD_GENERALIZE, MOD_CROSSOVER
-;
-; KEY CONSTRAINT:
-;   Region + header must fit in ST_NURSERY_SIZE (4KB default)
-;   Oversized regions automatically fail
-;
-; CALLED BY:
-;   evolve.asm: evolve_mutate(), evolve_crossover()
-;   modify.asm: modify_specialize(), modify_generalize()
+; GOTCHAS:
+;   - Copies region to ST_NURSERY sandbox, applies mod, tests, returns pass/fail
+;   - Region + header MUST fit in ST_NURSERY_SIZE (4KB) or auto-fail
+;   - Mod types: MOD_MUTATE, MOD_SPECIALIZE, MOD_GENERALIZE, MOD_CROSSOVER
+;   - Original region untouched until gate passes
 ;
 %include "syscalls.inc"
 %include "constants.inc"

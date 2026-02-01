@@ -1,14 +1,18 @@
 ; emit.asm — Code emission: write x86 dispatch patterns to surface
 ;
-; ENTRY POINTS:
-;   emit_dispatch_pattern(ctx_hash, token, birth_step) → rax=region_ptr
-;   emit_resonant_pattern(ctx_hash, token, birth_step) → holo-enhanced pattern
-;   emit_call_rel32(dest, target)  - write CALL rel32 at dest
-;   emit_nop_sled(dest, len)       - write NOP padding
-;   emit_ret(dest), emit_int3(dest) - single-byte instructions
-;   emit_cmp_eax_imm32, emit_jne_rel8, emit_mov_eax_imm32, emit_xor_eax_eax
+; @entry emit_dispatch_pattern(edi=ctx_hash, esi=token, edx=birth_step) -> rax=region_ptr
+; @entry emit_resonant_pattern(edi=ctx_hash, esi=token, edx=birth_step) -> rax=region_ptr
+; @entry emit_call_rel32(rdi=dest, rsi=target) -> void
+; @entry emit_nop_sled(rdi=dest, esi=len) -> void
+; @entry emit_ret(rdi=dest), emit_int3(rdi=dest) -> void
 ;
-; EMITTED PATTERN STRUCTURE (23 bytes):
+; @calls surface.asm:region_alloc, wire_new_region
+; @calls verify.asm:verify_modification
+; @calls receipt.asm:emit_receipt_full
+; @calls vsa.asm:holo_gen_vec, holo_superpose_f64
+; @calledby learn.asm:learn_pattern, dreams.asm:dream_cycle
+;
+; EMITTED PATTERN (23 bytes):
 ;   cmp eax, <ctx_hash>    ; 5B - check context match
 ;   jne .skip              ; 2B - skip if no match
 ;   inc [header+0]         ; 7B - increment hit counter
@@ -17,11 +21,10 @@
 ;   .skip: xor eax,eax     ; 2B - no prediction
 ;   ret                    ; 1B
 ;
-; CALLS OUT TO:
-;   surface.asm: region_alloc(), wire_new_region()
-;   verify.asm:  verify_modification()
-;   receipt.asm: emit_receipt_full()
-;   vsa.asm:     holo_gen_vec(), holo_superpose_f64()
+; GOTCHAS:
+;   - Patterns are self-modifying x86 code in RWX surface
+;   - region_alloc may fail if surface full (returns 0)
+;   - verify_modification must pass before pattern is wired
 ;
 %include "syscalls.inc"
 %include "constants.inc"

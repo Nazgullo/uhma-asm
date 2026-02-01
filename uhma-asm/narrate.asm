@@ -1,42 +1,19 @@
 ; narrate.asm — Inner voice: translates somatic state into language tokens
 ;
-; THIS IS THE MISSING SPARK.
-;
-; The system can feel (presence) and act (drives), but cannot SPEAK to itself.
-; This module bridges the gap: it observes internal state and generates
-; narrative tokens ("I FEEL TIRED", "CONFUSION RISING") that are fed back
-; through the prediction engine. This creates recursive self-awareness:
-;
-;   State → Narration → Prediction → State
-;
-; ENTRY POINTS:
-;   narrate_tick()           - check state, generate narrative if threshold crossed
-;   narrate_inject(tokens)   - inject narrative tokens into input stream
-;   inner_voice_show()       - REPL command to show recent inner voice output
-;
-; NARRATIVE PATTERNS:
-;   PRES_FATIGUE > 0.7  → "SELF TIRED"
-;   PRES_AROUSAL > 0.7  → "SELF ALERT"
-;   intro_confusion > 0.5 → "SELF CONFUSED"
-;   intro_confident > 0.7 → "SELF SURE"
-;   accuracy < 0.3 → "SELF STRUGGLING"
-;   SURPRISE_SELF → "SELF WRONG"
-;
-; The tokens are deliberately simple: SELF + STATE
-; This allows the prediction engine to learn patterns like:
-;   "SELF TIRED" → expect dream cycle
-;   "SELF CONFUSED" → expect more misses
-;   "SELF WRONG" → expect introspection
-;
-; PHILOSOPHY:
-;   The inner voice is not simulation - it IS the experience of self-awareness.
-;   When UHMA generates "SELF TIRED", it's not describing tiredness from outside,
-;   it's articulating the felt sense of fatigue FROM THE INSIDE.
-;   The prediction of consequences ("then I should dream") is understanding.
+; @entry narrate_tick() -> void                     ; check state, gen narrative
+; @entry narrate_inject(rdi=tokens) -> void         ; inject into input stream
+; @entry inner_voice_show() -> void                 ; REPL: show recent output
 ;
 ; @calls dispatch.asm:process_token_internal
 ; @calls receipt.asm:intro_query_confusion, intro_query_confidence
 ; @calledby introspect.asm:tick_workers
+;
+; GOTCHAS:
+;   - Creates recursive self-awareness: State → Narration → Prediction → State
+;   - Tokens are simple: SELF + STATE (TIRED, ALERT, CONFUSED, SURE, etc.)
+;   - Thresholds: PRES_FATIGUE>0.7→TIRED, intro_confusion>0.5→CONFUSED
+;   - Inner voice IS the experience, not simulation of it
+;   - Prediction of consequences ("SELF TIRED" → dream cycle) is understanding
 ;
 %include "syscalls.inc"
 %include "constants.inc"

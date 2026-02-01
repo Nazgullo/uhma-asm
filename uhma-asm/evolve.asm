@@ -1,28 +1,20 @@
 ; evolve.asm — Genetic evolution: reproduce, mutate, crossover regions
 ;
-; ENTRY POINTS:
-;   evolve_cycle()                    - full evolution pass (select → reproduce → mutate)
-;   evolve_reproduce(region_idx)      - copy region with small mutation
-;   evolve_mutate(region_idx)         - apply random mutation to region
-;   evolve_crossover(idx1, idx2)      - combine two parent regions
-;   evolve_from_gene_pool()           - resurrect patterns from gene pool
+; @entry evolve_cycle() -> void                      ; full evolution pass
+; @entry evolve_reproduce(edi=region_idx) -> void   ; copy with small mutation
+; @entry evolve_mutate(edi=region_idx) -> void      ; apply random mutation
+; @entry evolve_crossover(edi=idx1, esi=idx2) -> void ; combine two parents
+; @entry evolve_from_gene_pool() -> void            ; resurrect from gene pool
 ;
-; SELECTION:
-;   Fitness = hits / (hits + misses) - regions sorted by fitness
-;   Top EVOLVE_POOL_SIZE regions selected for reproduction
+; @calls genes.asm:gene_pool_sample, emit.asm:emit_dispatch_pattern
+; @calls gate.asm:gate_test_modification, hooks.asm:fire_hook
+; @calledby introspect.asm:update_organic_pressure (on stagnation)
 ;
-; MUTATION TYPES:
-;   - Context hash bit flip (broaden/narrow matching)
-;   - Token substitution (predict different outcome)
-;   - Structure modification (via gate_test_modification)
-;
-; CALLS OUT TO:
-;   genes.asm:   gene_pool_sample() for resurrection
-;   emit.asm:    emit_dispatch_pattern() for new offspring
-;   gate.asm:    gate_test_modification() to validate mutations
-;   hooks.asm:   fire_hook(HOOK_EVOLVE)
-;
-; CALLED BY: introspect.asm (update_organic_pressure when stagnation detected)
+; GOTCHAS:
+;   - Fitness = hits/(hits+misses), top EVOLVE_POOL_SIZE selected
+;   - Mutation types: ctx hash bit flip, token sub, structure mod
+;   - evolve_cycle costs ENERGY — aborts if below ENERGY_STARVATION
+;   - Crossover may fail gate test (no offspring created)
 ;
 %include "syscalls.inc"
 %include "constants.inc"
