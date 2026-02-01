@@ -293,6 +293,66 @@ def clear_session_marker():
         SESSION_MARKER.unlink()
 
 
+def rebuild_rag_if_needed():
+    """Rebuild RAG index if .asm files changed."""
+    import subprocess
+    PROJECT_ROOT = SCRIPT_DIR.parent.parent
+
+    try:
+        # Check if any .asm files changed
+        result = subprocess.run(
+            ['git', 'diff', '--name-only', '*.asm', 'gui/*.asm'],
+            cwd=PROJECT_ROOT, capture_output=True, text=True, timeout=5
+        )
+        changed_asm = result.stdout.strip()
+
+        if changed_asm:
+            log_debug(f"ASM files changed: {changed_asm[:100]}")
+            # Rebuild RAG index
+            build_script = SCRIPT_DIR / 'build.py'
+            if build_script.exists():
+                subprocess.run(
+                    [sys.executable, str(build_script)],
+                    cwd=PROJECT_ROOT, capture_output=True, timeout=60
+                )
+                log_debug("RAG index rebuilt")
+    except Exception as e:
+        log_debug(f"RAG rebuild error: {e}")
+
+
+def git_auto_commit():
+    """Auto-commit all changes at session end."""
+    import subprocess
+    PROJECT_ROOT = SCRIPT_DIR.parent.parent
+
+    try:
+        # Check if there are uncommitted changes
+        result = subprocess.run(
+            ['git', 'status', '--porcelain'],
+            cwd=PROJECT_ROOT, capture_output=True, text=True, timeout=5
+        )
+        if not result.stdout.strip():
+            log_debug("No changes to commit")
+            return
+
+        # Stage all changes
+        subprocess.run(
+            ['git', 'add', '-A'],
+            cwd=PROJECT_ROOT, capture_output=True, timeout=10
+        )
+
+        # Commit with timestamp
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M')
+        commit_msg = f"Auto-commit: session {timestamp}"
+        subprocess.run(
+            ['git', 'commit', '-m', commit_msg],
+            cwd=PROJECT_ROOT, capture_output=True, timeout=30
+        )
+        log_debug(f"Git auto-commit: {commit_msg}")
+    except Exception as e:
+        log_debug(f"Git auto-commit error: {e}")
+
+
 # === Main execution ===
 log_debug("Holographic session capture invoked")
 
@@ -309,6 +369,12 @@ if transcript_path:
     log_debug(f"Capturing from: {transcript_path}")
     data = extract_transcript(transcript_path)
     store_holographic(data)
+
+    # Rebuild RAG index if .asm files changed
+    rebuild_rag_if_needed()
+
+    # Auto-commit all changes
+    git_auto_commit()
 else:
     log_debug("No transcript_path provided")
 

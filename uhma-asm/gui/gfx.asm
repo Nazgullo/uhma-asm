@@ -28,6 +28,7 @@ section .data
 
 section .data
     font_name:      db "fixed", 0
+    dbg_gfx_init:   db "DEBUG: gfx_init called", 10, 0
 
 section .bss
     ; X11 state
@@ -77,6 +78,7 @@ extern XClearWindow
 extern XDrawString
 extern XLoadQueryFont
 extern XTextWidth
+extern printf
 
 ;; ============================================================
 ;; gfx_init — Initialize graphics system
@@ -93,6 +95,11 @@ gfx_init:
     push r14
     push r15
     sub rsp, 24             ; Local space + alignment (5 pushes = 40, +24 = 64)
+
+    ; DEBUG
+    lea rdi, [rel dbg_gfx_init]
+    xor eax, eax
+    call printf
 
     mov [rel fb_width], edi
     mov [rel fb_height], esi

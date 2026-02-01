@@ -32,7 +32,7 @@
 
 section .data
     ; UHMA command (for spawning if not running)
-    mcp_cmd:        db "./uhma", 0
+    mcp_cmd:        db "../uhma", 0
     mcp_arg1:       db 0              ; no args needed
     mcp_arg2:       db 0
     mcp_arg3:       db 0
@@ -51,26 +51,13 @@ section .data
     AF_INET          equ 2
     SOCK_STREAM      equ 1
 
-    ; JSON-RPC templates (raw JSON, no Content-Length for TCP)
-    json_init:      db '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"uhma-gui"}},"id":1}', 10, 0
-    json_call_pre:  db '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"', 0
-    json_call_mid:  db '","arguments":{', 0
-    json_call_post: db '}},"id":', 0
-    json_input_arg: db '"text":"', 0
-
-    ; Format strings
-    fmt_int:        db "%d", 0
+    ; UHMA uses plain text protocol, no JSON-RPC needed
 
     ; Error messages
     err_connect:    db "GUI: no UHMA found, spawning ./uhma...", 10, 0
     err_spawn:      db "GUI: failed to spawn UHMA (try ./feed.sh first)", 10, 0
     err_socket:     db "GUI: socket error", 10, 0
     msg_connected:  db "GUI: connected to UHMA (%d channels)", 10, 0
-    msg_autonomous: db "GUI: autonomous mode enabled", 10, 0
-
-    ; Command to enable autonomous mode (toggles batch_mode 1→0)
-    cmd_batch:      db "batch", 10, 0
-    cmd_batch_len   equ 6
 
 section .bss
     ; TCP sockets (6-channel)
@@ -79,7 +66,6 @@ section .bss
     mcp_running:      resd 1
     mcp_pid:          resd 1
     call_id:          resd 1
-    spawned_uhma:     resd 1          ; 1 if GUI spawned UHMA (vs connecting to existing)
 
     ; sockaddr_in structure (16 bytes)
     sock_addr:        resb 16
@@ -161,9 +147,6 @@ mcp_init:
     test eax, eax
     jz .spawn_fail
 
-    ; Mark that we spawned UHMA (for enabling autonomous mode later)
-    mov dword [rel spawned_uhma], 1
-
     ; Wait for server to start
     mov edi, 2000000        ; 2s for multi-channel startup
     call usleep
@@ -173,16 +156,11 @@ mcp_init:
     mov r12d, eax
 
 .some_connected:
-    ; Clear spawned flag if we connected to existing (didn't go through spawn path)
-    ; spawned_uhma is only set above, so if we jumped here directly, it's 0
     ; Need at least query channel (channel 1)
     cmp dword [rel mcp_sock_valid + 4], 0
     je .spawn_fail
 
-    ; Send initialize on query channel
-    mov edi, MCP_CH_QUERY
-    call .send_init_ch
-
+    ; UHMA uses plain text protocol, no JSON-RPC init needed
     mov dword [rel mcp_running], 1
     mov dword [rel call_id], 2
 
@@ -190,12 +168,6 @@ mcp_init:
     mov esi, r12d           ; channels connected
     xor eax, eax
     call printf
-
-    ; If we spawned UHMA, enable autonomous mode (toggle batch_mode 1→0)
-    cmp dword [rel spawned_uhma], 0
-    je .skip_autonomous
-    call .enable_autonomous
-.skip_autonomous:
 
     mov eax, 1
     jmp .done
@@ -333,87 +305,7 @@ mcp_init:
     pop rbx
     ret
 
-;; Enable autonomous mode - send "batch" to toggle batch_mode 1→0
-;; Sends to CH0 (FEED input), reads response from CH1 (FEED output)
-.enable_autonomous:
-    push rbx
-    push r12
-    sub rsp, 8
-
-    ; Print message
-    lea rdi, [rel msg_autonomous]
-    xor eax, eax
-    call printf
-
-    ; Check FEED channels are valid
-    cmp dword [rel mcp_sock_valid], 0       ; CH0
-    je .auto_done
-    cmp dword [rel mcp_sock_valid + 4], 0   ; CH1
-    je .auto_done
-
-    ; Send "batch\n" to CH0 (FEED input, port 9999)
-    mov edi, [rel mcp_sockets]              ; CH0 socket
-    lea rsi, [rel cmd_batch]
-    mov edx, cmd_batch_len
-    xor ecx, ecx
-    call send
-
-    ; Small delay for UHMA to process
-    mov edi, 100000                         ; 100ms
-    call usleep
-
-    ; Read response from CH1 (FEED output, port 9998) - drain it
-    mov edi, [rel mcp_sockets + 4]          ; CH1 socket
-    lea rsi, [rel resp_buf]
-    mov edx, 65535
-    xor ecx, ecx
-    call recv
-
-.auto_done:
-    add rsp, 8
-    pop r12
-    pop rbx
-    ret
-
-;; Send initialize JSON-RPC on specific channel
-;; edi = channel number
-.send_init_ch:
-    push rbx
-    push r12
-    sub rsp, 8
-
-    mov r12d, edi           ; channel
-
-    ; Check channel valid
-    lea rax, [rel mcp_sock_valid]
-    cmp dword [rax + r12 * 4], 0
-    je .init_done
-
-    ; Get socket for channel
-    lea rax, [rel mcp_sockets]
-    mov ebx, [rax + r12 * 4]
-
-    ; Send init request
-    lea rdi, [rel json_init]
-    call strlen
-    mov rdx, rax
-    mov edi, ebx
-    lea rsi, [rel json_init]
-    xor ecx, ecx
-    call send
-
-    ; Read response (discard for init)
-    mov edi, ebx
-    lea rsi, [rel resp_buf]
-    mov edx, 65535
-    xor ecx, ecx
-    call recv
-
-.init_done:
-    add rsp, 8
-    pop r12
-    pop rbx
-    ret
+; (JSON-RPC init removed - UHMA uses plain text protocol)
 
 ;; mcp_get_channel_socket — Get socket FD for channel
 ;; edi = channel number (0-3)
@@ -530,64 +422,42 @@ mcp_call_ch:
     ; Check channel valid
     lea rax, [rel mcp_sock_valid]
     cmp dword [rax + r14 * 4], 0
-    je .ch_not_found
+    je .ch_no_response
 
     ; Get socket for channel
     lea rax, [rel mcp_sockets]
     mov r15d, [rax + r14 * 4]  ; socket fd
 
-    ; Clear request buffer
+    ; Build plain text command: "command args\n"
+    ; UHMA expects plain text, not JSON-RPC
     lea rdi, [rel req_buf]
-    xor esi, esi
-    mov edx, 4096
-    call memset
-
-    ; Build JSON: {"jsonrpc":"2.0","method":"tools/call","params":{"name":"TOOL","arguments":{ARGS}},"id":N}\n
-    lea rdi, [rel req_buf]
-    lea rsi, [rel json_call_pre]
+    mov rsi, r12                ; command/tool name
     call strcpy
 
-    lea rdi, [rel req_buf]
-    mov rsi, r12
-    call strcat
-
-    lea rdi, [rel req_buf]
-    lea rsi, [rel json_call_mid]
-    call strcat
-
-    ; Add arguments if provided
+    ; Add arguments if provided (space-separated)
     test r13, r13
     jz .no_args
     cmp byte [r13], 0
     je .no_args
+
+    ; Add space before args
+    lea rdi, [rel req_buf]
+    call strlen
+    lea rdi, [rel req_buf + rax]
+    mov byte [rdi], ' '
+    mov byte [rdi + 1], 0
 
     lea rdi, [rel req_buf]
     mov rsi, r13
     call strcat
 
 .no_args:
-    lea rdi, [rel req_buf]
-    lea rsi, [rel json_call_post]
-    call strcat
-
-    ; Add call ID
+    ; Add newline
     lea rdi, [rel req_buf]
     call strlen
     lea rdi, [rel req_buf + rax]
-    lea rsi, [rel fmt_int]
-    mov edx, [rel call_id]
-    xor eax, eax
-    call sprintf
-
-    ; Close JSON and add newline
-    lea rdi, [rel req_buf]
-    call strlen
-    lea rdi, [rel req_buf + rax]
-    mov byte [rdi], '}'
-    mov byte [rdi + 1], 10      ; newline
-    mov byte [rdi + 2], 0
-
-    inc dword [rel call_id]
+    mov byte [rdi], 10          ; newline
+    mov byte [rdi + 1], 0
 
     ; Send request via TCP on selected channel
     lea rdi, [rel req_buf]
@@ -606,60 +476,18 @@ mcp_call_ch:
     call recv
     mov rbx, rax                ; bytes read
 
-    ; Null terminate response
-    lea rdi, [rel resp_buf]
+    ; Null terminate response and return it
+    ; UHMA returns plain text, no JSON parsing needed
     cmp rbx, 0
-    jle .ch_not_found
-    mov byte [rdi + rbx], 0
-
-    ; Find "text":" in response and extract value
+    jle .ch_no_response
     lea rax, [rel resp_buf]
-    mov rbx, rax
-
-.find_text:
-    cmp byte [rbx], 0
-    je .ch_not_found
-    cmp dword [rbx], 0x74786574     ; "text" little endian = "txet"
-    je .check_text
-    inc rbx
-    jmp .find_text
-
-.check_text:
-    ; Check for "text":"
-    cmp byte [rbx + 4], '"'
-    jne .next_char
-    cmp byte [rbx + 5], ':'
-    jne .next_char
-    cmp byte [rbx + 6], '"'
-    jne .next_char
-
-    ; Found it, extract string
-    lea rax, [rbx + 7]      ; start of text content
-    mov rbx, rax
-
-.find_end:
-    cmp byte [rbx], '"'
-    je .found_end
-    cmp byte [rbx], 0
-    je .ch_not_found
-    ; Handle escaped quotes
-    cmp byte [rbx], '\'
-    jne .next_text_char
-    inc rbx                 ; skip escaped char
-.next_text_char:
-    inc rbx
-    jmp .find_end
-
-.found_end:
-    mov byte [rbx], 0       ; null terminate
+    mov byte [rax + rbx], 0
     jmp .ch_done
 
-.next_char:
-    inc rbx
-    jmp .find_text
-
-.ch_not_found:
+.ch_no_response:
+    ; Return empty string on error
     lea rax, [rel resp_buf]
+    mov byte [rax], 0
 
 .ch_done:
     add rsp, 8
@@ -674,38 +502,10 @@ mcp_call_ch:
 ;; rdi = text to process
 ;; Returns: rax = response pointer
 mcp_send_text:
-    push rbx
-    push r12
-    sub rsp, 8
-
-    mov r12, rdi
-
-    ; Build args: "text":"VALUE"
-    lea rdi, [rel status_cache]
-    lea rsi, [rel json_input_arg]
-    call strcpy
-
-    lea rdi, [rel status_cache]
-    mov rsi, r12
-    call strcat
-
-    ; Close quote
-    lea rdi, [rel status_cache]
-    call strlen
-    lea rdi, [rel status_cache + rax]
-    mov byte [rdi], '"'
-    mov byte [rdi + 1], 0
-
-    lea rdi, [rel .input_tool]
-    lea rsi, [rel status_cache]
-    call mcp_call
-
-    add rsp, 8
-    pop r12
-    pop rbx
-    ret
-
-.input_tool: db "input", 0
+    ; UHMA processes text directly at REPL - just send as command
+    ; mcp_call sends "command args\n", so text becomes the command
+    xor esi, esi            ; no args
+    jmp mcp_call
 
 ;; Convenience wrappers for common commands
 ;; Feed operations (async) use channel 0
@@ -727,11 +527,10 @@ mcp_observe:
 
 mcp_evolve:
     ; Evolve is async - use feed channel
-    lea rdi, [rel .raw]
-    lea rsi, [rel .evolve_arg]
+    lea rdi, [rel .evolve]
+    xor esi, esi
     jmp mcp_call_feed
-.raw: db "raw", 0
-.evolve_arg: db '"command":"evolve"', 0
+.evolve: db "evolve", 0
 
 mcp_save:
     ; Save needs response - use query channel
