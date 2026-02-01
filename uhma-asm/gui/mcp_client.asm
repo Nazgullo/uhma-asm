@@ -66,6 +66,11 @@ section .data
     err_spawn:      db "GUI: failed to spawn UHMA (try ./feed.sh first)", 10, 0
     err_socket:     db "GUI: socket error", 10, 0
     msg_connected:  db "GUI: connected to UHMA (%d channels)", 10, 0
+    msg_autonomous: db "GUI: autonomous mode enabled", 10, 0
+
+    ; Command to enable autonomous mode (toggles batch_mode 1→0)
+    cmd_batch:      db "batch", 10, 0
+    cmd_batch_len   equ 6
 
 section .bss
     ; TCP sockets (6-channel)
@@ -74,6 +79,7 @@ section .bss
     mcp_running:      resd 1
     mcp_pid:          resd 1
     call_id:          resd 1
+    spawned_uhma:     resd 1          ; 1 if GUI spawned UHMA (vs connecting to existing)
 
     ; sockaddr_in structure (16 bytes)
     sock_addr:        resb 16
@@ -155,6 +161,9 @@ mcp_init:
     test eax, eax
     jz .spawn_fail
 
+    ; Mark that we spawned UHMA (for enabling autonomous mode later)
+    mov dword [rel spawned_uhma], 1
+
     ; Wait for server to start
     mov edi, 2000000        ; 2s for multi-channel startup
     call usleep
@@ -164,6 +173,8 @@ mcp_init:
     mov r12d, eax
 
 .some_connected:
+    ; Clear spawned flag if we connected to existing (didn't go through spawn path)
+    ; spawned_uhma is only set above, so if we jumped here directly, it's 0
     ; Need at least query channel (channel 1)
     cmp dword [rel mcp_sock_valid + 4], 0
     je .spawn_fail
@@ -179,6 +190,12 @@ mcp_init:
     mov esi, r12d           ; channels connected
     xor eax, eax
     call printf
+
+    ; If we spawned UHMA, enable autonomous mode (toggle batch_mode 1→0)
+    cmp dword [rel spawned_uhma], 0
+    je .skip_autonomous
+    call .enable_autonomous
+.skip_autonomous:
 
     mov eax, 1
     jmp .done
@@ -313,6 +330,48 @@ mcp_init:
     xor eax, eax
 .spawn_done:
     add rsp, 16
+    pop rbx
+    ret
+
+;; Enable autonomous mode - send "batch" to toggle batch_mode 1→0
+;; Sends to CH0 (FEED input), reads response from CH1 (FEED output)
+.enable_autonomous:
+    push rbx
+    push r12
+    sub rsp, 8
+
+    ; Print message
+    lea rdi, [rel msg_autonomous]
+    xor eax, eax
+    call printf
+
+    ; Check FEED channels are valid
+    cmp dword [rel mcp_sock_valid], 0       ; CH0
+    je .auto_done
+    cmp dword [rel mcp_sock_valid + 4], 0   ; CH1
+    je .auto_done
+
+    ; Send "batch\n" to CH0 (FEED input, port 9999)
+    mov edi, [rel mcp_sockets]              ; CH0 socket
+    lea rsi, [rel cmd_batch]
+    mov edx, cmd_batch_len
+    xor ecx, ecx
+    call send
+
+    ; Small delay for UHMA to process
+    mov edi, 100000                         ; 100ms
+    call usleep
+
+    ; Read response from CH1 (FEED output, port 9998) - drain it
+    mov edi, [rel mcp_sockets + 4]          ; CH1 socket
+    lea rsi, [rel resp_buf]
+    mov edx, 65535
+    xor ecx, ecx
+    call recv
+
+.auto_done:
+    add rsp, 8
+    pop r12
     pop rbx
     ret
 
