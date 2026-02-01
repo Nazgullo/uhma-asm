@@ -1,0 +1,85 @@
+{
+  "permissions": {
+    "allow": [
+      "Edit",
+      "Write",
+      "Read",
+      "Glob",
+      "Grep",
+      "mcp__uhma__mem_recent",
+      "mcp__uhma__mem_state",
+      "mcp__uhma__mem_query",
+      "mcp__uhma__mem_add",
+      "mcp__uhma__mem_summary",
+      "mcp__uhma__input",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(grep:*)",
+      "Bash(find:*)",
+      "Bash(python3:*)",
+      "Bash(chmod:*)",
+      "Bash(mkdir:*)",
+      "Bash(rm:*)",
+      "Bash(cp:*)",
+      "Bash(mv:*)",
+      "Bash(git:*)",
+      "Bash(pkill:*)",
+      "Bash(pgrep:*)",
+      "Bash(ss:*)",
+      "Bash(nc:*)",
+      "Bash(make:*)",
+      "Bash(nasm:*)",
+      "Bash(gcc:*)",
+      "Bash(timeout:*)",
+      "Bash(cd:*)",
+      "Bash(pwd:*)",
+      "Bash(echo:*)",
+      "Bash(./uhma:*)",
+      "Bash(./uhma-viz:*)",
+      "Bash(./feed.sh:*)",
+      "Bash(/home/peter/Desktop/STARWARS/uhma-asm/.venv/bin/pip:*)",
+      "Bash(/home/peter/Desktop/STARWARS/uhma-asm/.venv/bin/python3:*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|Read|Grep|Glob|Task|Bash|mcp__uhma__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/peter/Desktop/STARWARS/uhma-asm/.venv/bin/python3 /home/peter/Desktop/STARWARS/uhma-asm/tools/rag/hook.py"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/peter/Desktop/STARWARS/uhma-asm/.venv/bin/python3 /home/peter/Desktop/STARWARS/uhma-asm/tools/rag/capture.py"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/peter/Desktop/STARWARS/uhma-asm/.venv/bin/python3 /home/peter/Desktop/STARWARS/uhma-asm/tools/rag/session_capture.py"
+          }
+        ]
+      }
+    ]
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "uhma"
+  ]
+}
