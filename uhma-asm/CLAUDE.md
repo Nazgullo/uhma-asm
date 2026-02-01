@@ -607,6 +607,8 @@ rm -f uhma.surface && ./uhma
 | `--cycles N` | 0 | Number of cycles (0=infinite) |
 | `--self-learn` | off | Feed UHMA's responses back |
 | `--mastery` | - | Alias for --cycles 0 --self-learn |
+| `--live` | off | Enter autonomous live mode after training |
+| `--live-pause N` | 10 | Seconds to wait for user input before live mode |
 
 ### How It Works
 1. Starts **persistent drainers** for all 3 output ports (9998, 9996, 9994)
@@ -656,9 +658,35 @@ Toggle in REPL: `batch`
 | Script exits early | set -euo pipefail | Add `\|\| true` to failing commands |
 | Exit code 124 | timeout killed nc | Already handled in feed.sh |
 
+### Live Autonomous Mode
+
+After training, UHMA can enter autonomous self-exploration mode:
+
+```bash
+# Train corpus, then enter live mode
+./feed.sh --cycles 1 --live
+
+# With custom wait time
+./feed.sh --cycles 1 --live --live-pause 30
+```
+
+**How it works:**
+1. Completes training cycles
+2. Waits N seconds for user input (default 10)
+3. If no input, enters autonomous exploration
+4. Disables batch_mode for self-directed consolidation
+5. Feeds ALL files in exploration path (no filtering - UHMA handles what it can)
+6. Consolidates every 50 files (observe + dream)
+7. Saves every 100 files
+8. Expands exploration based on maturity:
+   - **Stage 0 (Infant)**: `/home/peter/Desktop/STARWARS/uhma-asm`
+   - **Stage 1 (Child)**: `/home/peter/Desktop`
+   - **Stage 2+ (Adolescent/Adult)**: `/home/peter`
+
 ### Session 2026-02-01 Fixes
 - Rewrote `uhma_send()` to use persistent drainers + fire-and-forget
 - Changed `nc -q 1` to `timeout 2 nc -N || true`
 - Added `|| true` to `ls -t checkpoint_*` cleanup commands
 - Set `batch_mode=1` default in introspect.asm
 - Added skip-startup-dream check when batch_mode=1
+- Added live autonomous mode with maturity-based exploration
