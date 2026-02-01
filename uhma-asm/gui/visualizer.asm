@@ -81,6 +81,8 @@ section .data
     btn_send:       db "SEND", 0
     btn_clear:      db "CLEAR", 0
     btn_quit:       db "QUIT", 0
+    btn_feed:       db "FEED", 0
+    btn_stop:       db "STOP", 0
 
     ; New feature labels
     lbl_rosetta:    db "ROSETTA STONE", 0
@@ -218,6 +220,8 @@ section .data
     msg_geom_abs:   db "Verify: ABSTRACT", 0
     msg_geom_vec:   db "Verify: GEOMETRIC", 0
     msg_geom_both:  db "Verify: BOTH", 0
+    msg_feed_start: db "Training started", 0
+    msg_feed_stop:  db "Training stopped", 0
 
     ; MCP command strings
     raw_tool:       db "raw", 0
@@ -232,6 +236,37 @@ section .data
     hex_prefix:     db "0x", 0
     pct_sign:       db "%", 0
     quote_char:     db "'", 0
+
+    ; Feed control commands
+    feed_start_cmd: db "./feed.sh --cycles 1 --pause 5 &", 0
+    feed_stop_cmd:  db "pkill -TERM -f feed.sh", 0
+    feed_check_cmd: db "pgrep -f feed.sh >/dev/null 2>&1", 0
+
+    ; Sine table (64 entries for quarter wave, values 0-127 representing 0.0-1.0)
+    ; sin(i * 90 / 64) * 127
+    align 4
+    sine_table:
+    db 0, 3, 6, 9, 12, 16, 19, 22, 25, 28, 31, 34, 37, 40, 43, 46
+    db 49, 51, 54, 57, 60, 63, 65, 68, 71, 73, 76, 78, 81, 83, 85, 88
+    db 90, 92, 94, 96, 98, 100, 102, 104, 106, 107, 109, 111, 112, 113, 115, 116
+    db 117, 118, 120, 121, 122, 122, 123, 124, 125, 125, 126, 126, 127, 127, 127, 127
+
+    ; Node angles (0-255 = 0-360 degrees) for ring positions
+    ; UHMA at center (no angle), BRAIN at top, others distributed
+    ; Format: angle for each NODE_* (0=right, 64=top, 128=left, 192=bottom)
+    node_angles:
+    db 0        ; NODE_UHMA - center, not on ring
+    db 64       ; NODE_BRAIN - top (90°)
+    db 96       ; NODE_REGIONS - top-left
+    db 32       ; NODE_TOKENS - top-right
+    db 128      ; NODE_STATE - left (180°)
+    db 0        ; NODE_PREDICT - right (0°)
+    db 160      ; NODE_DISPATCH - bottom-left
+    db 224      ; NODE_ACCURACY - bottom-right
+    db 144      ; NODE_HIVE - lower-left
+    db 240      ; NODE_ROSETTA - lower-right
+    db 112      ; NODE_MYCO - upper-left
+    db 16       ; NODE_SPORE - upper-right
 
     ; Colors (0x00RRGGBB)
     col_bg:         dd 0x001a1a2e
@@ -276,6 +311,37 @@ section .data
     ACT_SEND        equ 14
     ACT_CLEAR       equ 15
     ACT_QUIT        equ 16
+    ACT_FEED        equ 17
+    ACT_STOP        equ 18
+
+    ; Node type constants for click handling
+    NODE_UHMA       equ 0
+    NODE_BRAIN      equ 1
+    NODE_REGIONS    equ 2
+    NODE_TOKENS     equ 3
+    NODE_STATE      equ 4
+    NODE_PREDICT    equ 5
+    NODE_DISPATCH   equ 6
+    NODE_ACCURACY   equ 7
+    NODE_HIVE       equ 8
+    NODE_ROSETTA    equ 9
+    NODE_MYCO       equ 10
+    NODE_SPORE      equ 11
+    NODE_COUNT      equ 12
+
+    ; Animation constants
+    ANIM_NONE       equ 0
+    ANIM_EXPANDING  equ 1
+    ANIM_COLLAPSING equ 2
+    ANIM_DURATION   equ 20          ; frames (~333ms at 60fps)
+    ANIM_STEP       equ 13          ; 255 / 20 ≈ 13
+
+    ; Ring layout constants (semi-3D orbital view)
+    RING_CENTER_X   equ CANVAS_X + CANVAS_W/2
+    RING_CENTER_Y   equ CANVAS_Y + CANVAS_H/2 + 50  ; slightly below center for perspective
+    RING_RADIUS_X   equ 380         ; horizontal radius (wider for perspective)
+    RING_RADIUS_Y   equ 180         ; vertical radius (shorter for 3D tilt)
+    RING_DEPTH_SCALE equ 60         ; how much size varies with depth (%)
 
     ; Layout constants
     WIN_W           equ 1280
@@ -316,8 +382,8 @@ section .bss
     feedback_msg:   resq 1
     feedback_timer: resd 1
 
-    ; Buttons: x, y, w, h for each (max 16)
-    buttons:        resd 64
+    ; Buttons: x, y, w, h for each (max 20)
+    buttons:        resd 80
     num_buttons:    resd 1
 
     ; Region selection
@@ -345,6 +411,28 @@ section .bss
     ; Trace state
     trace_active:   resd 1
     geom_mode:      resd 1
+
+    ; Feed control state
+    feed_running:   resd 1          ; 1 if feed.sh is running
+    feed_check_ctr: resd 1          ; counter for polling (every 60 frames)
+
+    ; Animation state (TheBrain-style smooth transitions)
+    ; States: 0=NONE, 1=EXPANDING, 2=COLLAPSING
+    anim_state:     resd 1
+    anim_progress:  resd 1          ; 0-255 (0=start, 255=end)
+    anim_node:      resd 1          ; which node is animating
+    anim_src_x:     resd 1          ; source rect x
+    anim_src_y:     resd 1          ; source rect y
+    anim_src_w:     resd 1          ; source rect width
+    anim_src_h:     resd 1          ; source rect height
+    anim_dst_x:     resd 1          ; destination rect x
+    anim_dst_y:     resd 1          ; destination rect y
+    anim_dst_w:     resd 1          ; destination rect width
+    anim_dst_h:     resd 1          ; destination rect height
+    anim_cur_x:     resd 1          ; current interpolated x
+    anim_cur_y:     resd 1          ; current interpolated y
+    anim_cur_w:     resd 1          ; current interpolated width
+    anim_cur_h:     resd 1          ; current interpolated height
 
     ; Token journey buffer (last traced path)
     ; Each entry: region_id(u32), action(u32) - 0=enter, 1=hit, 2=miss, 3=exit
@@ -390,6 +478,11 @@ section .bss
     zoom_level:     resd 1
     ; Node rects for click detection (x,y,w,h for each node, max 16 nodes)
     panel_rects:    resd 64
+    ; Node rects array: 16 nodes * 4 dwords (x,y,w,h) = 64 dwords
+    ; Index: 0=UHMA, 1=BRAIN, 2=REGIONS, 3=TOKENS, 4=STATE, 5=PREDICT
+    ;        6=DISPATCH, 7=ACCURACY, 8=HIVE, 9=ROSETTA, 10=MYCO
+    node_rects:     resd 64
+    node_rect_cnt:  resd 1
 
 section .text
 
@@ -567,16 +660,16 @@ vis_init:
 
     ; SEND (13) - near input
     mov dword [rdi], 1100
-    mov dword [rdi+4], WIN_H - INPUT_H - STATUS_H + 10
+    mov dword [rdi+4], WIN_H - INPUT_H - STATUS_H + 5
     mov dword [rdi+8], 55
-    mov dword [rdi+12], 30
+    mov dword [rdi+12], 28
     add rdi, 16
 
     ; CLEAR (14)
     mov dword [rdi], 1165
-    mov dword [rdi+4], WIN_H - INPUT_H - STATUS_H + 10
+    mov dword [rdi+4], WIN_H - INPUT_H - STATUS_H + 5
     mov dword [rdi+8], 55
-    mov dword [rdi+12], 30
+    mov dword [rdi+12], 28
     add rdi, 16
 
     ; QUIT (15)
@@ -584,8 +677,22 @@ vis_init:
     mov dword [rdi+4], 8
     mov dword [rdi+8], 50
     mov dword [rdi+12], 30
+    add rdi, 16
 
-    mov dword [rel num_buttons], 16
+    ; FEED (16) - start training
+    mov dword [rdi], 805
+    mov dword [rdi+4], 8
+    mov dword [rdi+8], 50
+    mov dword [rdi+12], 30
+    add rdi, 16
+
+    ; STOP (17) - stop training
+    mov dword [rdi], 865
+    mov dword [rdi+4], 8
+    mov dword [rdi+8], 50
+    mov dword [rdi+12], 30
+
+    mov dword [rel num_buttons], 18
 
     ; Initialize state
     mov dword [rel vis_running], 1
@@ -596,6 +703,11 @@ vis_init:
     mov dword [rel feedback_timer], 0
     mov dword [rel selected_rgn], -1
     mov dword [rel trace_active], 0
+    mov dword [rel feed_running], 0
+    mov dword [rel feed_check_ctr], 0
+    mov dword [rel anim_state], ANIM_NONE
+    mov dword [rel anim_progress], 0
+    mov dword [rel anim_node], -1
     mov dword [rel stream_pos], 0
     mov dword [rel stream_count], 0
     mov dword [rel focus_node], -1      ; Start at root view
@@ -695,6 +807,9 @@ vis_update:
     dec eax
     mov [rel feedback_timer], eax
 .no_dec:
+
+    ; Update animation
+    call update_animation
 
     ; Draw
     call draw_frame
@@ -893,28 +1008,75 @@ handle_click:
     test eax, eax
     jnz .in_brain_view
 
+    ; Check if we're in focused/expanded view
+    mov eax, [rel focus_node]
+    cmp eax, -1
+    je .check_nodes
+    ; We're in expanded view - click outside should go back
+    ; Panel is at canvas center +/- 200x150
+    ; Canvas center: x = CANVAS_X + CANVAS_W/2, y = CANVAS_Y + CANVAS_H/2
+    ; Panel: x=[center-200, center+200], y=[center-150, center+150]
+    mov eax, CANVAS_X + CANVAS_W/2 - 200    ; panel left
+    cmp r12d, eax
+    jl .unfocus
+    mov eax, CANVAS_X + CANVAS_W/2 + 200    ; panel right
+    cmp r12d, eax
+    jg .unfocus
+    mov eax, CANVAS_Y + CANVAS_H/2 - 150    ; panel top
+    cmp r13d, eax
+    jl .unfocus
+    mov eax, CANVAS_Y + CANVAS_H/2 + 150    ; panel bottom
+    cmp r13d, eax
+    jg .unfocus
+    jmp .done_click                 ; clicked inside panel, do nothing
+
+.unfocus:
+    ; Start collapse animation instead of instant unfocus
+    call start_collapse_anim
+    jmp .done_click
+
+.check_nodes:
     ; === MINDMAP VIEW: Check for node clicks ===
-    ; Check BRAIN node (panel_rects + 16)
-    lea rax, [rel panel_rects]
-    mov edi, [rax + 16]         ; brain x
+    ; Loop through all nodes in node_rects
+    lea rbx, [rel node_rects]
+    xor ecx, ecx                    ; node index
+.node_loop:
+    cmp ecx, NODE_COUNT
+    jge .done_click                 ; no node clicked
+
+    ; Check if click is inside this node's rect
+    mov edi, [rbx]                  ; node x
+    test edi, edi                   ; skip if x=0 (not initialized)
+    jz .next_node
     cmp r12d, edi
-    jl .check_other_nodes
-    add edi, [rax + 24]         ; + width
+    jl .next_node
+    add edi, [rbx + 8]              ; + width
     cmp r12d, edi
-    jge .check_other_nodes
-    mov edi, [rax + 20]         ; brain y
+    jge .next_node
+    mov edi, [rbx + 4]              ; node y
     cmp r13d, edi
-    jl .check_other_nodes
-    add edi, [rax + 28]         ; + height
+    jl .next_node
+    add edi, [rbx + 12]             ; + height
     cmp r13d, edi
-    jge .check_other_nodes
-    ; Clicked BRAIN - switch to brain view
+    jge .next_node
+
+    ; Node clicked! ecx = node index
+    cmp ecx, NODE_BRAIN
+    je .click_brain
+    ; For other nodes, start expand animation
+    mov edi, ecx
+    call start_expand_anim
+    jmp .done_click
+
+.click_brain:
+    ; BRAIN node - switch to brain/memory view
     mov dword [rel view_mode], 1
     jmp .done_click
 
-.check_other_nodes:
-    ; Could add other node click handling here
-    jmp .done_click
+.next_node:
+    add rbx, 16                     ; each node rect is 4 dwords = 16 bytes
+    inc ecx
+    jmp .node_loop
 
 .in_brain_view:
     ; === BRAIN VIEW: Check for region clicks or back ===
@@ -1113,6 +1275,10 @@ do_action:
     je .do_send
     cmp ebx, ACT_CLEAR
     je .do_clear
+    cmp ebx, ACT_FEED
+    je .do_feed
+    cmp ebx, ACT_STOP
+    je .do_stop
     jmp .continue
 
 .do_dream:
@@ -1259,6 +1425,26 @@ do_action:
     lea rax, [rel msg_clear]
     mov [rel feedback_msg], rax
     mov dword [rel feedback_timer], 60
+    jmp .continue
+
+.do_feed:
+    ; Start training with feed.sh
+    lea rdi, [rel feed_start_cmd]
+    call system
+    mov dword [rel feed_running], 1
+    lea rax, [rel msg_feed_start]
+    mov [rel feedback_msg], rax
+    mov dword [rel feedback_timer], 90
+    jmp .continue
+
+.do_stop:
+    ; Stop training
+    lea rdi, [rel feed_stop_cmd]
+    call system
+    mov dword [rel feed_running], 0
+    lea rax, [rel msg_feed_stop]
+    mov [rel feedback_msg], rax
+    mov dword [rel feedback_timer], 90
     jmp .continue
 
 .continue:
@@ -1463,6 +1649,14 @@ draw_buttons:
     je .draw_lbl
     lea rdx, [rel btn_quit]
     mov ecx, 4
+    cmp eax, 15
+    je .draw_lbl
+    lea rdx, [rel btn_feed]
+    mov ecx, 4
+    cmp eax, 16
+    je .draw_lbl
+    lea rdx, [rel btn_stop]
+    mov ecx, 4
 
 .draw_lbl:
     call gfx_text
@@ -1532,10 +1726,7 @@ draw_mindmap:
     mov r12d, CANVAS_X + CANVAS_W / 2   ; center x
     mov r13d, CANVAS_Y + CANVAS_H / 2   ; center y
 
-    ; Check if a node is focused (zoomed)
-    mov eax, [rel focus_node]
-    cmp eax, -1
-    jne .draw_focused
+    ; Always draw nodes first, then overlay animation or focused panel
 
     ; === ROOT VIEW: Show main system nodes ===
     
@@ -1561,24 +1752,27 @@ draw_mindmap:
     mov r8d, [rel col_white]
     call gfx_text
 
-    ; Store central node rect for clicks
-    lea rax, [rel panel_rects]
+    ; Store UHMA node rect for clicks (node_rects + NODE_UHMA*16)
+    lea rax, [rel node_rects]
     lea edi, [r12d - 60]
-    mov [rax], edi
+    mov [rax + NODE_UHMA*16], edi
     lea edi, [r13d - 25]
-    mov [rax + 4], edi
-    mov dword [rax + 8], 120
-    mov dword [rax + 12], 50
+    mov [rax + NODE_UHMA*16 + 4], edi
+    mov dword [rax + NODE_UHMA*16 + 8], 120
+    mov dword [rax + NODE_UHMA*16 + 12], 50
 
-    ; === BRAIN node (top-center, above UHMA) ===
-    ; Position: centered above UHMA
-    lea r14d, [r12d - 50]       ; x = center - 50
-    lea r15d, [r13d - 120]      ; y = above UHMA
+    ; === BRAIN node - using ring layout ===
+    mov edi, 64                 ; angle 64 = top of ring
+    call calc_ring_pos          ; eax=x, edx=y
+    mov r14d, eax
+    sub r14d, 50                ; center the 100px wide node
+    mov r15d, edx
+    sub r15d, 22                ; center the 45px tall node
 
     ; Connection line: from UHMA top to BRAIN bottom
     mov edi, r12d               ; UHMA center x
     lea esi, [r13d - 25]        ; UHMA top edge
-    mov edx, r12d               ; BRAIN center x
+    lea edx, [r14d + 50]        ; BRAIN center x
     lea ecx, [r15d + 45]        ; BRAIN bottom edge
     mov r8d, [rel col_magenta]
     call gfx_line
@@ -1606,26 +1800,26 @@ draw_mindmap:
     mov r8d, [rel col_white]
     call gfx_text
 
-    ; Store BRAIN rect for clicks (panel_rects + 16)
-    lea rax, [rel panel_rects]
-    mov [rax + 16], r14d
-    mov [rax + 20], r15d
-    mov dword [rax + 24], 100
-    mov dword [rax + 28], 45
+    ; Store BRAIN rect for clicks
+    lea rax, [rel node_rects]
+    mov [rax + NODE_BRAIN*16], r14d
+    mov [rax + NODE_BRAIN*16 + 4], r15d
+    mov dword [rax + NODE_BRAIN*16 + 8], 100
+    mov dword [rax + NODE_BRAIN*16 + 12], 45
 
-    ; === Draw child nodes around center ===
-    ; Lines connect from UHMA edges to child node edges (not through center)
-    ; UHMA box: x=[r12-60, r12+60], y=[r13-25, r13+25]
+    ; === REGIONS node - ring layout (angle 96 = top-left) ===
+    mov edi, 96
+    call calc_ring_pos
+    mov r14d, eax
+    sub r14d, 50
+    mov r15d, edx
+    sub r15d, 20
 
-    ; Node 1: REGIONS (top-left)
-    lea r14d, [r12d - 200]
-    lea r15d, [r13d - 150]
-
-    ; Connection line: from UHMA top-left edge to REGIONS bottom-right
-    lea edi, [r12d - 50]        ; UHMA left side, slightly in
-    lea esi, [r13d - 25]        ; UHMA top edge
-    lea edx, [r14d + 100]       ; REGIONS right edge
-    lea ecx, [r15d + 40]        ; REGIONS bottom edge
+    ; Connection line: from UHMA to REGIONS
+    lea edi, [r12d - 50]
+    lea esi, [r13d - 20]
+    lea edx, [r14d + 100]
+    lea ecx, [r15d + 40]
     mov r8d, [rel col_cyan]
     call gfx_line
 
@@ -1636,13 +1830,20 @@ draw_mindmap:
     mov ecx, 40
     mov r8d, [rel col_nursery]
     call gfx_fill_rect
-    
+
     mov edi, r14d
     mov esi, r15d
     mov edx, 100
     mov ecx, 40
     mov r8d, [rel col_white]
     call gfx_rect
+
+    ; Store REGIONS rect
+    lea rax, [rel node_rects]
+    mov [rax + NODE_REGIONS*16], r14d
+    mov [rax + NODE_REGIONS*16 + 4], r15d
+    mov dword [rax + NODE_REGIONS*16 + 8], 100
+    mov dword [rax + NODE_REGIONS*16 + 12], 40
 
     ; Region count inside node
     mov eax, [rbx + STATE_OFFSET + ST_REGION_COUNT]
@@ -1664,15 +1865,19 @@ draw_mindmap:
     mov r8d, [rel col_white]
     call gfx_text
 
-    ; Node 2: TOKENS (top-right)
-    lea r14d, [r12d + 100]
-    lea r15d, [r13d - 150]
+    ; === TOKENS node - ring layout (angle 32 = top-right) ===
+    mov edi, 32
+    call calc_ring_pos
+    mov r14d, eax
+    sub r14d, 50
+    mov r15d, edx
+    sub r15d, 20
 
-    ; Connection line: from UHMA top-right edge to TOKENS bottom-left
-    lea edi, [r12d + 50]        ; UHMA right side, slightly in
-    lea esi, [r13d - 25]        ; UHMA top edge
-    mov edx, r14d               ; TOKENS left edge
-    lea ecx, [r15d + 40]        ; TOKENS bottom edge
+    ; Connection line
+    lea edi, [r12d + 50]
+    lea esi, [r13d - 20]
+    mov edx, r14d
+    lea ecx, [r15d + 40]
     mov r8d, [rel col_cyan]
     call gfx_line
 
@@ -1689,6 +1894,13 @@ draw_mindmap:
     mov ecx, 40
     mov r8d, [rel col_white]
     call gfx_rect
+
+    ; Store TOKENS rect
+    lea rax, [rel node_rects]
+    mov [rax + NODE_TOKENS*16], r14d
+    mov [rax + NODE_TOKENS*16 + 4], r15d
+    mov dword [rax + NODE_TOKENS*16 + 8], 100
+    mov dword [rax + NODE_TOKENS*16 + 12], 40
 
     mov eax, [rbx + STATE_OFFSET + ST_TOKEN_COUNT]
     lea rdi, [rsp]
@@ -1709,17 +1921,19 @@ draw_mindmap:
     mov r8d, [rel col_white]
     call gfx_text
 
-    ; Node 3: STATE (left)
-    lea r14d, [r12d - 250]
-    mov r15d, r13d
-    
-    mov edi, r12d
-    sub edi, 60
+    ; === STATE node - ring layout (angle 128 = left) ===
+    mov edi, 128
+    call calc_ring_pos
+    mov r14d, eax
+    sub r14d, 45
+    mov r15d, edx
+    sub r15d, 20
+
+    ; Connection line
+    lea edi, [r12d - 60]
     mov esi, r13d
-    mov edx, r14d
-    add edx, 90
-    mov ecx, r15d
-    add ecx, 20
+    lea edx, [r14d + 90]
+    lea ecx, [r15d + 20]
     mov r8d, [rel col_cyan]
     call gfx_line
 
@@ -1736,6 +1950,13 @@ draw_mindmap:
     mov ecx, 40
     mov r8d, [rel col_white]
     call gfx_rect
+
+    ; Store STATE rect
+    lea rax, [rel node_rects]
+    mov [rax + NODE_STATE*16], r14d
+    mov [rax + NODE_STATE*16 + 4], r15d
+    mov dword [rax + NODE_STATE*16 + 8], 90
+    mov dword [rax + NODE_STATE*16 + 12], 40
 
     ; Get state name
     mov eax, [rbx + STATE_OFFSET + ST_INTRO_STATE]
@@ -1766,16 +1987,19 @@ draw_mindmap:
     mov r8d, [rel col_green]
     call gfx_text
 
-    ; Node 4: PREDICT (right)
-    lea r14d, [r12d + 160]
-    mov r15d, r13d
-    
-    mov edi, r12d
-    add edi, 60
+    ; === PREDICT node - ring layout (angle 0 = right) ===
+    xor edi, edi                ; angle 0
+    call calc_ring_pos
+    mov r14d, eax
+    sub r14d, 50
+    mov r15d, edx
+    sub r15d, 20
+
+    ; Connection line
+    lea edi, [r12d + 60]
     mov esi, r13d
     mov edx, r14d
-    mov ecx, r15d
-    add ecx, 20
+    lea ecx, [r15d + 20]
     mov r8d, [rel col_cyan]
     call gfx_line
 
@@ -1792,6 +2016,13 @@ draw_mindmap:
     mov ecx, 40
     mov r8d, [rel col_white]
     call gfx_rect
+
+    ; Store PREDICT rect
+    lea rax, [rel node_rects]
+    mov [rax + NODE_PREDICT*16], r14d
+    mov [rax + NODE_PREDICT*16 + 4], r15d
+    mov dword [rax + NODE_PREDICT*16 + 8], 100
+    mov dword [rax + NODE_PREDICT*16 + 12], 40
 
     lea edi, [r14d + 10]
     lea esi, [r15d + 15]
@@ -1813,15 +2044,19 @@ draw_mindmap:
     mov r8d, [rel col_yellow]
     call gfx_text
 
-    ; Node 5: DISPATCH (bottom-left)
-    lea r14d, [r12d - 200]
-    lea r15d, [r13d + 120]
+    ; === DISPATCH node - ring layout (angle 160 = bottom-left) ===
+    mov edi, 160
+    call calc_ring_pos
+    mov r14d, eax
+    sub r14d, 50
+    mov r15d, edx
+    sub r15d, 20
 
-    ; Connection line: from UHMA bottom-left edge to DISPATCH top-right
-    lea edi, [r12d - 50]        ; UHMA left side
-    lea esi, [r13d + 25]        ; UHMA bottom edge
-    lea edx, [r14d + 100]       ; DISPATCH right edge
-    mov ecx, r15d               ; DISPATCH top edge
+    ; Connection line
+    lea edi, [r12d - 50]
+    lea esi, [r13d + 25]
+    lea edx, [r14d + 100]
+    mov ecx, r15d
     mov r8d, [rel col_cyan]
     call gfx_line
 
@@ -1838,6 +2073,13 @@ draw_mindmap:
     mov ecx, 40
     mov r8d, [rel col_white]
     call gfx_rect
+
+    ; Store DISPATCH rect
+    lea rax, [rel node_rects]
+    mov [rax + NODE_DISPATCH*16], r14d
+    mov [rax + NODE_DISPATCH*16 + 4], r15d
+    mov dword [rax + NODE_DISPATCH*16 + 8], 100
+    mov dword [rax + NODE_DISPATCH*16 + 12], 40
 
     lea edi, [r14d + 10]
     lea esi, [r15d + 15]
@@ -1860,15 +2102,19 @@ draw_mindmap:
     mov r8d, [rel col_yellow]
     call gfx_text
 
-    ; Node 6: ACCURACY (bottom-right)
-    lea r14d, [r12d + 100]
-    lea r15d, [r13d + 120]
+    ; === ACCURACY node - ring layout (angle 224 = bottom-right) ===
+    mov edi, 224
+    call calc_ring_pos
+    mov r14d, eax
+    sub r14d, 50
+    mov r15d, edx
+    sub r15d, 20
 
-    ; Connection line: from UHMA bottom-right edge to ACCURACY top-left
-    lea edi, [r12d + 50]        ; UHMA right side
-    lea esi, [r13d + 25]        ; UHMA bottom edge
-    mov edx, r14d               ; ACCURACY left edge
-    mov ecx, r15d               ; ACCURACY top edge
+    ; Connection line
+    lea edi, [r12d + 50]
+    lea esi, [r13d + 25]
+    mov edx, r14d
+    mov ecx, r15d
     mov r8d, [rel col_cyan]
     call gfx_line
 
@@ -1885,6 +2131,13 @@ draw_mindmap:
     mov ecx, 40
     mov r8d, [rel col_white]
     call gfx_rect
+
+    ; Store ACCURACY rect
+    lea rax, [rel node_rects]
+    mov [rax + NODE_ACCURACY*16], r14d
+    mov [rax + NODE_ACCURACY*16 + 4], r15d
+    mov dword [rax + NODE_ACCURACY*16 + 8], 100
+    mov dword [rax + NODE_ACCURACY*16 + 12], 40
 
     lea edi, [r14d + 10]
     lea esi, [r15d + 15]
@@ -1930,11 +2183,15 @@ draw_mindmap:
 
     ; === NEW FEATURE NODES ===
 
-    ; Node 7: HIVE (pheromone-driven swarm intelligence) - far bottom left
-    lea r14d, [r12d - 350]
-    lea r15d, [r13d + 60]
+    ; === HIVE node - ring layout (angle 144 = lower-left) ===
+    mov edi, 144
+    call calc_ring_pos
+    mov r14d, eax
+    sub r14d, 55
+    mov r15d, edx
+    sub r15d, 35
 
-    ; Connection line from UHMA bottom-left
+    ; Connection line
     lea edi, [r12d - 60]
     lea esi, [r13d + 20]
     lea edx, [r14d + 110]
@@ -1956,6 +2213,13 @@ draw_mindmap:
     mov ecx, 70
     mov r8d, [rel col_yellow]
     call gfx_rect
+
+    ; Store HIVE rect
+    lea rax, [rel node_rects]
+    mov [rax + NODE_HIVE*16], r14d
+    mov [rax + NODE_HIVE*16 + 4], r15d
+    mov dword [rax + NODE_HIVE*16 + 8], 110
+    mov dword [rax + NODE_HIVE*16 + 12], 70
 
     ; Label
     lea edi, [r14d + 20]
@@ -2055,11 +2319,15 @@ draw_mindmap:
     mov r8d, [rel col_orange]
     call gfx_text
 
-    ; Node 8: ROSETTA (geometric verification) - far bottom right
-    lea r14d, [r12d + 240]
-    lea r15d, [r13d + 60]
+    ; === ROSETTA node - ring layout (angle 240 = lower-right) ===
+    mov edi, 240
+    call calc_ring_pos
+    mov r14d, eax
+    sub r14d, 50
+    mov r15d, edx
+    sub r15d, 25
 
-    ; Connection line from UHMA bottom-right
+    ; Connection line
     lea edi, [r12d + 60]
     lea esi, [r13d + 20]
     mov edx, r14d
@@ -2081,6 +2349,13 @@ draw_mindmap:
     mov ecx, 50
     mov r8d, [rel col_cyan]
     call gfx_rect
+
+    ; Store ROSETTA rect
+    lea rax, [rel node_rects]
+    mov [rax + NODE_ROSETTA*16], r14d
+    mov [rax + NODE_ROSETTA*16 + 4], r15d
+    mov dword [rax + NODE_ROSETTA*16 + 8], 100
+    mov dword [rax + NODE_ROSETTA*16 + 12], 50
 
     ; Label
     lea edi, [r14d + 10]
@@ -2112,13 +2387,16 @@ draw_mindmap:
     mov r8d, [rel col_cyan]
     call gfx_text
 
-    ; Node 9: MYCO (mycorrhiza colony) - far left middle
-    lea r14d, [r12d - 370]
-    lea r15d, [r13d - 80]
+    ; === MYCO node - ring layout (angle 112 = upper-left) ===
+    mov edi, 112
+    call calc_ring_pos
+    mov r14d, eax
+    sub r14d, 45
+    mov r15d, edx
+    sub r15d, 25
 
-    ; Connection line from UHMA left
-    mov edi, r12d
-    sub edi, 60
+    ; Connection line
+    lea edi, [r12d - 60]
     lea esi, [r13d - 10]
     lea edx, [r14d + 90]
     lea ecx, [r15d + 25]
@@ -2139,6 +2417,13 @@ draw_mindmap:
     mov ecx, 50
     mov r8d, [rel col_green]
     call gfx_rect
+
+    ; Store MYCO rect
+    lea rax, [rel node_rects]
+    mov [rax + NODE_MYCO*16], r14d
+    mov [rax + NODE_MYCO*16 + 4], r15d
+    mov dword [rax + NODE_MYCO*16 + 8], 90
+    mov dword [rax + NODE_MYCO*16 + 12], 50
 
     ; Label
     lea edi, [r14d + 15]
@@ -2164,13 +2449,16 @@ draw_mindmap:
     mov r8d, [rel col_green]
     call gfx_text
 
-    ; Node 10: SPORE (gene export/import) - far right middle
-    lea r14d, [r12d + 280]
-    lea r15d, [r13d - 80]
+    ; === SPORE node - ring layout (angle 16 = upper-right) ===
+    mov edi, 16
+    call calc_ring_pos
+    mov r14d, eax
+    sub r14d, 45
+    mov r15d, edx
+    sub r15d, 25
 
-    ; Connection line from UHMA right
-    mov edi, r12d
-    add edi, 60
+    ; Connection line
+    lea edi, [r12d + 60]
     lea esi, [r13d - 10]
     mov edx, r14d
     lea ecx, [r15d + 25]
@@ -2191,6 +2479,13 @@ draw_mindmap:
     mov ecx, 50
     mov r8d, [rel col_orange]
     call gfx_rect
+
+    ; Store SPORE rect
+    lea rax, [rel node_rects]
+    mov [rax + NODE_SPORE*16], r14d
+    mov [rax + NODE_SPORE*16 + 4], r15d
+    mov dword [rax + NODE_SPORE*16 + 8], 90
+    mov dword [rax + NODE_SPORE*16 + 12], 50
 
     ; Label
     lea edi, [r14d + 15]
@@ -2215,6 +2510,16 @@ draw_mindmap:
     mov ecx, 30
     mov r8d, [rel col_text_dim]
     call gfx_text
+
+    ; Check if animation in progress - draw overlay on top of nodes
+    mov eax, [rel anim_state]
+    test eax, eax
+    jnz .draw_animating
+
+    ; Check if focused - draw focus panel overlay
+    mov eax, [rel focus_node]
+    cmp eax, -1
+    jne .draw_focus_panel
 
     jmp .done
 
@@ -2413,11 +2718,78 @@ draw_mindmap:
     call gfx_text
     jmp .done
 
-.draw_focused:
-    ; === FOCUSED VIEW: Show detail of selected node ===
-    ; eax = focused node id
-    
-    ; For now, show expanded view with "Back" hint
+.draw_animating:
+    ; === ANIMATION VIEW: Draw transitioning panel overlay ===
+    ; Background nodes already drawn, now overlay the animated panel
+
+    ; Draw animated panel with current interpolated rect
+    mov edi, [rel anim_cur_x]
+    mov esi, [rel anim_cur_y]
+    mov edx, [rel anim_cur_w]
+    mov ecx, [rel anim_cur_h]
+    mov r8d, [rel col_panel_hi]
+    call gfx_fill_rect
+
+    mov edi, [rel anim_cur_x]
+    mov esi, [rel anim_cur_y]
+    mov edx, [rel anim_cur_w]
+    mov ecx, [rel anim_cur_h]
+    mov r8d, [rel col_white]
+    call gfx_rect
+
+    ; Show node name in the animated panel
+    mov eax, [rel anim_node]
+    cmp eax, NODE_REGIONS
+    jne .anim_not_regions
+    lea rdx, [rel node_regions]
+    mov ecx, 7
+    jmp .anim_show_label
+.anim_not_regions:
+    cmp eax, NODE_TOKENS
+    jne .anim_not_tokens
+    lea rdx, [rel node_tokens]
+    mov ecx, 6
+    jmp .anim_show_label
+.anim_not_tokens:
+    cmp eax, NODE_STATE
+    jne .anim_not_state
+    lea rdx, [rel node_state]
+    mov ecx, 5
+    jmp .anim_show_label
+.anim_not_state:
+    cmp eax, NODE_PREDICT
+    jne .anim_not_predict
+    lea rdx, [rel node_predict]
+    mov ecx, 7
+    jmp .anim_show_label
+.anim_not_predict:
+    cmp eax, NODE_DISPATCH
+    jne .anim_not_dispatch
+    lea rdx, [rel node_dispatch]
+    mov ecx, 8
+    jmp .anim_show_label
+.anim_not_dispatch:
+    cmp eax, NODE_ACCURACY
+    jne .anim_not_accuracy
+    lea rdx, [rel node_accuracy]
+    mov ecx, 8
+    jmp .anim_show_label
+.anim_not_accuracy:
+    lea rdx, [rel detail_expanded]
+    mov ecx, 15
+
+.anim_show_label:
+    mov edi, [rel anim_cur_x]
+    add edi, 20
+    mov esi, [rel anim_cur_y]
+    add esi, 25
+    mov r8d, [rel col_cyan]
+    call gfx_text
+
+    jmp .done
+
+.draw_focus_panel:
+    ; "Click outside to go back" hint
     mov edi, CANVAS_X + 20
     mov esi, CANVAS_Y + 30
     lea rdx, [rel hint_back]
@@ -2425,25 +2797,234 @@ draw_mindmap:
     mov r8d, [rel col_cyan]
     call gfx_text
 
-    ; Draw expanded content based on focus_node
-    mov eax, [rel focus_node]
-    
-    ; Large centered node
-    lea edi, [r12d - 150]
-    lea esi, [r13d - 100]
-    mov edx, 300
-    mov ecx, 200
+    ; Draw large expanded panel
+    lea edi, [r12d - 200]
+    lea esi, [r13d - 150]
+    mov edx, 400
+    mov ecx, 300
     mov r8d, [rel col_panel_hi]
     call gfx_fill_rect
 
-    lea edi, [r12d - 150]
-    lea esi, [r13d - 100]
-    mov edx, 300
-    mov ecx, 200
+    lea edi, [r12d - 200]
+    lea esi, [r13d - 150]
+    mov edx, 400
+    mov ecx, 300
     mov r8d, [rel col_white]
     call gfx_rect
 
-    ; Show detail based on which node (simplified for now)
+    ; Dispatch based on focus_node
+    mov eax, [rel focus_node]
+    cmp eax, NODE_REGIONS
+    je .focus_regions
+    cmp eax, NODE_TOKENS
+    je .focus_tokens
+    cmp eax, NODE_STATE
+    je .focus_state
+    cmp eax, NODE_PREDICT
+    je .focus_predict
+    cmp eax, NODE_DISPATCH
+    je .focus_dispatch
+    cmp eax, NODE_ACCURACY
+    je .focus_accuracy
+    cmp eax, NODE_HIVE
+    je .focus_hive
+    jmp .focus_generic
+
+.focus_regions:
+    ; Title
+    lea edi, [r12d - 180]
+    lea esi, [r13d - 130]
+    lea rdx, [rel node_regions]
+    mov ecx, 7
+    mov r8d, [rel col_cyan]
+    call gfx_text
+    ; Region count
+    lea edi, [r12d - 180]
+    lea esi, [r13d - 100]
+    lea rdx, [rel lbl_regions]
+    mov ecx, 9
+    mov r8d, [rel col_text]
+    call gfx_text
+    mov eax, [rbx + STATE_OFFSET + ST_REGION_COUNT]
+    lea rdi, [rsp]
+    call format_num
+    lea edi, [r12d - 90]
+    lea esi, [r13d - 100]
+    lea rdx, [rsp]
+    mov ecx, eax
+    mov r8d, [rel col_green]
+    call gfx_text
+    jmp .done
+
+.focus_tokens:
+    ; Title
+    lea edi, [r12d - 180]
+    lea esi, [r13d - 130]
+    lea rdx, [rel node_tokens]
+    mov ecx, 6
+    mov r8d, [rel col_cyan]
+    call gfx_text
+    ; Total tokens
+    lea edi, [r12d - 180]
+    lea esi, [r13d - 100]
+    lea rdx, [rel lbl_tokens]
+    mov ecx, 8
+    mov r8d, [rel col_text]
+    call gfx_text
+    mov eax, [rbx + STATE_OFFSET + ST_TOKEN_COUNT]
+    lea rdi, [rsp]
+    call format_num
+    lea edi, [r12d - 90]
+    lea esi, [r13d - 100]
+    lea rdx, [rsp]
+    mov ecx, eax
+    mov r8d, [rel col_green]
+    call gfx_text
+    ; Unique tokens
+    lea edi, [r12d - 180]
+    lea esi, [r13d - 70]
+    lea rdx, [rel lbl_unique]
+    mov ecx, 8
+    mov r8d, [rel col_text]
+    call gfx_text
+    mov eax, [rbx + STATE_OFFSET + ST_UNIQUE_TOKENS]
+    lea rdi, [rsp]
+    call format_num
+    lea edi, [r12d - 90]
+    lea esi, [r13d - 70]
+    lea rdx, [rsp]
+    mov ecx, eax
+    mov r8d, [rel col_green]
+    call gfx_text
+    jmp .done
+
+.focus_state:
+    ; Title
+    lea edi, [r12d - 180]
+    lea esi, [r13d - 130]
+    lea rdx, [rel node_state]
+    mov ecx, 5
+    mov r8d, [rel col_cyan]
+    call gfx_text
+    ; State name
+    mov eax, [rbx + STATE_OFFSET + ST_INTRO_STATE]
+    cmp eax, 7
+    jl .fs_ok
+    xor eax, eax
+.fs_ok:
+    lea rcx, [rel intro_names]
+    mov rdx, [rcx + rax * 8]
+    lea edi, [r12d - 180]
+    lea esi, [r13d - 100]
+    mov ecx, 15
+    mov r8d, [rel col_green]
+    call gfx_text
+    jmp .done
+
+.focus_predict:
+    ; Title
+    lea edi, [r12d - 180]
+    lea esi, [r13d - 130]
+    lea rdx, [rel node_predict]
+    mov ecx, 7
+    mov r8d, [rel col_cyan]
+    call gfx_text
+    ; Last prediction
+    mov eax, [rbx + STATE_OFFSET + ST_LAST_PREDICT]
+    lea rdi, [rsp]
+    call format_hex
+    lea edi, [r12d - 180]
+    lea esi, [r13d - 100]
+    lea rdx, [rsp]
+    mov ecx, eax
+    mov r8d, [rel col_yellow]
+    call gfx_text
+    jmp .done
+
+.focus_dispatch:
+    ; Title
+    lea edi, [r12d - 180]
+    lea esi, [r13d - 130]
+    lea rdx, [rel node_dispatch]
+    mov ecx, 8
+    mov r8d, [rel col_cyan]
+    call gfx_text
+    ; Mode name
+    mov eax, [rbx + STATE_OFFSET + ST_DISPATCH_MODE]
+    cmp eax, 8
+    jl .fd_ok
+    xor eax, eax
+.fd_ok:
+    lea rcx, [rel mode_names]
+    mov rdx, [rcx + rax * 8]
+    lea edi, [r12d - 180]
+    lea esi, [r13d - 100]
+    mov ecx, 15
+    mov r8d, [rel col_yellow]
+    call gfx_text
+    jmp .done
+
+.focus_accuracy:
+    ; Title
+    lea edi, [r12d - 180]
+    lea esi, [r13d - 130]
+    lea rdx, [rel node_accuracy]
+    mov ecx, 8
+    mov r8d, [rel col_cyan]
+    call gfx_text
+    ; Hits
+    lea edi, [r12d - 180]
+    lea esi, [r13d - 100]
+    lea rdx, [rel lbl_rgn_hits]
+    mov ecx, 6
+    mov r8d, [rel col_text]
+    call gfx_text
+    mov eax, [rbx + STATE_OFFSET + ST_SELF_PRED_HITS]
+    lea rdi, [rsp]
+    call format_num
+    lea edi, [r12d - 110]
+    lea esi, [r13d - 100]
+    lea rdx, [rsp]
+    mov ecx, eax
+    mov r8d, [rel col_green]
+    call gfx_text
+    ; Misses
+    lea edi, [r12d - 180]
+    lea esi, [r13d - 70]
+    lea rdx, [rel lbl_rgn_miss]
+    mov ecx, 6
+    mov r8d, [rel col_text]
+    call gfx_text
+    mov eax, [rbx + STATE_OFFSET + ST_SELF_PRED_MISSES]
+    lea rdi, [rsp]
+    call format_num
+    lea edi, [r12d - 110]
+    lea esi, [r13d - 70]
+    lea rdx, [rsp]
+    mov ecx, eax
+    mov r8d, [rel col_red]
+    call gfx_text
+    jmp .done
+
+.focus_hive:
+    ; Title
+    lea edi, [r12d - 180]
+    lea esi, [r13d - 130]
+    lea rdx, [rel lbl_hive]
+    mov ecx, 20
+    mov r8d, [rel col_yellow]
+    call gfx_text
+    ; Dream pressure
+    lea edi, [r12d - 180]
+    lea esi, [r13d - 100]
+    lea rdx, [rel lbl_dream_p]
+    mov ecx, 7
+    mov r8d, [rel col_text]
+    call gfx_text
+    jmp .done
+
+.focus_generic:
+    ; Generic: just show "EXPANDED VIEW"
     lea edi, [r12d - 130]
     lea esi, [r13d - 70]
     lea rdx, [rel detail_expanded]
@@ -2622,6 +3203,97 @@ draw_status:
     ret
 
 ;; ============================================================
+;; Ring Layout Helper Functions (semi-3D orbital view)
+;; ============================================================
+
+;; get_sine — Get sine value for angle
+;; edi = angle (0-255, where 64=90°)
+;; Returns: eax = sine * 127 (signed, -127 to +127)
+get_sine:
+    and edi, 0xFF
+    cmp edi, 64
+    jl .q1
+    cmp edi, 128
+    jl .q2
+    cmp edi, 192
+    jl .q3
+    ; Q4: 192-255, sin negative, use 255-angle (avoids index 64 out of bounds)
+    mov eax, 255
+    sub eax, edi
+    lea rdi, [rel sine_table]
+    movzx eax, byte [rdi + rax]
+    neg eax
+    ret
+.q3: ; Q3: 128-191, sin negative, use angle-128
+    sub edi, 128
+    lea rax, [rel sine_table]
+    movzx eax, byte [rax + rdi]
+    neg eax
+    ret
+.q2: ; Q2: 64-127, sin positive, use 127-angle (avoids index 64 out of bounds)
+    mov eax, 127
+    sub eax, edi
+    lea rdi, [rel sine_table]
+    movzx eax, byte [rdi + rax]
+    ret
+.q1: ; Q1: 0-63, sin positive, use angle directly
+    lea rax, [rel sine_table]
+    movzx eax, byte [rax + rdi]
+    ret
+
+;; get_cosine — Get cosine value for angle (cos = sin(angle + 64))
+;; edi = angle (0-255)
+;; Returns: eax = cosine * 127 (signed)
+get_cosine:
+    add edi, 64                 ; cos(x) = sin(x + 90°)
+    jmp get_sine
+
+;; calc_ring_pos — Calculate x,y position on ring for given angle
+;; edi = angle (0-255)
+;; Returns: eax = x, edx = y
+calc_ring_pos:
+    push rbx
+    push r12
+    mov r12d, edi               ; save angle
+
+    ; x = center_x + cos(angle) * radius_x
+    mov edi, r12d
+    call get_cosine
+    imul eax, RING_RADIUS_X
+    sar eax, 7                  ; divide by 127
+    add eax, RING_CENTER_X
+    mov ebx, eax                ; save x
+
+    ; y = center_y - sin(angle) * radius_y (- because screen Y is inverted)
+    mov edi, r12d
+    call get_sine
+    imul eax, RING_RADIUS_Y
+    sar eax, 7
+    mov edx, RING_CENTER_Y
+    sub edx, eax                ; y
+
+    mov eax, ebx                ; x
+    pop r12
+    pop rbx
+    ret
+
+;; calc_depth_scale — Calculate size scale based on Y position (3D depth)
+;; edi = y position
+;; Returns: eax = scale (64-128, where 100 = normal)
+calc_depth_scale:
+    ; Nodes at top (y small) = far = smaller (scale ~70)
+    ; Nodes at bottom (y large) = near = larger (scale ~130)
+    ; Linear interpolation based on y within canvas
+    mov eax, edi
+    sub eax, CANVAS_Y           ; y relative to canvas top
+    imul eax, RING_DEPTH_SCALE  ; scale by depth factor
+    mov ecx, CANVAS_H
+    xor edx, edx
+    div ecx                     ; eax = (y_rel * depth) / canvas_h
+    add eax, 70                 ; base scale 70, max ~130
+    ret
+
+;; ============================================================
 ;; draw_feedback — Feedback message
 ;; ============================================================
 draw_feedback:
@@ -2635,14 +3307,212 @@ draw_feedback:
     test rax, rax
     jz .done
 
-    mov edi, 800
-    mov esi, 25
+    mov edi, 940
+    mov esi, 15
     mov rdx, rax
     mov ecx, 20
     mov r8d, [rel col_green]
     call gfx_text
 
 .done:
+    pop rbx
+    ret
+
+;; ============================================================
+;; Animation Functions (TheBrain-style smooth transitions)
+;; ============================================================
+
+;; start_expand_anim — Start expanding animation for a node
+;; edi = node index
+start_expand_anim:
+    push rbx
+    push r12
+
+    mov [rel anim_node], edi
+    mov dword [rel anim_state], ANIM_EXPANDING
+    mov dword [rel anim_progress], 0
+
+    ; Get source rect from node_rects
+    lea rax, [rel node_rects]
+    imul ebx, edi, 16               ; offset = index * 16
+    add rax, rbx
+
+    mov ecx, [rax]                  ; src x
+    mov [rel anim_src_x], ecx
+    mov ecx, [rax + 4]              ; src y
+    mov [rel anim_src_y], ecx
+    mov ecx, [rax + 8]              ; src w
+    mov [rel anim_src_w], ecx
+    mov ecx, [rax + 12]             ; src h
+    mov [rel anim_src_h], ecx
+
+    ; Destination is expanded panel at canvas center
+    mov dword [rel anim_dst_x], CANVAS_X + CANVAS_W/2 - 200
+    mov dword [rel anim_dst_y], CANVAS_Y + CANVAS_H/2 - 150
+    mov dword [rel anim_dst_w], 400
+    mov dword [rel anim_dst_h], 300
+
+    ; Initialize current to source
+    mov ecx, [rel anim_src_x]
+    mov [rel anim_cur_x], ecx
+    mov ecx, [rel anim_src_y]
+    mov [rel anim_cur_y], ecx
+    mov ecx, [rel anim_src_w]
+    mov [rel anim_cur_w], ecx
+    mov ecx, [rel anim_src_h]
+    mov [rel anim_cur_h], ecx
+
+    pop r12
+    pop rbx
+    ret
+
+;; start_collapse_anim — Start collapsing animation
+start_collapse_anim:
+    push rbx
+
+    ; Get current focus node (more reliable than anim_node)
+    mov edi, [rel focus_node]
+    cmp edi, -1
+    je .no_collapse              ; safety check
+    mov [rel anim_node], edi
+
+    mov dword [rel anim_state], ANIM_COLLAPSING
+    mov dword [rel anim_progress], 0
+
+    ; Source is expanded panel at canvas center
+    mov dword [rel anim_src_x], CANVAS_X + CANVAS_W/2 - 200
+    mov dword [rel anim_src_y], CANVAS_Y + CANVAS_H/2 - 150
+    mov dword [rel anim_src_w], 400
+    mov dword [rel anim_src_h], 300
+
+    ; Also set current to source
+    mov dword [rel anim_cur_x], CANVAS_X + CANVAS_W/2 - 200
+    mov dword [rel anim_cur_y], CANVAS_Y + CANVAS_H/2 - 150
+    mov dword [rel anim_cur_w], 400
+    mov dword [rel anim_cur_h], 300
+
+    ; Destination is original node rect
+    lea rax, [rel node_rects]
+    imul ebx, edi, 16
+    add rax, rbx
+
+    mov ecx, [rax]
+    mov [rel anim_dst_x], ecx
+    mov ecx, [rax + 4]
+    mov [rel anim_dst_y], ecx
+    mov ecx, [rax + 8]
+    mov [rel anim_dst_w], ecx
+    mov ecx, [rax + 12]
+    mov [rel anim_dst_h], ecx
+
+.no_collapse:
+    pop rbx
+    ret
+
+;; update_animation — Advance animation by one frame
+;; Returns: eax = 1 if animation complete, 0 if ongoing
+update_animation:
+    push rbx
+    push r12
+    push r13
+
+    mov eax, [rel anim_state]
+    test eax, eax
+    jz .anim_done                   ; no animation
+
+    ; Advance progress
+    mov eax, [rel anim_progress]
+    add eax, ANIM_STEP
+    cmp eax, 255
+    jle .not_done
+    mov eax, 255
+.not_done:
+    mov [rel anim_progress], eax
+
+    ; Apply ease-out-cubic: t' = 1 - (1-t)^3
+    ; t is in [0,255], we compute (255-t)^3 / 255^2 then subtract from 255
+    mov ebx, 255
+    sub ebx, eax                    ; ebx = 255 - t
+    imul ebx, ebx                   ; ebx = (255-t)^2
+    imul eax, ebx, 1                ; preserve ebx
+    mov eax, ebx
+    mov ecx, [rel anim_progress]
+    mov ebx, 255
+    sub ebx, ecx
+    imul eax, ebx                   ; eax = (255-t)^3
+    ; Divide by 255^2 = 65025
+    xor edx, edx
+    mov ecx, 65025
+    div ecx                         ; eax = (255-t)^3 / 65025
+    mov ebx, 255
+    sub ebx, eax                    ; ebx = eased progress (0-255)
+
+    ; Interpolate each component: cur = src + (dst - src) * progress / 255
+    ; X
+    mov eax, [rel anim_dst_x]
+    sub eax, [rel anim_src_x]
+    imul eax, ebx
+    sar eax, 8                      ; divide by 256 (close to 255)
+    add eax, [rel anim_src_x]
+    mov [rel anim_cur_x], eax
+
+    ; Y
+    mov eax, [rel anim_dst_y]
+    sub eax, [rel anim_src_y]
+    imul eax, ebx
+    sar eax, 8
+    add eax, [rel anim_src_y]
+    mov [rel anim_cur_y], eax
+
+    ; W
+    mov eax, [rel anim_dst_w]
+    sub eax, [rel anim_src_w]
+    imul eax, ebx
+    sar eax, 8
+    add eax, [rel anim_src_w]
+    mov [rel anim_cur_w], eax
+
+    ; H
+    mov eax, [rel anim_dst_h]
+    sub eax, [rel anim_src_h]
+    imul eax, ebx
+    sar eax, 8
+    add eax, [rel anim_src_h]
+    mov [rel anim_cur_h], eax
+
+    ; Check if complete
+    mov eax, [rel anim_progress]
+    cmp eax, 255
+    jl .anim_ongoing
+
+    ; Animation complete
+    mov eax, [rel anim_state]
+    cmp eax, ANIM_EXPANDING
+    jne .collapse_done
+
+    ; Expanding done - set focus_node
+    mov eax, [rel anim_node]
+    mov [rel focus_node], eax
+    jmp .anim_finish
+
+.collapse_done:
+    ; Collapsing done - clear focus_node
+    mov dword [rel focus_node], -1
+
+.anim_finish:
+    mov dword [rel anim_state], ANIM_NONE
+    mov dword [rel anim_node], -1
+
+.anim_done:
+    mov eax, 1
+    jmp .ret
+
+.anim_ongoing:
+    xor eax, eax
+
+.ret:
+    pop r13
+    pop r12
     pop rbx
     ret
 
