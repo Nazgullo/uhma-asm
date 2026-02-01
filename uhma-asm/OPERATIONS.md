@@ -240,15 +240,22 @@ echo "eat file.txt" | timeout 2 nc -N localhost 9999 || true
 
 ## Files
 
+### Scripts
+
+| File | Purpose |
+|------|---------|
+| `feed.sh` | Universal training script (replaces all old training scripts) |
+| `validate.sh` | Validation and testing |
+| `hub_claude.py` | Claude connector for multi-agent hub |
+| `hub_gemini.py` | Gemini connector for multi-agent hub |
+
 ### Core
 
 | File | Purpose |
 |------|---------|
 | `uhma` | Main executable |
 | `uhma.surface` | Persistent memory (200GB sparse) |
-| `feed.sh` | Universal training script |
-| `feed.log` | Training log |
-| `feed.pid` | UHMA process ID |
+| `hub` | Multi-agent hub executable |
 
 ### Corpus
 
