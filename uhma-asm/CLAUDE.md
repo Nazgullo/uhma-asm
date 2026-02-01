@@ -707,3 +707,9 @@ After training, UHMA can enter autonomous self-exploration mode:
 - Added skip-startup-dream check when batch_mode=1
 - Added live autonomous mode with maturity-based exploration
 - Added `soft_shutdown()` function and `--shutdown` option
+
+### Session 2026-02-01 Header Standardization
+- Standardized ALL 18 .asm file headers to @entry/@calls/@calledby/GOTCHAS format
+- Headers are context injection for Claude (first 20-30 lines skimmed on file read)
+- Updated: decode, drives, emit, evolve, factor, gate, genes, hooks, maturity, modify, narrate, persist, presence, surface, symbolic, trace, verify, vsa_ops
+- Already formatted (no changes): boot, channels, dispatch, dreams, format, hub, hub_client, introspect, io, learn, observe, receipt, repl, signal, vsa, gui/*
