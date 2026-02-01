@@ -101,6 +101,50 @@ stop_drainers() {
     DRAINER_PIDS=""
 }
 
+# Soft shutdown - save state and quit gracefully
+soft_shutdown() {
+    local save_name="${1:-shutdown_$(date +%Y%m%d_%H%M%S)}"
+    local max_wait=10
+
+    log "=== SOFT SHUTDOWN ==="
+
+    # Step 1: Save state first
+    log "Saving state as: $save_name"
+    echo "save $save_name" | nc -N localhost "$FEED_IN" 2>/dev/null || true
+    sleep 2
+
+    # Step 2: Send quit command (UHMA calls surface_freeze before exit)
+    log "Sending quit command..."
+    echo "quit" | nc -N localhost "$FEED_IN" 2>/dev/null || true
+
+    # Step 3: Wait for UHMA to exit gracefully
+    local waited=0
+    while pgrep -f './uhma' > /dev/null 2>&1; do
+        sleep 1
+        waited=$((waited + 1))
+        if [ $waited -ge $max_wait ]; then
+            log "UHMA did not exit after ${max_wait}s, sending SIGTERM..."
+            pkill -TERM -f './uhma' 2>/dev/null || true
+            sleep 2
+            # If still running, SIGKILL
+            if pgrep -f './uhma' > /dev/null 2>&1; then
+                log "SIGTERM failed, sending SIGKILL..."
+                pkill -9 -f './uhma' 2>/dev/null || true
+            fi
+            break
+        fi
+        log "Waiting for UHMA to exit... ($waited/$max_wait)"
+    done
+
+    # Step 4: Stop drainers
+    stop_drainers
+
+    # Step 5: Clean up PID files
+    rm -f feed.pid claude_helper.pid 2>/dev/null
+
+    log "=== SHUTDOWN COMPLETE ==="
+}
+
 # Send command to UHMA (fire and forget - drainers handle output)
 uhma_send() {
     local in_port="$1"
@@ -333,6 +377,7 @@ Options:
   --mastery           Alias for --cycles 0 --self-learn
   --live              Enter live autonomous mode after training
   --live-pause N      Seconds to wait for user input before live mode (default: 10)
+  --shutdown [NAME]   Soft shutdown: save state, quit gracefully, stop drainers
   --dry-run           Show what would happen
   --help              Show this help
 
@@ -397,6 +442,17 @@ parse_args() {
                 LIVE_PAUSE="$2"
                 shift 2
                 ;;
+            --shutdown)
+                # Optional save name as next argument
+                local save_name="shutdown_$(date +%Y%m%d_%H%M%S)"
+                if [ $# -gt 1 ] && [[ ! "$2" =~ ^-- ]]; then
+                    save_name="$2"
+                    shift
+                fi
+                start_drainers
+                soft_shutdown "$save_name"
+                exit 0
+                ;;
             --dry-run)
                 DRY_RUN=1
                 shift
@@ -413,12 +469,12 @@ parse_args() {
 }
 
 cleanup() {
-    log "Interrupted - saving..."
+    log "Interrupted - initiating soft shutdown..."
     if [ "$DRY_RUN" != "1" ]; then
-        feed_cmd "save interrupted"
-        sleep 2
+        soft_shutdown "interrupted"
+    else
+        stop_drainers
     fi
-    stop_drainers
     exit 0
 }
 
