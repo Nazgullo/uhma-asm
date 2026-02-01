@@ -6,9 +6,11 @@ hook.py — PreToolUse hook for Claude Code context injection + circuit breaker
 @entry inject_session_context() -> str Inject git status, recent sessions, learnings
 @entry check_holo_trigger(msg) -> str  Detect "holo" in user message, save session
 @entry reset_state()                   Reset circuit breaker state
+@entry inject_file_context(file) -> str Inject summary + failures for file
 
 @calls holo_memory.py:HoloMemory (session saves, context queries)
-@calls capture.py (PostToolUse tracking for circuit breaker)
+@calls failures.py:get_failures_for_file, format_failure_warning
+@calls summaries.py:inject_summary
 @calledby Claude Code PreToolUse hook (configured in .claude/settings.json)
 
 CONFIG: ~/.claude/settings.json hooks.preToolUse = ["python3", "tools/rag/hook.py"]
@@ -579,6 +581,31 @@ YOU SPEAK FIRST. YOU SUMMARIZE. YOU ENGAGE. NOW.
         return header + '\n\n' + '\n\n'.join(parts)
     return None
 
+def inject_file_context(file_path):
+    """Inject summary + failure history for a specific file."""
+    parts = []
+
+    # File summary (what this file does)
+    try:
+        from summaries import inject_summary
+        if summary := inject_summary(file_path):
+            parts.append(summary)
+    except Exception as e:
+        log_debug(f"Summary injection error: {e}")
+
+    # Failure history (what went wrong before)
+    try:
+        from failures import get_failures_for_file, format_failure_warning
+        failures = get_failures_for_file(file_path)
+        if failures:
+            warning = format_failure_warning(failures)
+            if warning:
+                parts.append(warning)
+    except Exception as e:
+        log_debug(f"Failure injection error: {e}")
+
+    return '\n\n'.join(parts) if parts else None
+
 def inject_for_modification(context):
     """Inject context for Edit/Write operations."""
     parts = []
@@ -650,6 +677,12 @@ else:
     if is_modifying and not state.get('hard_stopped'):
         if mod_ctx := inject_for_modification(context):
             output_parts.append(mod_ctx)
+
+    # File-specific context (summary + failures) for Read/Edit/Write
+    file_path = tool_input.get('file_path') or tool_input.get('path')
+    if file_path and tool_name in {'Read', 'Edit', 'Write'}:
+        if file_ctx := inject_file_context(file_path):
+            output_parts.append(file_ctx)
 
 # Save updated state
 save_state(state)

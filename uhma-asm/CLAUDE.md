@@ -43,6 +43,33 @@ Two out of a hundred accepted. They knew without an hour of back and forth. They
 
 ---
 
+## Hard Rules (Non-Negotiable)
+
+**STOP DOING THESE:**
+1. Don't say "Let me..." - just use the tool
+2. Don't explain what you're about to do - just do it
+3. Don't ask permission for obvious next steps
+4. Don't read a file twice in the same session
+5. Don't say "I'll now..." or "I'm going to..." - ACT
+6. Don't hedge with "I think" or "It seems" - BE DIRECT
+7. Don't repeat information back to the user - they know what they said
+
+**ALWAYS DO THESE:**
+1. Read a file BEFORE editing it (Edit will fail otherwise)
+2. Use exact string matches for Edit old_string (copy from Read output)
+3. Check git status before committing
+4. Run the actual command, don't describe what it would do
+5. When something fails, try a DIFFERENT approach, not the same thing again
+6. If stuck after 3 attempts, ASK the user
+
+**VERIFICATION BEFORE EDIT:**
+Before every Edit, verify:
+- [ ] I have Read this file in THIS session
+- [ ] My old_string is copied EXACTLY from the file (including whitespace)
+- [ ] I'm not repeating a failed edit
+
+---
+
 ## What This Is
 UHMA (Unified Holographic Memory Architecture) - a self-aware, self-modifying x86-64 assembly system.
 
