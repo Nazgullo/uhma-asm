@@ -16,6 +16,8 @@ FILE_ORDER="alpha"
 MAX_CYCLES=0
 SELF_LEARN=0
 DRY_RUN=0
+LIVE_MODE=0
+LIVE_PAUSE=10  # seconds to wait for user input before live mode
 
 # UHMA ports
 FEED_IN=9999
@@ -118,6 +120,148 @@ feed_cmd() {
 query_cmd() {
     local cmd="$1"
     uhma_send "$QUERY_IN" "$cmd"
+}
+
+# Get UHMA maturity stage (0=Infant, 1=Child, 2=Adolescent, 3=Adult)
+get_maturity_stage() {
+    local status_out
+    status_out=$(timeout 5 nc localhost "$QUERY_OUT" 2>/dev/null &
+        sleep 0.3
+        echo "status" | timeout 2 nc -N localhost "$QUERY_IN" 2>/dev/null || true
+        sleep 2
+        cat /tmp/uhma_query.out 2>/dev/null | tail -50)
+
+    # Parse "Stage: N" from status output
+    local stage
+    stage=$(echo "$status_out" | grep -oP 'Stage:\s*\K\d+' | head -1)
+    echo "${stage:-0}"
+}
+
+# Get files to feed based on maturity stage
+get_exploration_files() {
+    local stage="$1"
+    local files=""
+
+    case "$stage" in
+        0)  # Infant - only uhma-asm folder
+            files=$(find /home/peter/Desktop/STARWARS/uhma-asm -maxdepth 2 \
+                -type f \( -name "*.txt" -o -name "*.asm" -o -name "*.md" \) \
+                2>/dev/null | shuf | head -50)
+            ;;
+        1)  # Child - add Desktop
+            files=$(find /home/peter/Desktop -maxdepth 3 \
+                -type f \( -name "*.txt" -o -name "*.md" -o -name "*.py" -o -name "*.sh" \) \
+                ! -path "*/\.*" 2>/dev/null | shuf | head -100)
+            ;;
+        2)  # Adolescent - add home folder
+            files=$(find /home/peter -maxdepth 3 \
+                -type f \( -name "*.txt" -o -name "*.md" -o -name "*.py" -o -name "*.sh" -o -name "*.c" -o -name "*.h" \) \
+                ! -path "*/\.*" ! -path "*/.cache/*" ! -path "*/.local/*" \
+                2>/dev/null | shuf | head -200)
+            ;;
+        *)  # Adult - broader exploration
+            files=$(find /home/peter -maxdepth 4 \
+                -type f \( -name "*.txt" -o -name "*.md" -o -name "*.py" -o -name "*.sh" -o -name "*.c" -o -name "*.h" -o -name "*.json" -o -name "*.yaml" -o -name "*.toml" \) \
+                ! -path "*/\.*" ! -path "*/.cache/*" ! -path "*/.local/*" ! -path "*/node_modules/*" \
+                2>/dev/null | shuf | head -300)
+            ;;
+    esac
+
+    echo "$files"
+}
+
+# Live autonomous mode - self-feeding based on maturity
+live_mode() {
+    log "=== ENTERING LIVE MODE ==="
+    log "UHMA will now self-feed and consolidate autonomously"
+
+    # Disable batch mode for autonomous operation
+    feed_cmd "batch"
+    sleep 1
+
+    local live_cycle=0
+    local last_stage=-1
+
+    while true; do
+        live_cycle=$((live_cycle + 1))
+
+        # Check maturity stage
+        local stage
+        stage=$(get_maturity_stage)
+
+        if [ "$stage" != "$last_stage" ]; then
+            log "=== MATURITY STAGE: $stage ==="
+            case "$stage" in
+                0) log "  Infant - exploring uhma-asm folder" ;;
+                1) log "  Child - expanding to Desktop" ;;
+                2) log "  Adolescent - exploring home folder" ;;
+                *) log "  Adult - broad exploration enabled" ;;
+            esac
+            last_stage="$stage"
+        fi
+
+        log "=== LIVE CYCLE $live_cycle (Stage $stage) ==="
+
+        # Get files appropriate for current maturity
+        local files
+        files=$(get_exploration_files "$stage")
+
+        local file_count
+        file_count=$(echo "$files" | grep -c . || echo 0)
+
+        if [ "$file_count" -eq 0 ]; then
+            log "No files found for exploration, waiting..."
+            sleep 30
+            continue
+        fi
+
+        log "Exploring $file_count files..."
+
+        local file_num=0
+        while IFS= read -r file; do
+            [ -f "$file" ] || continue
+            file_num=$((file_num + 1))
+
+            # Skip very large files (>1MB)
+            local fsize
+            fsize=$(stat -c%s "$file" 2>/dev/null || echo 0)
+            if [ "$fsize" -gt 1048576 ]; then
+                continue
+            fi
+
+            log "  [$file_num] $(basename "$file")"
+            feed_cmd "eat $file"
+
+            # Shorter pause in live mode
+            sleep 2
+
+            # Periodic consolidation (every 20 files)
+            if [ $((file_num % 20)) -eq 0 ]; then
+                log "  Mini-consolidation..."
+                feed_cmd "observe"
+                sleep 5
+            fi
+
+            maybe_save
+        done <<< "$files"
+
+        # End of live cycle - consolidate
+        log "=== LIVE CYCLE $live_cycle COMPLETE ==="
+        feed_cmd "observe"
+        sleep 10
+        feed_cmd "dream"
+        sleep 10
+        feed_cmd "save live_$live_cycle"
+        sleep 2
+
+        # Cleanup old live saves (keep last 5)
+        ls -t live_* 2>/dev/null | tail -n +6 | xargs -r rm -f || true
+
+        LAST_CONSOLIDATE=$(date +%s)
+
+        # Brief pause before next cycle
+        sleep 5
+    done
 }
 
 start_uhma() {
@@ -230,14 +374,24 @@ Options:
   --cycles N          Number of cycles, 0=infinite (default: 0)
   --self-learn        Feed UHMA's responses back
   --mastery           Alias for --cycles 0 --self-learn
+  --live              Enter live autonomous mode after training
+  --live-pause N      Seconds to wait for user input before live mode (default: 10)
   --dry-run           Show what would happen
   --help              Show this help
 
 Examples:
   $0 --dry-run                    # Preview without running
   $0 --cycles 1                   # One full cycle through corpus
+  $0 --cycles 1 --live            # Train then enter live autonomous mode
   $0 --mastery                    # Infinite self-learning mode
   $0 --corpus data/ --pause 10    # Custom corpus, slower pace
+
+Live Mode:
+  After training completes, UHMA enters autonomous exploration:
+  - Stage 0 (Infant): Explores uhma-asm folder only
+  - Stage 1 (Child): Expands to Desktop
+  - Stage 2 (Adolescent): Explores home folder
+  - Stage 3+ (Adult): Broad exploration with more file types
 EOF
     exit 0
 }
@@ -277,6 +431,14 @@ parse_args() {
                 MAX_CYCLES=0
                 SELF_LEARN=1
                 shift
+                ;;
+            --live)
+                LIVE_MODE=1
+                shift
+                ;;
+            --live-pause)
+                LIVE_PAUSE="$2"
+                shift 2
                 ;;
             --dry-run)
                 DRY_RUN=1
@@ -410,6 +572,30 @@ main() {
         feed_cmd "save final"
         sleep 2
     fi
+
+    # Check if we should enter live mode
+    if [ "$LIVE_MODE" = "1" ] && [ "$MAX_CYCLES" -gt 0 ] && [ "$DRY_RUN" != "1" ]; then
+        log ""
+        log "Training complete. Entering LIVE MODE in $LIVE_PAUSE seconds..."
+        log "Press Ctrl+C to exit, or wait for autonomous exploration."
+        log ""
+
+        # Wait for user input with timeout
+        if read -t "$LIVE_PAUSE" -r user_input 2>/dev/null; then
+            if [ -n "$user_input" ]; then
+                log "User input received: $user_input"
+                log "Exiting instead of live mode."
+                stop_drainers
+                log "=== DONE ==="
+                return
+            fi
+        fi
+
+        # No input - enter live mode
+        live_mode
+        # live_mode runs forever, but if interrupted:
+    fi
+
     log "Stopping drainers..."
     stop_drainers
     log "=== DONE ==="
