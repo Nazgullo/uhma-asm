@@ -427,14 +427,103 @@ npx localtunnel --port 8080             # localtunnel
 - Full dependency graph
 - Rebuilt via: `python3 tools/rag/build.py`
 
-### Semantic Memory (Cross-Session Persistence)
-`tools/rag/memory.py` - structured memory for findings, failures, insights:
-- **Categories**: finding, hypothesis, failed, success, insight, location, question, todo
-- **Features**: TF-IDF search, theme clustering, session tracking
-- **Files**: `tools/rag/memory/entries.json`, `current_state.md`
-- Hooks auto-inject recent memory at session start, auto-save at session end
+## Claude Holographic Memory System
 
-## Claude Code Session Memory
+The holographic memory (`tools/rag/holo_memory.py`) replicates UHMA's VSA architecture for Claude's cross-session persistence.
+
+### Architecture
+- **1024-dim f64 vectors** (same as UHMA)
+- **6GB memory-mapped surface** (`tools/rag/memory/holo_surface.dat`)
+- **VSA operations**: bind, unbind, superpose, cosine similarity
+- **8-dim receipt trace**: event, ctx, content, outcome, source, aux, session, time
+
+### Storage Location
+```
+tools/rag/memory/
+├── holo_entries.json   # Structured entries (JSON)
+├── holo_surface.dat    # 6GB VSA surface (mmap'd)
+├── holo_traces.npz     # Category trace vectors
+└── holo_state.json     # System state
+```
+
+### Categories (with decay rates)
+| Category | Decay | Purpose |
+|----------|-------|---------|
+| finding | 0.95 | Confirmed facts |
+| failed | 0.90 | What didn't work |
+| success | 0.95 | What worked |
+| insight | 0.95 | Aha moments |
+| warning | 0.92 | Gotchas to remember |
+| session | 0.85 | Session summaries |
+| location | 0.98 | Code locations |
+| question | 0.80 | Open questions (fast decay) |
+| todo | 0.85 | Tasks |
+| context | 0.70 | Temporary context (fast decay) |
+
+### Python API
+```python
+from tools.rag.holo_memory import HoloMemory
+
+mem = HoloMemory()
+
+# Store entries
+mem.add('finding', 'rcx is caller-saved in x86-64', context='register debugging')
+mem.add('failed', 'tried XORing somatic with context - broke pattern recognition')
+mem.add('insight', 'UHMA output ports need continuous draining')
+mem.add('warning', 'Multiple UHMA instances cause port conflicts')
+mem.add('session', 'Fixed feed.sh: persistent drainers, batch_mode=1',
+        context='session 2026-02-01')
+
+# Query by semantic similarity (returns resonating entries)
+results = mem.query('debugging register clobbering')
+for entry in results:
+    print(f"[{entry['category']}] {entry['content']}")
+
+# Log outcome (did it work?)
+mem.outcome(entry_id, worked=True)   # boosts entry
+mem.outcome(entry_id, worked=False)  # decays entry
+
+# Get cognitive state
+state = mem.get_state()  # Returns: confused, repeating, progressing, stable
+
+# Export for injection (compact format)
+ison = mem.to_ison(limit=10)
+```
+
+### CLI Usage (from uhma-asm directory)
+```bash
+# Add an entry
+python3 -c "
+from tools.rag.holo_memory import HoloMemory
+mem = HoloMemory()
+mem.add('insight', 'Your insight here', context='optional context')
+print('Saved')
+"
+
+# Query memory
+python3 -c "
+from tools.rag.holo_memory import HoloMemory
+mem = HoloMemory()
+for e in mem.query('your search terms'):
+    print(f\"[{e['category']}] {e['content'][:100]}...\")
+"
+
+# View recent entries
+python3 -c "
+from tools.rag.holo_memory import HoloMemory
+import json
+mem = HoloMemory()
+for e in list(mem.entries.values())[-10:]:
+    print(f\"[{e['category']}] {e['content'][:80]}...\")
+"
+```
+
+### Hook Integration
+Hooks automatically:
+1. **Session start**: Inject recent sessions, learnings, warnings, git status
+2. **Session end**: Prompt to save if significant work done
+3. **"holo" trigger**: Manual save when you type `holo` or `holo: <note>`
+4. **Auto-save**: Every 30 minutes of activity
 
 ### "holo" Command
 Type `holo` (or `holo: <note>`) to force Claude to save the current session to holographic memory.
