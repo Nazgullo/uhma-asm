@@ -740,3 +740,14 @@ After training, UHMA can enter autonomous self-exploration mode:
 - Headers are context injection for Claude (first 20-30 lines skimmed on file read)
 - Updated: decode, drives, emit, evolve, factor, gate, genes, hooks, maturity, modify, narrate, persist, presence, surface, symbolic, trace, verify, vsa_ops
 - Already formatted (no changes): boot, channels, dispatch, dreams, format, hub, hub_client, introspect, io, learn, observe, receipt, repl, signal, vsa, gui/*
+
+### Session 2026-02-01 GUI Autonomous Mode
+- Fixed GUI to spawn UHMA directly (was spawning MCP server causing port conflict)
+- GUI now enables autonomous mode when it spawns UHMA (sends "batch" command)
+- UHMA auto-consolidates (dreams) and self-explores without manual commands
+- Dual mode operation:
+  - **GUI spawns UHMA**: batch_mode=0 (autonomous, self-directed)
+  - **feed.sh starts UHMA**: batch_mode=1 (batch, externally driven)
+  - **GUI connects to existing**: leaves mode unchanged (respects feed.sh control)
+- Removed codebase.txt (replaced by RAG system with file summaries)
+- GUI is full Command & Control center: all UHMA features accessible interactively
