@@ -487,3 +487,89 @@ Sessions auto-save every 30 minutes of activity.
 # Fresh start
 rm -f uhma.surface && ./uhma
 ```
+
+## Training with feed.sh
+
+`feed.sh` is the universal training script that replaced 8 separate scripts.
+
+### Basic Usage
+```bash
+# Single cycle through corpus
+./feed.sh --cycles 1 --pause 5
+
+# Infinite self-learning mode
+./feed.sh --mastery
+
+# Preview without running
+./feed.sh --dry-run
+
+# Custom corpus and timing
+./feed.sh --corpus data/ --pause 10 --consolidate 15
+```
+
+### Options
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--corpus DIR` | corpus/ | Directory with .txt files |
+| `--pause N` | 5 | Seconds between files |
+| `--consolidate N` | 30 | Minutes between observe+dream |
+| `--save-every N` | 30 | Minutes between checkpoints |
+| `--order ORDER` | alpha | alpha/random/reverse |
+| `--cycles N` | 0 | Number of cycles (0=infinite) |
+| `--self-learn` | off | Feed UHMA's responses back |
+| `--mastery` | - | Alias for --cycles 0 --self-learn |
+
+### How It Works
+1. Starts **persistent drainers** for all 3 output ports (9998, 9996, 9994)
+2. Feeds each .txt file via `eat filepath` command
+3. Runs `observe` + `dream` consolidation at intervals
+4. Saves checkpoints with automatic cleanup (keeps last 3)
+5. On 5 consecutive failures, spawns Claude via ALERT_CLAUDE.txt
+
+### Critical: Output Port Draining
+UHMA's TCP channels are **paired** (input → processing → output). If output ports aren't continuously drained, UHMA blocks waiting to write.
+
+**Wrong** (per-command reader):
+```bash
+nc localhost 9998 > response.txt &  # temporary reader
+echo "eat file.txt" | nc localhost 9999
+# Reader times out, UHMA blocks
+```
+
+**Right** (persistent drainers):
+```bash
+# Start drainers ONCE at session start
+while true; do nc localhost 9998 >> feed.out || sleep 1; done &
+while true; do nc localhost 9996 >> query.out || sleep 1; done &
+while true; do nc localhost 9994 >> debug.out || sleep 1; done &
+
+# Then send commands freely
+echo "eat file.txt" | timeout 2 nc -N localhost 9999 || true
+```
+
+### batch_mode Setting
+In `introspect.asm`, `batch_mode` controls autonomous behavior:
+
+- `batch_mode=1` (default): Disables workers, prevents startup auto-dream
+- `batch_mode=0`: Interactive mode with autonomous consolidation
+
+**For training**: Must be 1 to prevent startup dream from blocking feed commands.
+
+Toggle in REPL: `batch`
+
+### Troubleshooting
+
+| Problem | Cause | Solution |
+|---------|-------|----------|
+| Hangs on file 1 | Output ports not drained | Use persistent drainers |
+| UHMA blocks at startup | Auto-dream triggered | Ensure batch_mode=1 |
+| Port conflicts | Multiple instances | `pkill -9 uhma` first |
+| Script exits early | set -euo pipefail | Add `\|\| true` to failing commands |
+| Exit code 124 | timeout killed nc | Already handled in feed.sh |
+
+### Session 2026-02-01 Fixes
+- Rewrote `uhma_send()` to use persistent drainers + fire-and-forget
+- Changed `nc -q 1` to `timeout 2 nc -N || true`
+- Added `|| true` to `ls -t checkpoint_*` cleanup commands
+- Set `batch_mode=1` default in introspect.asm
+- Added skip-startup-dream check when batch_mode=1
