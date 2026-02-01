@@ -1,7 +1,18 @@
 #!/usr/bin/env python3
 """
-UHMA GUI Button Tester
-Automatically clicks buttons and monitors for crashes
+test_buttons.py — UHMA GUI Button Tester (automated crash detection)
+
+@entry main()                       Run button click tests
+@entry click_button(name) -> bool   Click button, return True if no crash
+
+@calls subprocess (spawns viz_uhma)
+@calls xdotool (simulates mouse clicks)
+@calledby CLI (python3 gui/test_buttons.py)
+
+GOTCHAS:
+  - Requires xdotool installed (apt install xdotool)
+  - Button positions hardcoded - update if layout changes
+  - Monitors subprocess for crashes after each click
 """
 
 import subprocess

@@ -1,7 +1,20 @@
 #!/usr/bin/env python3
 """
-UHMA GUI Full Integration Test
-Simulates real user interactions: clicking buttons, selecting files, typing input
+test_gui.py — UHMA GUI Full Integration Test (user interaction simulation)
+
+@entry main()                           Run full interaction test suite
+@entry test_button_sequence() -> bool   Test menu bar buttons
+@entry test_file_dialog() -> bool       Test file/dir selection
+@entry test_input_field() -> bool       Test text input + SEND
+
+@calls subprocess (spawns viz_uhma)
+@calls xdotool (mouse clicks, keyboard input)
+@calledby CLI (python3 gui/test_gui.py)
+
+GOTCHAS:
+  - Requires xdotool installed
+  - Button positions for "Command & Control" layout
+  - Waits between actions for GUI responsiveness
 """
 
 import subprocess

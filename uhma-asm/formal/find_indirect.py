@@ -1,7 +1,19 @@
 #!/usr/bin/env python3
 """
-Find all indirect calls and jumps in the codebase.
-These are potential crash sources if the target is corrupted.
+find_indirect.py — Find indirect calls/jumps (potential crash sources)
+
+@entry find_indirect_calls(asm_dir) -> list  Scan all .asm for indirect jmp/call
+@entry main()                                CLI: prints results
+
+@calledby CLI (python3 formal/find_indirect.py)
+
+DETECTS:
+  - call rax, call [rbx+8], call qword [rdi]
+  - jmp rax, jmp [table+rcx*8]
+
+GOTCHAS:
+  - Indirect calls crash if target corrupted by self-modification
+  - Each result shows: file:line, function, instruction
 """
 
 import os

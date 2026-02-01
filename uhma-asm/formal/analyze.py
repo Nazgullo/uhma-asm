@@ -1,9 +1,19 @@
 #!/usr/bin/env python3
 """
-UHMA Formal Analyzer
+analyze.py — UHMA Formal Analyzer: symbolic execution + invariant checking
 
-Runs symbolic execution and invariant checking on all assembly files.
-Generates a proof report showing all paths analyzed and issues found.
+@entry main()                              CLI entry, analyzes all .asm files
+@entry analyze_file(path) -> FileReport    Analyze single file
+@entry generate_report(reports) -> str     Generate proof report
+
+@calls parser.py:NASMParser
+@calls symbolic.py:SymbolicExecutor, analyze_file
+@calledby CLI (python3 formal/analyze.py)
+
+GOTCHAS:
+  - Analyzes ALL paths through each function (exponential in branches)
+  - Reports: stack imbalance, callee-saved violations, unreachable code
+  - Exit code 0 = all clear, 1 = issues found
 """
 
 import sys

@@ -1,10 +1,22 @@
 """
-NASM Assembly Parser
+parser.py — NASM Assembly Parser: .asm to structured representation
 
-Parses .asm files into a structured representation:
-- Functions (global labels to ret)
-- Basic blocks (sequences ending in branch/ret)
-- Instructions with operands
+@entry NASMParser.parse_file(path) -> ParsedFile
+@entry NASMParser.parse_function(lines) -> Function
+@entry NASMParser.parse_instruction(line) -> Instruction
+
+@calledby analyze.py, symbolic.py
+
+STRUCTURES:
+  ParsedFile: filename, functions[], globals[], externs[]
+  Function: name, blocks[], entry_block, is_global
+  BasicBlock: label, instructions[], successors[]
+  Instruction: mnemonic, operands[], type (JUMP/CALL/RET/etc)
+
+GOTCHAS:
+  - Functions defined as: global label → ... → ret
+  - Basic blocks end at: jmp, jcc, ret, or next label
+  - Handles NASM syntax: section, %include, extern, global
 """
 
 import re

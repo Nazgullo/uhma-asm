@@ -1,10 +1,21 @@
 """
-Symbolic Execution Engine
+symbolic.py — Symbolic Execution Engine for x86-64 assembly
 
-Tracks symbolic state through all control flow paths:
-- Stack depth (abstract integer)
-- Register contents (which saved, which modified)
-- Memory accesses (for bounds checking)
+@entry SymbolicExecutor.execute(func) -> FunctionAnalysis
+@entry analyze_file(path) -> list[FunctionAnalysis]
+
+@calls parser.py:ParsedFile, Function, BasicBlock, Instruction
+@calledby analyze.py
+
+TRACKS:
+  - Stack depth (abstract integer, detects imbalance)
+  - Register state: SAVED/RESTORED/MODIFIED/ARGUMENT
+  - Callee-saved violations (rbx, rbp, r12-r15)
+
+GOTCHAS:
+  - Explores ALL paths (exponential in conditional branches)
+  - CALLEE_SAVED = {rbx, rbp, r12, r13, r14, r15}
+  - Reports path to first violation for debugging
 """
 
 from dataclasses import dataclass, field

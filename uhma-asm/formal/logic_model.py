@@ -1,9 +1,23 @@
 #!/usr/bin/env python3
 """
-UHMA Assembly to Symbolic Logic Converter
+logic_model.py — UHMA Assembly to Symbolic Logic Converter
 
-Converts x86_64 assembly to a formal logic representation for verification.
-Tracks: register state, stack balance, memory access bounds, control flow.
+@entry parse_asm_file(path) -> LogicModel
+@entry verify_function(model, func) -> VerifyResult
+@entry generate_smt(model) -> str           SMT-LIB2 output for Z3
+
+@calledby CLI (standalone verification tool)
+
+TRACKS:
+  - Register state (64/32/16/8 bit variants)
+  - Stack balance (push/pop/sub rsp)
+  - Memory access bounds
+  - Control flow (jumps, calls, returns)
+
+GOTCHAS:
+  - Register aliasing: eax/ax/al share rax
+  - x86-64 ABI: rdi,rsi,rdx,rcx,r8,r9 = args; rax = return
+  - Callee-saved: rbx, rbp, r12-r15
 """
 
 import re
