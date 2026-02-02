@@ -613,3 +613,78 @@ mcp_get_status:
     call mcp_call
     ret
 .status: db "status", 0
+
+;; mcp_read_stream — Non-blocking read from output channel
+;; edi = logical channel (0=FEED, 1=QUERY, 2=DEBUG)
+;; rsi = buffer to store data
+;; edx = buffer size
+;; Returns: eax = bytes read (0 if nothing available)
+global mcp_read_stream
+mcp_read_stream:
+    push rbx
+    push r12
+    push r13
+    push r14
+    sub rsp, 24
+
+    mov r12d, edi               ; logical channel
+    mov r13, rsi                ; buffer
+    mov r14d, edx               ; size
+
+    ; Get output socket index: logical * 2 + 1
+    mov eax, r12d
+    shl eax, 1
+    inc eax                     ; output socket index
+    mov ebx, eax
+
+    ; Check socket valid
+    cmp ebx, MCP_NUM_CHANNELS
+    jge .no_data
+    lea rcx, [rel mcp_sock_valid]
+    cmp dword [rcx + rbx * 4], 0
+    je .no_data
+
+    ; Get socket fd
+    lea rcx, [rel mcp_sockets]
+    mov edi, [rcx + rbx * 4]
+
+    ; Poll with 0 timeout (non-blocking check)
+    mov [rsp], edi              ; pollfd.fd
+    mov word [rsp + 4], 1       ; POLLIN
+    mov word [rsp + 6], 0       ; revents
+
+    lea rdi, [rsp]
+    mov esi, 1                  ; nfds
+    xor edx, edx                ; timeout = 0 (non-blocking)
+    call poll
+
+    cmp eax, 0
+    jle .no_data
+
+    ; Check if POLLIN set
+    movzx eax, word [rsp + 6]
+    test eax, 1                 ; POLLIN
+    jz .no_data
+
+    ; Data available - recv it
+    lea rcx, [rel mcp_sockets]
+    mov edi, [rcx + rbx * 4]
+    mov rsi, r13                ; buffer
+    mov edx, r14d               ; size
+    xor ecx, ecx                ; flags
+    call recv
+
+    test eax, eax
+    jle .no_data
+    jmp .done
+
+.no_data:
+    xor eax, eax
+
+.done:
+    add rsp, 24
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret

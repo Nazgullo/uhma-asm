@@ -48,6 +48,10 @@ section .data
     lbl_waveform:   db "WAVEFORM", 0
     lbl_patterns:   db "PATTERNS", 0
     lbl_output:     db "REPL OUTPUT", 0
+    lbl_feed:       db "FEED (9998)", 0
+    lbl_query:      db "QUERY (9996)", 0
+    lbl_debug:      db "DEBUG (9994)", 0
+    lbl_paused:     db "[PAUSED]", 0
 
     ; Mind map node labels
     node_uhma:      db "UHMA", 0
@@ -362,6 +366,14 @@ section .data
     ; Legacy constants for click handling
     MAP_W           equ CANVAS_W
     MAP_H           equ CANVAS_H
+    ; Output panel layout (right side, 3 stacked panels)
+    OUT_PANEL_X     equ WIN_W - 320       ; x position
+    OUT_PANEL_W     equ 310               ; panel width
+    OUT_PANEL_H     equ 180               ; panel height
+    OUT_PANEL_GAP   equ 5                 ; gap between panels
+    OUT_FEED_Y      equ MENU_H + 10       ; FEED panel y
+    OUT_QUERY_Y     equ OUT_FEED_Y + OUT_PANEL_H + OUT_PANEL_GAP
+    OUT_DEBUG_Y     equ OUT_QUERY_Y + OUT_PANEL_H + OUT_PANEL_GAP
 
 section .bss
     ; Core state
@@ -415,6 +427,30 @@ section .bss
     ; Trace state
     trace_active:   resd 1
     geom_mode:      resd 1
+
+    ; Ring buffers for live streaming panels
+    ; Each buffer: data + write_pos + view_pos + paused flag
+
+    ; FEED output (channel 1 = port 9998) - eat/dream/observe responses
+    feed_ring:      resb 8192
+    feed_write:     resd 1          ; write position (0-8191)
+    feed_view:      resd 1          ; view position (follows write unless paused)
+    feed_paused:    resd 1          ; 1 = paused (user examining), 0 = live
+
+    ; QUERY output (channel 3 = port 9996) - status/why/misses responses
+    query_ring:     resb 8192
+    query_write:    resd 1
+    query_view:     resd 1
+    query_paused:   resd 1
+
+    ; DEBUG output (channel 5 = port 9994) - trace/receipts
+    debug_ring:     resb 8192
+    debug_write:    resd 1
+    debug_view:     resd 1
+    debug_paused:   resd 1
+
+    RING_SIZE       equ 8192
+    RING_MASK       equ 8191        ; for wrapping (size - 1)
 
     ; Feed control state
     feed_running:   resd 1          ; 1 if feed.sh is running
@@ -522,6 +558,7 @@ extern mcp_save
 extern mcp_load
 extern mcp_get_status
 extern mcp_call
+extern mcp_read_stream
 
 ; Rosetta Stone / Geometric Verification
 ; Verify mode handled via MCP raw commands
@@ -791,6 +828,13 @@ vis_update:
     jmp .poll_loop
 
 .not_click:
+    ; ButtonRelease (event type 5)
+    cmp r12d, 5
+    jne .not_release
+    call handle_release
+    jmp .poll_loop
+
+.not_release:
     ; Motion
     cmp r12d, 6
     jne .not_motion
@@ -811,6 +855,9 @@ vis_update:
     dec eax
     mov [rel feedback_timer], eax
 .no_dec:
+
+    ; Read any available data from UHMA output streams
+    call read_streams
 
     ; Update animation
     call update_animation
@@ -972,6 +1019,34 @@ handle_click:
     mov r12d, eax           ; x
     mov r13d, edx           ; y
 
+    ; Check output panels first (click = pause)
+    ; Check x bounds (same for all 3 panels)
+    cmp r12d, OUT_PANEL_X
+    jl .not_output_panel
+    cmp r12d, OUT_PANEL_X + OUT_PANEL_W
+    jge .not_output_panel
+
+    ; FEED panel
+    cmp r13d, OUT_FEED_Y
+    jl .not_output_panel
+    cmp r13d, OUT_FEED_Y + OUT_PANEL_H
+    jge .check_query_panel
+    mov dword [rel feed_paused], 1
+    jmp .done_click
+
+.check_query_panel:
+    cmp r13d, OUT_QUERY_Y + OUT_PANEL_H
+    jge .check_debug_panel
+    mov dword [rel query_paused], 1
+    jmp .done_click
+
+.check_debug_panel:
+    cmp r13d, OUT_DEBUG_Y + OUT_PANEL_H
+    jge .not_output_panel
+    mov dword [rel debug_paused], 1
+    jmp .done_click
+
+.not_output_panel:
     ; Check buttons first
     lea rbx, [rel buttons]
     xor ecx, ecx
@@ -1121,6 +1196,33 @@ handle_click:
     pop r13
     pop r12
     pop rbx
+    ret
+
+;; ============================================================
+;; handle_release — Mouse button release
+;; Clears pause flags and snaps view to current write position
+;; ============================================================
+handle_release:
+    ; If any panel was paused, un-pause and snap view to write
+    cmp dword [rel feed_paused], 0
+    je .not_feed_paused
+    mov dword [rel feed_paused], 0
+    mov eax, [rel feed_write]
+    mov [rel feed_view], eax
+.not_feed_paused:
+    cmp dword [rel query_paused], 0
+    je .not_query_paused
+    mov dword [rel query_paused], 0
+    mov eax, [rel query_write]
+    mov [rel query_view], eax
+.not_query_paused:
+    cmp dword [rel debug_paused], 0
+    je .not_debug_paused
+    mov dword [rel debug_paused], 0
+    mov eax, [rel debug_write]
+    mov [rel debug_view], eax
+.not_debug_paused:
+    mov eax, 1
     ret
 
 ;; ============================================================
@@ -3068,6 +3170,121 @@ draw_mindmap:
     ret
 
 ;; ============================================================
+;; read_streams — Read from all output channels into ring buffers
+;; Called each frame to capture streaming data from UHMA
+;; ============================================================
+read_streams:
+    push rbx
+    push r12
+    push r13
+    push r14
+    sub rsp, 1032               ; temp buffer on stack (1024 + alignment)
+
+    ; Read from FEED output (channel 0 output = socket index 1)
+    xor edi, edi                ; logical channel 0
+    lea rsi, [rsp]              ; temp buffer
+    mov edx, 1024               ; max bytes
+    call mcp_read_stream
+    test eax, eax
+    jz .no_feed
+
+    ; Append to feed_ring
+    mov r12d, eax               ; bytes read
+    lea rsi, [rsp]              ; source
+    lea rdi, [rel feed_ring]    ; dest base
+    mov r13d, [rel feed_write]  ; write pos
+    xor ecx, ecx
+.feed_copy:
+    cmp ecx, r12d
+    jge .feed_copy_done
+    mov al, [rsi + rcx]
+    mov edx, r13d
+    and edx, RING_MASK
+    mov [rdi + rdx], al
+    inc r13d
+    inc ecx
+    jmp .feed_copy
+.feed_copy_done:
+    and r13d, RING_MASK
+    mov [rel feed_write], r13d
+    ; Update view if not paused
+    cmp dword [rel feed_paused], 0
+    jne .no_feed
+    mov [rel feed_view], r13d
+
+.no_feed:
+    ; Read from QUERY output (channel 1 output = socket index 3)
+    mov edi, 1                  ; logical channel 1
+    lea rsi, [rsp]
+    mov edx, 1024
+    call mcp_read_stream
+    test eax, eax
+    jz .no_query
+
+    ; Append to query_ring
+    mov r12d, eax
+    lea rsi, [rsp]
+    lea rdi, [rel query_ring]
+    mov r13d, [rel query_write]
+    xor ecx, ecx
+.query_copy:
+    cmp ecx, r12d
+    jge .query_copy_done
+    mov al, [rsi + rcx]
+    mov edx, r13d
+    and edx, RING_MASK
+    mov [rdi + rdx], al
+    inc r13d
+    inc ecx
+    jmp .query_copy
+.query_copy_done:
+    and r13d, RING_MASK
+    mov [rel query_write], r13d
+    cmp dword [rel query_paused], 0
+    jne .no_query
+    mov [rel query_view], r13d
+
+.no_query:
+    ; Read from DEBUG output (channel 2 output = socket index 5)
+    mov edi, 2                  ; logical channel 2
+    lea rsi, [rsp]
+    mov edx, 1024
+    call mcp_read_stream
+    test eax, eax
+    jz .no_debug
+
+    ; Append to debug_ring
+    mov r12d, eax
+    lea rsi, [rsp]
+    lea rdi, [rel debug_ring]
+    mov r13d, [rel debug_write]
+    xor ecx, ecx
+.debug_copy:
+    cmp ecx, r12d
+    jge .debug_copy_done
+    mov al, [rsi + rcx]
+    mov edx, r13d
+    and edx, RING_MASK
+    mov [rdi + rdx], al
+    inc r13d
+    inc ecx
+    jmp .debug_copy
+.debug_copy_done:
+    and r13d, RING_MASK
+    mov [rel debug_write], r13d
+    cmp dword [rel debug_paused], 0
+    jne .no_debug
+    mov [rel debug_view], r13d
+
+.no_debug:
+    add rsp, 1032
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
 ;; format_hex — Format number as hex string
 ;; eax = number, rdi = buffer
 ;; Returns length in eax
@@ -3185,96 +3402,177 @@ draw_input:
     ret
 
 ;; ============================================================
-;; draw_output — UHMA response panel (right side of canvas)
+;; draw_output — 3 live streaming panels (FEED, QUERY, DEBUG)
+;; Click to pause, release to resume live scrolling
 ;; ============================================================
 draw_output:
     push rbx
     push r12
     push r13
     push r14
-    sub rsp, 8
+    push r15
+    sub rsp, 72                  ; line buffer (64) + alignment (8)
 
-    ; Check if we have output to display
-    mov eax, [rel output_len]
-    test eax, eax
-    jz .output_done
+    ; Draw FEED panel
+    mov edi, OUT_PANEL_X
+    mov esi, OUT_FEED_Y
+    lea rdx, [rel lbl_feed]
+    lea rcx, [rel feed_ring]
+    mov r8d, [rel feed_view]
+    mov r9d, [rel feed_paused]
+    call draw_ring_panel
 
-    ; Panel position: right side of screen, below menu bar
-    mov r12d, WIN_W - 420        ; x (right side)
-    mov r13d, MENU_H + 10        ; y (below menu)
+    ; Draw QUERY panel
+    mov edi, OUT_PANEL_X
+    mov esi, OUT_QUERY_Y
+    lea rdx, [rel lbl_query]
+    lea rcx, [rel query_ring]
+    mov r8d, [rel query_view]
+    mov r9d, [rel query_paused]
+    call draw_ring_panel
+
+    ; Draw DEBUG panel
+    mov edi, OUT_PANEL_X
+    mov esi, OUT_DEBUG_Y
+    lea rdx, [rel lbl_debug]
+    lea rcx, [rel debug_ring]
+    mov r8d, [rel debug_view]
+    mov r9d, [rel debug_paused]
+    call draw_ring_panel
+
+    add rsp, 72
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; draw_ring_panel — Draw single streaming panel from ring buffer
+;; edi = x, esi = y, rdx = label, rcx = ring_buf, r8d = view_pos, r9d = paused
+;; ============================================================
+draw_ring_panel:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    push rbp
+    sub rsp, 88                  ; line buffer (64) + saved params (24)
+
+    mov r12d, edi               ; x
+    mov r13d, esi               ; y
+    mov [rsp + 64], rdx         ; label ptr
+    mov r14, rcx                ; ring buffer ptr
+    mov r15d, r8d               ; view position
+    mov ebp, r9d                ; paused flag
 
     ; Panel background
     mov edi, r12d
     mov esi, r13d
-    mov edx, 400
-    mov ecx, 300
+    mov edx, OUT_PANEL_W
+    mov ecx, OUT_PANEL_H
     mov r8d, 0x00151530          ; dark blue-gray
     call gfx_fill_rect
 
-    ; Panel border
+    ; Panel border (highlight if paused)
     mov edi, r12d
     mov esi, r13d
-    mov edx, 400
-    mov ecx, 300
+    mov edx, OUT_PANEL_W
+    mov ecx, OUT_PANEL_H
+    test ebp, ebp
+    jz .normal_border
+    mov r8d, 0x00FF8800          ; orange when paused
+    jmp .draw_border
+.normal_border:
     mov r8d, [rel col_border]
+.draw_border:
     call gfx_rect
 
     ; Panel title
     lea edi, [r12d + 10]
-    lea esi, [r13d + 18]
-    lea rdx, [rel lbl_output]
-    mov ecx, 11
+    lea esi, [r13d + 14]
+    mov rdx, [rsp + 64]         ; label ptr
+    mov ecx, 15
     mov r8d, [rel col_cyan]
     call gfx_text
 
-    ; Draw output text (first 10 lines, 60 chars each)
-    lea rbx, [rel output_buf]
-    lea r14d, [r13d + 35]        ; y start for text
-    mov ecx, 10                   ; max lines
+    ; Draw [PAUSED] indicator if paused
+    test ebp, ebp
+    jz .not_paused
+    lea edi, [r12d + OUT_PANEL_W - 80]
+    lea esi, [r13d + 14]
+    lea rdx, [rel lbl_paused]
+    mov ecx, 8
+    mov r8d, 0x00FF8800
+    call gfx_text
+.not_paused:
 
-.output_line:
-    push rcx
+    ; Draw ring buffer content (last ~10 lines before view_pos)
+    ; Work backwards from view_pos to find line starts
+    ; We'll display up to 10 lines, 40 chars each
+    ; Stack layout: [rsp+0..63]=line buffer, [rsp+72]=loop counter, [rsp+80]=char count
 
-    ; Check if we hit end of buffer
-    cmp byte [rbx], 0
-    je .output_lines_done
+    ; Calculate start position: go back ~400 chars from view_pos
+    mov eax, r15d               ; view_pos
+    sub eax, 400
+    and eax, RING_MASK          ; wrap
+    mov ebx, eax                ; scan_pos
 
-    ; Draw line
-    lea edi, [r12d + 10]
-    mov esi, r14d
-    mov rdx, rbx
-    mov ecx, 55                   ; max chars per line
+    mov eax, r13d
+    add eax, 30
+    mov r15d, eax               ; y for first line
+    mov dword [rsp + 72], 10    ; loop counter
+
+.scan_lines:
+    ; Copy one line from ring to stack buffer
+    lea rdi, [rsp]              ; line buffer
+    xor ecx, ecx                ; char count
+.copy_line:
+    cmp ecx, 40                 ; max chars per line
+    jge .line_done
+    mov eax, ebx
+    and eax, RING_MASK
+    movzx edx, byte [r14 + rax]
+    test dl, dl                 ; null?
+    jz .next_char
+    cmp dl, 10                  ; newline?
+    je .line_done
+    cmp dl, 13                  ; CR?
+    je .next_char
+    mov [rdi + rcx], dl
+    inc ecx
+.next_char:
+    inc ebx
+    jmp .copy_line
+
+.line_done:
+    mov byte [rdi + rcx], 0     ; null terminate
+    mov [rsp + 80], ecx         ; save char count
+    inc ebx                     ; skip newline
+
+    ; Draw line if not empty
+    test ecx, ecx
+    jz .skip_draw
+
+    mov edi, r12d
+    add edi, 10
+    mov esi, r15d
+    lea rdx, [rsp]              ; line buffer
+    mov ecx, [rsp + 80]         ; char count
     mov r8d, [rel col_text]
     call gfx_text
 
-    ; Find end of line or next 55 chars
-    xor ecx, ecx
-.find_line_end:
-    cmp ecx, 55
-    jge .line_break
-    cmp byte [rbx + rcx], 0
-    je .output_lines_done_pop
-    cmp byte [rbx + rcx], 10
-    je .newline_found
-    inc ecx
-    jmp .find_line_end
+    add r15d, 14                ; next line y
 
-.newline_found:
-    inc ecx                       ; skip newline
-.line_break:
-    add rbx, rcx
-    add r14d, 14                  ; next line y
+.skip_draw:
+    dec dword [rsp + 72]
+    jnz .scan_lines
 
-    pop rcx
-    dec ecx
-    jnz .output_line
-    jmp .output_done
-
-.output_lines_done_pop:
-    pop rcx
-.output_lines_done:
-.output_done:
-    add rsp, 8
+    add rsp, 88
+    pop rbp
+    pop r15
     pop r14
     pop r13
     pop r12
