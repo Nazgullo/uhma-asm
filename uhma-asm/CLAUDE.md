@@ -391,7 +391,7 @@ Pre-tool hooks automatically inject relevant context before Read/Edit/Write/Grep
 This prevents repeating past mistakes by surfacing gotchas at edit time.
 
 ### MCP Server (Claude Code Integration)
-For Claude Code only - spawns UHMA subprocess, communicates via stdin/stdout pipe.
+Pure x86-64 assembly MCP server (`tools/mcp_server`) - connects to UHMA via TCP.
 
 | Tool | Description |
 |------|-------------|
@@ -400,7 +400,7 @@ For Claude Code only - spawns UHMA subprocess, communicates via stdin/stdout pip
 | `why`, `misses`, `receipts` | Debug via unified trace |
 | `dream`, `observe`, `compact` | Trigger consolidation cycles |
 | `eat`, `save`, `load` | File I/O |
-| `web_fetch` | Fetch URL, optionally digest into UHMA |
+| `mem_add`, `mem_query` | Holographic memory |
 | `raw` | Escape hatch for any REPL command |
 
 **Config** (`PROJECT_ROOT/.mcp.json`):
@@ -408,13 +408,14 @@ For Claude Code only - spawns UHMA subprocess, communicates via stdin/stdout pip
 {
   "mcpServers": {
     "uhma": {
-      "command": "python3",
-      "args": ["tools/rag/server.py"],
+      "command": "/path/to/uhma-asm/tools/mcp_server",
       "cwd": "/path/to/uhma-asm"
     }
   }
 }
 ```
+**IMPORTANT**: UHMA must be running before MCP server starts (it connects to TCP ports 9997/9996).
+
 Restart Claude Code after changes. Verify with `/mcp`.
 
 **For GUI/external tools:** Use HTTP bridge or 6-channel TCP directly (see below).
@@ -604,23 +605,20 @@ Sessions auto-save every 30 minutes of activity.
 rm -f uhma.surface && ./uhma
 ```
 
-## Training with feed.sh
+## Training with feeder (Assembly)
 
-`feed.sh` is the universal training script that replaced 8 separate scripts.
+`tools/feeder` is the pure assembly training client that replaced the Python `feed.sh` script.
 
 ### Basic Usage
 ```bash
 # Single cycle through corpus
-./feed.sh --cycles 1 --pause 5
+./tools/feeder --corpus corpus/ --cycles 1 --pause 5
 
-# Infinite self-learning mode
-./feed.sh --mastery
+# Graceful shutdown
+./tools/feeder --shutdown
 
-# Preview without running
-./feed.sh --dry-run
-
-# Custom corpus and timing
-./feed.sh --corpus data/ --pause 10 --consolidate 15
+# Show help
+./tools/feeder --help
 ```
 
 ### Options
@@ -629,13 +627,9 @@ rm -f uhma.surface && ./uhma
 | `--corpus DIR` | corpus/ | Directory with .txt files |
 | `--pause N` | 5 | Seconds between files |
 | `--consolidate N` | 30 | Minutes between observe+dream |
-| `--save-every N` | 30 | Minutes between checkpoints |
-| `--order ORDER` | alpha | alpha/random/reverse |
-| `--cycles N` | 0 | Number of cycles (0=infinite) |
-| `--self-learn` | off | Feed UHMA's responses back |
-| `--mastery` | - | Alias for --cycles 0 --self-learn |
-| `--live` | off | Enter autonomous live mode after training |
-| `--live-pause N` | 10 | Seconds to wait for user input before live mode |
+| `--cycles N` | 1 | Number of cycles (0=infinite) |
+| `--spawn` | off | Spawn UHMA if not running |
+| `--shutdown` | - | Send save+quit to running UHMA |
 
 ### How It Works
 1. Starts **persistent drainers** for all 3 output ports (9998, 9996, 9994)

@@ -1,9 +1,7 @@
 {
   "mcpServers": {
     "uhma": {
-      "command": "/home/peter/Desktop/STARWARS/uhma-asm/.venv/bin/python3",
-      "env": {"PYTHONUNBUFFERED": "1"},
-      "args": ["/home/peter/Desktop/STARWARS/uhma-asm/tools/rag/server.py"],
+      "command": "/home/peter/Desktop/STARWARS/uhma-asm/tools/mcp_server",
       "cwd": "/home/peter/Desktop/STARWARS/uhma-asm"
     }
   }

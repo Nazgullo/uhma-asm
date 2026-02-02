@@ -56,6 +56,10 @@ section .data
                     db "  save <file>   Save surface to file", 10
                     db "  load <file>   Restore surface from file", 10
                     db "  eat <file>    Digest file as food (extract tokens, gain energy)", 10
+                    db "  mem_add CAT   Add to holographic memory (CAT: finding/warning/etc)", 10
+                    db "  mem_query Q   Query holographic memory by similarity", 10
+                    db "  mem_recent    Show recent memory entries", 10
+                    db "  mem_state     Show memory cognitive state", 10
                     db "  hive          Show hive pheromone levels (swarm intelligence)", 10
                     db "  share         Enable shared VSA (Mycorrhiza collective consciousness)", 10
                     db "  colony        Show colony status (hive mind instances)", 10
@@ -190,6 +194,12 @@ extern channels_respond       ; from channels.asm - write to paired output chann
 extern get_channel_fd         ; from channels.asm - get socket fd for channel
 extern set_output_channel     ; from format.asm - route output to channel
 extern reset_output_channel   ; from format.asm - reset to stdout
+extern holo_mem_init          ; from holo_mem.asm - init holographic memory
+extern holo_mem_add           ; from holo_mem.asm - add entry
+extern holo_mem_query         ; from holo_mem.asm - semantic query
+extern holo_mem_recent        ; from holo_mem.asm - show recent entries
+extern holo_mem_state         ; from holo_mem.asm - show cognitive state
+extern holo_mem_summary       ; from holo_mem.asm - show summary stats
 
 ;; ============================================================
 ;; repl_run
@@ -726,6 +736,62 @@ repl_run:
     jmp .not_intro
 .not_intro:
 
+    ; "mem_add" (7-char match: m-e-m-_-a-d-d) - holographic memory add
+    cmp dword [rbx], 'mem_'
+    jne .not_mem
+    cmp word [rbx + 4], 'ad'
+    jne .not_mem_add
+    cmp byte [rbx + 6], 'd'
+    jne .not_mem_add
+    cmp byte [rbx + 7], ' '
+    jne .not_mem_add
+    jmp .cmd_mem_add
+.not_mem_add:
+
+    ; "mem_query" (9-char match: m-e-m-_-q-u-e-r-y)
+    cmp dword [rbx + 4], 'quer'
+    jne .not_mem_query
+    cmp byte [rbx + 8], 'y'
+    jne .not_mem_query
+    cmp byte [rbx + 9], ' '
+    jne .not_mem_query
+    jmp .cmd_mem_query
+.not_mem_query:
+
+    ; "mem_recent" (10-char match)
+    cmp dword [rbx + 4], 'rece'
+    jne .not_mem_recent
+    cmp word [rbx + 8], 'nt'
+    jne .not_mem_recent
+    movzx eax, byte [rbx + 10]
+    test eax, eax
+    jz .cmd_mem_recent
+    cmp eax, ' '
+    je .cmd_mem_recent
+    jmp .not_mem_recent
+.not_mem_recent:
+
+    ; "mem_state" (9-char match)
+    cmp dword [rbx + 4], 'stat'
+    jne .not_mem_state
+    cmp byte [rbx + 8], 'e'
+    jne .not_mem_state
+    movzx eax, byte [rbx + 9]
+    test eax, eax
+    jz .cmd_mem_state
+    cmp eax, ' '
+    je .cmd_mem_state
+    jmp .not_mem_state
+.not_mem_state:
+
+    ; "mem_summary" (11-char match)
+    cmp dword [rbx + 4], 'summ'
+    jne .not_mem
+    cmp dword [rbx + 8], 'ary'
+    jne .not_mem
+    jmp .cmd_mem_summary
+.not_mem:
+
     ; Not a command → process as text input
     ; Compute string length (rbx is null-terminated)
     mov rdi, rbx
@@ -1046,6 +1112,44 @@ repl_run:
     call receipt_listen
     lea rdi, [rel listen_enabled_msg]
     call print_cstr
+    jmp .loop
+
+.cmd_mem_add:
+    ; Parse: mem_add <category> <content>
+    ; rbx points to "mem_add <category> <content>"
+    lea rdi, [rbx + 8]        ; skip "mem_add "
+    ; Parse category (single word before space)
+    call parse_mem_category   ; returns eax = category number, rdi advanced
+    push rax                  ; save category
+    ; rdi now points to content
+    mov rsi, rdi              ; content
+    xor edx, edx              ; no context
+    xor ecx, ecx              ; no source
+    pop rdi                   ; category
+    call holo_mem_add
+    jmp .loop
+
+.cmd_mem_query:
+    ; Parse: mem_query <query string>
+    lea rdi, [rbx + 10]       ; skip "mem_query "
+    mov esi, 10               ; limit
+    call holo_mem_query
+    jmp .loop
+
+.cmd_mem_recent:
+    ; Show recent entries
+    mov edi, 10               ; default limit
+    call holo_mem_recent
+    jmp .loop
+
+.cmd_mem_state:
+    ; Show cognitive state
+    call holo_mem_state
+    jmp .loop
+
+.cmd_mem_summary:
+    ; Show summary
+    call holo_mem_summary
     jmp .loop
 
 .quit:
@@ -1526,6 +1630,112 @@ parse_decimal:
     inc rdi
     jmp .parse_loop
 .parse_done:
+    ret
+
+;; ============================================================
+;; parse_mem_category — Parse memory category name
+;; rdi = string starting with category name
+;; Returns: eax = category number (0-9), rdi advanced past category and space
+;; ============================================================
+parse_mem_category:
+    push rbx
+    mov rbx, rdi
+
+    ; Check known category names
+    ; "finding" (7 chars)
+    cmp dword [rbx], 'find'
+    jne .not_finding
+    cmp word [rbx + 4], 'in'
+    jne .not_finding
+    cmp byte [rbx + 6], 'g'
+    jne .not_finding
+    mov eax, 0                ; CAT_FINDING
+    add rdi, 8                ; skip "finding "
+    jmp .cat_done
+.not_finding:
+
+    ; "failed" (6 chars)
+    cmp dword [rbx], 'fail'
+    jne .not_failed
+    cmp word [rbx + 4], 'ed'
+    jne .not_failed
+    mov eax, 1                ; CAT_FAILED
+    add rdi, 7                ; skip "failed "
+    jmp .cat_done
+.not_failed:
+
+    ; "success" (7 chars)
+    cmp dword [rbx], 'succ'
+    jne .not_success
+    cmp word [rbx + 4], 'es'
+    jne .not_success
+    cmp byte [rbx + 6], 's'
+    jne .not_success
+    mov eax, 2                ; CAT_SUCCESS
+    add rdi, 8                ; skip "success "
+    jmp .cat_done
+.not_success:
+
+    ; "insight" (7 chars)
+    cmp dword [rbx], 'insi'
+    jne .not_insight
+    cmp word [rbx + 4], 'gh'
+    jne .not_insight
+    cmp byte [rbx + 6], 't'
+    jne .not_insight
+    mov eax, 3                ; CAT_INSIGHT
+    add rdi, 8                ; skip "insight "
+    jmp .cat_done
+.not_insight:
+
+    ; "warning" (7 chars)
+    cmp dword [rbx], 'warn'
+    jne .not_warning
+    cmp word [rbx + 4], 'in'
+    jne .not_warning
+    cmp byte [rbx + 6], 'g'
+    jne .not_warning
+    mov eax, 4                ; CAT_WARNING
+    add rdi, 8                ; skip "warning "
+    jmp .cat_done
+.not_warning:
+
+    ; "session" (7 chars)
+    cmp dword [rbx], 'sess'
+    jne .not_session
+    cmp word [rbx + 4], 'io'
+    jne .not_session
+    cmp byte [rbx + 6], 'n'
+    jne .not_session
+    mov eax, 5                ; CAT_SESSION
+    add rdi, 8                ; skip "session "
+    jmp .cat_done
+.not_session:
+
+    ; "todo" (4 chars)
+    cmp dword [rbx], 'todo'
+    jne .not_todo
+    mov eax, 8                ; CAT_TODO
+    add rdi, 5                ; skip "todo "
+    jmp .cat_done
+.not_todo:
+
+    ; Default: finding
+    mov eax, 0
+    ; Advance past unknown word
+.skip_word:
+    mov cl, [rdi]
+    test cl, cl
+    jz .cat_done
+    cmp cl, ' '
+    je .skip_space
+    inc rdi
+    jmp .skip_word
+.skip_space:
+    inc rdi
+
+.cat_done:
+    pop rbx
     ret
 
 ;; ============================================================

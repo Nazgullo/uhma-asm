@@ -88,6 +88,11 @@ section .data
     btn_feed:       db "FEED", 0
     btn_stop:       db "STOP", 0
 
+    ; MCP commands for node clicks
+    cmd_status:     db "status", 0
+    cmd_intro:      db "intro", 0
+    cmd_hive:       db "hive", 0
+
     ; New feature labels
     lbl_rosetta:    db "ROSETTA STONE", 0
     lbl_hive:       db "HIVE MIND (Pheromones)", 0
@@ -1142,9 +1147,41 @@ handle_click:
     ; Node clicked! ecx = node index
     cmp ecx, NODE_BRAIN
     je .click_brain
-    ; For other nodes, start expand animation
+    ; For other nodes, start expand animation and send relevant command
+    push rcx
     mov edi, ecx
     call start_expand_anim
+    pop rcx
+    ; Send MCP command based on node type
+    cmp ecx, NODE_REGIONS
+    je .send_status
+    cmp ecx, NODE_TOKENS
+    je .send_status
+    cmp ecx, NODE_STATE
+    je .send_intro
+    cmp ecx, NODE_PREDICT
+    je .send_status
+    cmp ecx, NODE_DISPATCH
+    je .send_status
+    cmp ecx, NODE_ACCURACY
+    je .send_status
+    cmp ecx, NODE_HIVE
+    je .send_hive
+    jmp .done_click
+.send_status:
+    lea rdi, [rel cmd_status]
+    xor esi, esi
+    call mcp_call
+    jmp .done_click
+.send_intro:
+    lea rdi, [rel cmd_intro]
+    xor esi, esi
+    call mcp_call
+    jmp .done_click
+.send_hive:
+    lea rdi, [rel cmd_hive]
+    xor esi, esi
+    call mcp_call
     jmp .done_click
 
 .click_brain:
@@ -2965,22 +3002,11 @@ draw_mindmap:
     mov ecx, 7
     mov r8d, [rel col_cyan]
     call gfx_text
-    ; Region count
+    ; Draw query_ring content (status response)
     lea edi, [r12d - 180]
     lea esi, [r13d - 100]
-    lea rdx, [rel lbl_regions]
-    mov ecx, 9
-    mov r8d, [rel col_text]
-    call gfx_text
-    mov eax, [rbx + STATE_OFFSET + ST_REGION_COUNT]
-    lea rdi, [rsp]
-    call format_num
-    lea edi, [r12d - 90]
-    lea esi, [r13d - 100]
-    lea rdx, [rsp]
-    mov ecx, eax
-    mov r8d, [rel col_green]
-    call gfx_text
+    mov edx, 12                  ; max lines
+    call draw_query_lines
     jmp .done
 
 .focus_tokens:
@@ -2991,38 +3017,11 @@ draw_mindmap:
     mov ecx, 6
     mov r8d, [rel col_cyan]
     call gfx_text
-    ; Total tokens
+    ; Draw query_ring content
     lea edi, [r12d - 180]
     lea esi, [r13d - 100]
-    lea rdx, [rel lbl_tokens]
-    mov ecx, 8
-    mov r8d, [rel col_text]
-    call gfx_text
-    mov eax, [rbx + STATE_OFFSET + ST_TOKEN_COUNT]
-    lea rdi, [rsp]
-    call format_num
-    lea edi, [r12d - 90]
-    lea esi, [r13d - 100]
-    lea rdx, [rsp]
-    mov ecx, eax
-    mov r8d, [rel col_green]
-    call gfx_text
-    ; Unique tokens
-    lea edi, [r12d - 180]
-    lea esi, [r13d - 70]
-    lea rdx, [rel lbl_unique]
-    mov ecx, 8
-    mov r8d, [rel col_text]
-    call gfx_text
-    mov eax, [rbx + STATE_OFFSET + ST_UNIQUE_TOKENS]
-    lea rdi, [rsp]
-    call format_num
-    lea edi, [r12d - 90]
-    lea esi, [r13d - 70]
-    lea rdx, [rsp]
-    mov ecx, eax
-    mov r8d, [rel col_green]
-    call gfx_text
+    mov edx, 12
+    call draw_query_lines
     jmp .done
 
 .focus_state:
@@ -3033,19 +3032,11 @@ draw_mindmap:
     mov ecx, 5
     mov r8d, [rel col_cyan]
     call gfx_text
-    ; State name
-    mov eax, [rbx + STATE_OFFSET + ST_INTRO_STATE]
-    cmp eax, 7
-    jl .fs_ok
-    xor eax, eax
-.fs_ok:
-    lea rcx, [rel intro_names]
-    mov rdx, [rcx + rax * 8]
+    ; Draw query_ring content (intro response)
     lea edi, [r12d - 180]
     lea esi, [r13d - 100]
-    mov ecx, 15
-    mov r8d, [rel col_green]
-    call gfx_text
+    mov edx, 12
+    call draw_query_lines
     jmp .done
 
 .focus_predict:
@@ -3056,16 +3047,11 @@ draw_mindmap:
     mov ecx, 7
     mov r8d, [rel col_cyan]
     call gfx_text
-    ; Last prediction
-    mov eax, [rbx + STATE_OFFSET + ST_LAST_PREDICT]
-    lea rdi, [rsp]
-    call format_hex
+    ; Draw query_ring content
     lea edi, [r12d - 180]
     lea esi, [r13d - 100]
-    lea rdx, [rsp]
-    mov ecx, eax
-    mov r8d, [rel col_yellow]
-    call gfx_text
+    mov edx, 12
+    call draw_query_lines
     jmp .done
 
 .focus_dispatch:
@@ -3076,19 +3062,11 @@ draw_mindmap:
     mov ecx, 8
     mov r8d, [rel col_cyan]
     call gfx_text
-    ; Mode name
-    mov eax, [rbx + STATE_OFFSET + ST_DISPATCH_MODE]
-    cmp eax, 8
-    jl .fd_ok
-    xor eax, eax
-.fd_ok:
-    lea rcx, [rel mode_names]
-    mov rdx, [rcx + rax * 8]
+    ; Draw query_ring content
     lea edi, [r12d - 180]
     lea esi, [r13d - 100]
-    mov ecx, 15
-    mov r8d, [rel col_yellow]
-    call gfx_text
+    mov edx, 12
+    call draw_query_lines
     jmp .done
 
 .focus_accuracy:
@@ -3099,38 +3077,11 @@ draw_mindmap:
     mov ecx, 8
     mov r8d, [rel col_cyan]
     call gfx_text
-    ; Hits
+    ; Draw query_ring content (status response)
     lea edi, [r12d - 180]
     lea esi, [r13d - 100]
-    lea rdx, [rel lbl_rgn_hits]
-    mov ecx, 6
-    mov r8d, [rel col_text]
-    call gfx_text
-    mov eax, [rbx + STATE_OFFSET + ST_SELF_PRED_HITS]
-    lea rdi, [rsp]
-    call format_num
-    lea edi, [r12d - 110]
-    lea esi, [r13d - 100]
-    lea rdx, [rsp]
-    mov ecx, eax
-    mov r8d, [rel col_green]
-    call gfx_text
-    ; Misses
-    lea edi, [r12d - 180]
-    lea esi, [r13d - 70]
-    lea rdx, [rel lbl_rgn_miss]
-    mov ecx, 6
-    mov r8d, [rel col_text]
-    call gfx_text
-    mov eax, [rbx + STATE_OFFSET + ST_SELF_PRED_MISSES]
-    lea rdi, [rsp]
-    call format_num
-    lea edi, [r12d - 110]
-    lea esi, [r13d - 70]
-    lea rdx, [rsp]
-    mov ecx, eax
-    mov r8d, [rel col_red]
-    call gfx_text
+    mov edx, 12
+    call draw_query_lines
     jmp .done
 
 .focus_hive:
@@ -3138,29 +3089,141 @@ draw_mindmap:
     lea edi, [r12d - 180]
     lea esi, [r13d - 130]
     lea rdx, [rel lbl_hive]
-    mov ecx, 20
+    mov ecx, 4
     mov r8d, [rel col_yellow]
     call gfx_text
-    ; Dream pressure
+    ; Draw query_ring content (hive response)
     lea edi, [r12d - 180]
     lea esi, [r13d - 100]
-    lea rdx, [rel lbl_dream_p]
-    mov ecx, 7
-    mov r8d, [rel col_text]
-    call gfx_text
+    mov edx, 12
+    call draw_query_lines
     jmp .done
 
 .focus_generic:
-    ; Generic: just show "EXPANDED VIEW"
-    lea edi, [r12d - 130]
-    lea esi, [r13d - 70]
+    ; Title
+    lea edi, [r12d - 180]
+    lea esi, [r13d - 130]
     lea rdx, [rel detail_expanded]
-    mov ecx, 15
+    mov ecx, 13
     mov r8d, [rel col_cyan]
     call gfx_text
+    ; Draw query_ring content
+    lea edi, [r12d - 180]
+    lea esi, [r13d - 100]
+    mov edx, 12
+    call draw_query_lines
 
 .done:
     add rsp, 40
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    pop rbp
+    ret
+
+;; ============================================================
+;; draw_query_lines — Draw lines from query_ring in expanded panel
+;; Args: edi=x, esi=y (top-left), edx=max_lines
+;; Uses query_ring content starting from view position
+;; ============================================================
+draw_query_lines:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 88                  ; line buffer (80) + alignment
+
+    ; Stack layout:
+    ; [rsp+0..79]  = line buffer (80 bytes)
+    ; [rsp+80]     = saved char count (8 bytes)
+
+    mov r12d, edi                ; x position
+    mov r13d, esi                ; y position (will increment)
+    mov r14d, edx                ; max lines
+
+    ; Get view position into ring
+    mov r15d, [rel query_write]
+    sub r15d, 2048               ; show last ~2K of data
+    jns .dql_pos_ok
+    xor r15d, r15d               ; clamp to 0
+.dql_pos_ok:
+
+    ; Loop through lines
+    xor ebx, ebx                 ; line counter
+.dql_line_loop:
+    cmp ebx, r14d
+    jge .dql_lines_done
+
+    ; Copy one line from ring to stack buffer
+    lea rdi, [rsp]               ; dest = stack buffer
+    lea rsi, [rel query_ring]    ; ring base
+    mov ecx, 48                  ; max chars per line (panel width)
+    xor edx, edx                 ; char count
+
+.dql_copy_char:
+    cmp edx, ecx
+    jge .dql_line_ready
+
+    mov eax, r15d
+    and eax, RING_MASK
+    movzx eax, byte [rsi + rax]
+
+    ; Stop on newline
+    cmp al, 10
+    je .dql_found_newline
+    cmp al, 13
+    je .dql_found_newline
+    cmp al, 0
+    je .dql_skip_null
+
+    ; Store char
+    mov [rdi + rdx], al
+    inc edx
+    inc r15d
+    jmp .dql_copy_char
+
+.dql_skip_null:
+    inc r15d
+    jmp .dql_copy_char
+
+.dql_found_newline:
+    inc r15d                     ; skip newline
+
+.dql_line_ready:
+    ; Null terminate
+    mov byte [rdi + rdx], 0
+
+    ; Skip empty lines
+    test edx, edx
+    jz .dql_next_line
+
+    ; Save char count to stack slot (avoid push/pop to keep alignment)
+    mov [rsp + 80], edx
+
+    ; Draw the line
+    mov edi, r12d
+    mov esi, r13d
+    lea rdx, [rsp]               ; line buffer
+    mov ecx, [rsp + 80]          ; char count
+    mov r8d, [rel col_text]
+    call gfx_text
+
+    ; Next line
+    add r13d, 18                 ; line height
+    inc ebx
+    jmp .dql_line_loop
+
+.dql_next_line:
+    inc ebx
+    jmp .dql_line_loop
+
+.dql_lines_done:
+    add rsp, 88
     pop r15
     pop r14
     pop r13
@@ -3411,7 +3474,8 @@ draw_output:
     push r13
     push r14
     push r15
-    sub rsp, 8                   ; align stack (5 pushes = 40, need 8 more for 16-byte alignment)
+    push rbp                     ; 6 pushes = 48, entry was 16n-8, now 16n-56 -> need sub 8
+    sub rsp, 8                   ; align: 16n-64 = 16(n-4) aligned
 
     ; Draw FEED panel
     mov edi, OUT_PANEL_X
@@ -3441,6 +3505,7 @@ draw_output:
     call draw_ring_panel
 
     add rsp, 8
+    pop rbp
     pop r15
     pop r14
     pop r13

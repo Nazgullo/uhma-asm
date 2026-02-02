@@ -109,6 +109,9 @@ section .data
     cmd_hive:       db "hive", 10, 0
     cmd_colony:     db "colony", 10, 0
     cmd_misses:     db "misses ", 0
+    cmd_mem_add:    db "mem_add ", 0
+    cmd_mem_query:  db "mem_query ", 0
+    cmd_mem_state:  db "mem_state", 10, 0
 
     ; Ports
     QUERY_IN:       equ 9997
@@ -152,6 +155,8 @@ section .bss
     req_name:       resq 1          ; pointer to tool name
     req_text:       resq 1          ; pointer to text argument
     req_command:    resq 1          ; pointer to command argument
+    req_category:   resq 1          ; pointer to category argument
+    req_content:    resq 1          ; pointer to content argument
     req_n:          resd 1          ; numeric argument
 
     ; Socket fds
@@ -371,6 +376,8 @@ parse_request:
     mov qword [rel req_name], 0
     mov qword [rel req_text], 0
     mov qword [rel req_command], 0
+    mov qword [rel req_category], 0
+    mov qword [rel req_content], 0
     mov dword [rel req_n], 10
 
     lea rbx, [rel read_buf]
@@ -463,9 +470,27 @@ parse_request:
     mov rsi, rbx
     call find_pattern
     test rax, rax
-    jz .try_n
+    jz .try_category
     add rax, 9              ; skip "query":"
     mov [rel req_text], rax
+
+.try_category:
+    lea rdi, [rel pat_category]
+    mov rsi, rbx
+    call find_pattern
+    test rax, rax
+    jz .try_content
+    add rax, 12             ; skip "category":"
+    mov [rel req_category], rax
+
+.try_content:
+    lea rdi, [rel pat_content]
+    mov rsi, rbx
+    call find_pattern
+    test rax, rax
+    jz .try_n
+    add rax, 11             ; skip "content":"
+    mov [rel req_content], rax
 
 .try_n:
     lea rdi, [rel pat_n]
@@ -597,6 +622,20 @@ dispatch_request:
     test eax, eax
     jnz .do_drives
 
+    ; mem_add
+    lea rdi, [rel tool_mem_add]
+    mov rsi, rbx
+    call match_tool_name
+    test eax, eax
+    jnz .do_mem_add
+
+    ; mem_query
+    lea rdi, [rel tool_mem_query]
+    mov rsi, rbx
+    call match_tool_name
+    test eax, eax
+    jnz .do_mem_query
+
     ; Unknown tool - return error
     jmp .dispatch_unknown
 
@@ -696,6 +735,81 @@ dispatch_request:
 .add_n:
     mov eax, [rel req_n]
     call itoa
+    mov byte [rdi], 10
+    mov byte [rdi + 1], 0
+    lea rsi, [rel send_buf]
+    call uhma_command
+    jmp .dispatch_ret
+
+.do_mem_add:
+    ; Build "mem_add <category> <content>" command
+    lea rdi, [rel send_buf]
+    lea rsi, [rel cmd_mem_add]
+.copy_mem_add:
+    lodsb
+    test al, al
+    jz .add_cat
+    stosb
+    jmp .copy_mem_add
+.add_cat:
+    ; Copy category (up to quote)
+    mov rsi, [rel req_category]
+    test rsi, rsi
+    jz .add_space
+.copy_cat:
+    lodsb
+    cmp al, '"'
+    je .add_space
+    test al, al
+    jz .add_space
+    stosb
+    jmp .copy_cat
+.add_space:
+    mov byte [rdi], ' '
+    inc rdi
+    ; Copy content (up to quote)
+    mov rsi, [rel req_content]
+    test rsi, rsi
+    jz .finish_mem_add
+.copy_content:
+    lodsb
+    cmp al, '"'
+    je .finish_mem_add
+    test al, al
+    jz .finish_mem_add
+    stosb
+    jmp .copy_content
+.finish_mem_add:
+    mov byte [rdi], 10
+    mov byte [rdi + 1], 0
+    lea rsi, [rel send_buf]
+    call uhma_command
+    jmp .dispatch_ret
+
+.do_mem_query:
+    ; Build "mem_query <query>" command
+    lea rdi, [rel send_buf]
+    lea rsi, [rel cmd_mem_query]
+.copy_mem_query:
+    lodsb
+    test al, al
+    jz .add_query
+    stosb
+    jmp .copy_mem_query
+.add_query:
+    ; Copy query text (from req_text which holds "query" value)
+    mov rsi, [rel req_text]
+    test rsi, rsi
+    jz .finish_mem_query
+.copy_query:
+    lodsb
+    cmp al, '"'
+    je .finish_mem_query
+    test al, al
+    jz .finish_mem_query
+    stosb
+    jmp .copy_query
+.finish_mem_query:
     mov byte [rdi], 10
     mov byte [rdi + 1], 0
     lea rsi, [rel send_buf]
