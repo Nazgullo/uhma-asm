@@ -92,6 +92,15 @@ section .data
     cmd_status:     db "status", 0
     cmd_intro:      db "intro", 0
     cmd_hive:       db "hive", 0
+    cmd_regions:    db "regions", 0
+    cmd_receipts:   db "receipts 10", 0
+    cmd_metacog:    db "metacog", 0
+    cmd_drives:     db "drives", 0
+    cmd_presence:   db "presence", 0
+    cmd_self:       db "self", 0
+    cmd_geom:       db "geom", 0
+    cmd_colony:     db "colony", 0
+    cmd_genes:      db "genes", 0
 
     ; New feature labels
     lbl_rosetta:    db "ROSETTA STONE", 0
@@ -1152,24 +1161,35 @@ handle_click:
     mov edi, ecx
     call start_expand_anim
     pop rcx
-    ; Send MCP command based on node type
+    ; Send MCP command based on node type (each node gets unique data)
     cmp ecx, NODE_REGIONS
-    je .send_status
+    je .send_regions
     cmp ecx, NODE_TOKENS
-    je .send_status
+    je .send_receipts
     cmp ecx, NODE_STATE
     je .send_intro
     cmp ecx, NODE_PREDICT
-    je .send_status
+    je .send_metacog
     cmp ecx, NODE_DISPATCH
-    je .send_status
+    je .send_drives
     cmp ecx, NODE_ACCURACY
-    je .send_status
+    je .send_presence
     cmp ecx, NODE_HIVE
     je .send_hive
+    cmp ecx, NODE_ROSETTA
+    je .send_geom
+    cmp ecx, NODE_SPORE
+    je .send_genes
+    cmp ecx, NODE_MYCO
+    je .send_colony
     jmp .done_click
-.send_status:
-    lea rdi, [rel cmd_status]
+.send_regions:
+    lea rdi, [rel cmd_regions]
+    xor esi, esi
+    call mcp_call
+    jmp .done_click
+.send_receipts:
+    lea rdi, [rel cmd_receipts]
     xor esi, esi
     call mcp_call
     jmp .done_click
@@ -1178,8 +1198,48 @@ handle_click:
     xor esi, esi
     call mcp_call
     jmp .done_click
+.send_metacog:
+    lea rdi, [rel cmd_metacog]
+    xor esi, esi
+    call mcp_call
+    jmp .done_click
+.send_drives:
+    lea rdi, [rel cmd_drives]
+    xor esi, esi
+    call mcp_call
+    jmp .done_click
+.send_presence:
+    lea rdi, [rel cmd_presence]
+    xor esi, esi
+    call mcp_call
+    jmp .done_click
 .send_hive:
     lea rdi, [rel cmd_hive]
+    xor esi, esi
+    call mcp_call
+    jmp .done_click
+.send_self:
+    lea rdi, [rel cmd_self]
+    xor esi, esi
+    call mcp_call
+    jmp .done_click
+.send_status:
+    lea rdi, [rel cmd_status]
+    xor esi, esi
+    call mcp_call
+    jmp .done_click
+.send_geom:
+    lea rdi, [rel cmd_geom]
+    xor esi, esi
+    call mcp_call
+    jmp .done_click
+.send_colony:
+    lea rdi, [rel cmd_colony]
+    xor esi, esi
+    call mcp_call
+    jmp .done_click
+.send_genes:
+    lea rdi, [rel cmd_genes]
     xor esi, esi
     call mcp_call
     jmp .done_click
@@ -1187,6 +1247,11 @@ handle_click:
 .click_brain:
     ; BRAIN node - switch to brain/memory view
     mov dword [rel view_mode], 1
+    ; Clear query_ring and send regions command
+    mov dword [rel query_write], 0
+    lea rdi, [rel cmd_regions]
+    xor esi, esi
+    call mcp_call
     jmp .done_click
 
 .next_node:
@@ -1195,31 +1260,8 @@ handle_click:
     jmp .node_loop
 
 .in_brain_view:
-    ; === BRAIN VIEW: Check for region clicks or back ===
-    ; Check if in memory map grid area
-    mov eax, [rel map_x]
-    cmp r12d, eax
-    jl .back_to_mindmap
-    add eax, MAP_W
-    cmp r12d, eax
-    jge .back_to_mindmap
-
-    mov eax, [rel map_y]
-    cmp r13d, eax
-    jl .back_to_mindmap
-    add eax, MAP_H
-    cmp r13d, eax
-    jge .back_to_mindmap
-
-    ; Click in memory map - find which region
-    call find_clicked_region
-    mov [rel selected_rgn], eax
-    jmp .done_click
-
-.back_to_mindmap:
-    ; Click outside map - go back to mindmap
+    ; === BRAIN VIEW: Click anywhere to go back to mindmap ===
     mov dword [rel view_mode], 0
-    mov dword [rel selected_rgn], -1
 
 .done_click:
     mov eax, 1
@@ -2688,10 +2730,26 @@ draw_mindmap:
     jmp .done
 
 .draw_brain_view:
-    ; === BRAIN VIEW: Memory map grid showing all regions ===
+    ; === BRAIN VIEW: Display regions command output ===
+    ; Draw panel background
+    mov edi, CANVAS_X + 10
+    mov esi, CANVAS_Y + 10
+    mov edx, CANVAS_W - 20
+    mov ecx, CANVAS_H - 20
+    mov r8d, [rel col_panel_hi]
+    call gfx_fill_rect
+
+    ; Border
+    mov edi, CANVAS_X + 10
+    mov esi, CANVAS_Y + 10
+    mov edx, CANVAS_W - 20
+    mov ecx, CANVAS_H - 20
+    mov r8d, [rel col_cyan]
+    call gfx_rect
+
     ; Title
-    mov edi, CANVAS_X + 20
-    mov esi, CANVAS_Y + 25
+    mov edi, CANVAS_X + 30
+    mov esi, CANVAS_Y + 35
     lea rdx, [rel lbl_memory]
     mov ecx, 10
     mov r8d, [rel col_magenta]
@@ -2699,187 +2757,17 @@ draw_mindmap:
 
     ; Back hint
     mov edi, CANVAS_X + CANVAS_W - 200
-    mov esi, CANVAS_Y + 25
+    mov esi, CANVAS_Y + 35
     lea rdx, [rel hint_back]
     mov ecx, 25
     mov r8d, [rel col_text_dim]
     call gfx_text
 
-    ; Get region count
-    mov eax, [rbx + STATE_OFFSET + ST_REGION_COUNT]
-    test eax, eax
-    jz .brain_empty
-    mov [rsp + 32], eax         ; save region count
-
-    ; Calculate grid dimensions
-    ; sqrt approximation: find n where n*n >= count
-    mov ecx, 1
-.find_dim:
-    mov eax, ecx
-    imul eax, ecx
-    cmp eax, [rsp + 32]
-    jge .dim_found
-    inc ecx
-    cmp ecx, 20
-    jl .find_dim
-.dim_found:
-    mov [rel map_grid_dim], ecx
-
-    ; Calculate cell size
-    mov eax, CANVAS_W - 40
-    xor edx, edx
-    div ecx
-    mov [rel map_cell_w], eax
-
-    mov eax, CANVAS_H - 80
-    xor edx, edx
-    div ecx
-    mov [rel map_cell_h], eax
-
-    ; Set map position for click detection
-    mov dword [rel map_x], CANVAS_X + 20
-    mov dword [rel map_y], CANVAS_Y + 50
-    mov eax, CANVAS_X + 20
-    mov [rel map_grid_x], eax
-    mov eax, CANVAS_Y + 50
-    mov [rel map_grid_y], eax
-
-    ; Draw grid of regions
-    xor r12d, r12d              ; region index
-    mov r13d, CANVAS_Y + 50     ; current y
-    mov r14d, [rel map_grid_dim] ; grid dim
-
-.brain_row:
-    mov r15d, CANVAS_X + 20     ; current x
-    xor ecx, ecx                ; col counter
-
-.brain_col:
-    cmp r12d, [rsp + 32]        ; check if past region count
-    jge .brain_grid_done
-
-    push rcx
-
-    ; Get region table entry pointer
-    mov rdi, REGION_TABLE_OFFSET
-    mov eax, r12d
-    imul eax, RTE_SIZE
-    add rdi, rax
-
-    ; Get region type for color
-    movzx eax, word [rdi + RTE_TYPE]
-    mov r8d, [rel col_panel]    ; default
-
-    cmp eax, 0                  ; DISPATCH
-    jne .not_dispatch_col
-    mov r8d, [rel col_dispatch]
-    jmp .got_color
-.not_dispatch_col:
-    cmp eax, 1                  ; VSA
-    jne .not_vsa_col
-    mov r8d, [rel col_cyan]
-    jmp .got_color
-.not_vsa_col:
-    cmp eax, 2                  ; MODIFIER
-    jne .not_mod_col
-    mov r8d, [rel col_yellow]
-    jmp .got_color
-.not_mod_col:
-    cmp eax, 3                  ; OBSERVER
-    jne .not_obs_col
-    mov r8d, [rel col_green]
-    jmp .got_color
-.not_obs_col:
-    cmp eax, 4                  ; EMITTER
-    jne .not_emit_col
-    mov r8d, [rel col_orange]
-    jmp .got_color
-.not_emit_col:
-    cmp eax, 7                  ; DREAM
-    jne .got_color
-    mov r8d, [rel col_magenta]
-
-.got_color:
-    ; Check if selected
-    cmp r12d, [rel selected_rgn]
-    jne .not_selected
-    mov r8d, [rel col_white]
-.not_selected:
-
-    ; Draw cell
-    mov edi, r15d
-    mov esi, r13d
-    mov edx, [rel map_cell_w]
-    sub edx, 2
-    mov ecx, [rel map_cell_h]
-    sub ecx, 2
-    call gfx_fill_rect
-
-    ; Border
-    mov edi, r15d
-    mov esi, r13d
-    mov edx, [rel map_cell_w]
-    sub edx, 2
-    mov ecx, [rel map_cell_h]
-    sub ecx, 2
-    mov r8d, [rel col_border]
-    call gfx_rect
-
-    pop rcx
-
-    ; Next cell
-    inc r12d
-    add r15d, [rel map_cell_w]
-    inc ecx
-    cmp ecx, r14d
-    jl .brain_col
-
-    ; Next row
-    add r13d, [rel map_cell_h]
-    mov eax, r12d
-    xor edx, edx
-    div r14d
-    cmp eax, r14d
-    jl .brain_row
-
-.brain_grid_done:
-    ; Draw selected region info if any
-    mov eax, [rel selected_rgn]
-    cmp eax, -1
-    je .brain_no_sel
-
-    ; Show region details on right side
-    mov edi, CANVAS_X + CANVAS_W - 250
-    mov esi, CANVAS_Y + 60
-    lea rdx, [rel lbl_region]
-    mov ecx, 13
-    mov r8d, [rel col_cyan]
-    call gfx_text
-
-    ; Get region table entry pointer
-    mov rdi, REGION_TABLE_OFFSET
-    mov eax, [rel selected_rgn]
-    imul eax, RTE_SIZE
-    add rdi, rax
-
-    ; Show type
-    movzx eax, word [rdi + RTE_TYPE]
-    mov edi, CANVAS_X + CANVAS_W - 250
-    mov esi, CANVAS_Y + 80
-    lea rdx, [rel lbl_rgn_type]
-    mov ecx, 6
-    mov r8d, [rel col_text]
-    call gfx_text
-
-.brain_no_sel:
-    jmp .done
-
-.brain_empty:
-    mov edi, CANVAS_X + 100
-    mov esi, CANVAS_Y + 200
-    lea rdx, [rel lbl_none_sel]
-    mov ecx, 16
-    mov r8d, [rel col_text_dim]
-    call gfx_text
+    ; Draw query_ring content (regions response from MCP)
+    mov edi, CANVAS_X + 30
+    mov esi, CANVAS_Y + 70
+    mov edx, 25                  ; max lines (fit in canvas)
+    call draw_query_lines
     jmp .done
 
 .draw_animating:
@@ -2976,7 +2864,7 @@ draw_mindmap:
     mov r8d, [rel col_white]
     call gfx_rect
 
-    ; Dispatch based on focus_node
+    ; Dispatch based on focus_node (each shows context-specific live data)
     mov eax, [rel focus_node]
     cmp eax, NODE_REGIONS
     je .focus_regions
@@ -2992,6 +2880,12 @@ draw_mindmap:
     je .focus_accuracy
     cmp eax, NODE_HIVE
     je .focus_hive
+    cmp eax, NODE_ROSETTA
+    je .focus_rosetta
+    cmp eax, NODE_MYCO
+    je .focus_myco
+    cmp eax, NODE_SPORE
+    je .focus_spore
     jmp .focus_generic
 
 .focus_regions:
@@ -3093,6 +2987,51 @@ draw_mindmap:
     mov r8d, [rel col_yellow]
     call gfx_text
     ; Draw query_ring content (hive response)
+    lea edi, [r12d - 180]
+    lea esi, [r13d - 100]
+    mov edx, 12
+    call draw_query_lines
+    jmp .done
+
+.focus_rosetta:
+    ; Title
+    lea edi, [r12d - 180]
+    lea esi, [r13d - 130]
+    lea rdx, [rel node_rosetta]
+    mov ecx, 7
+    mov r8d, [rel col_magenta]
+    call gfx_text
+    ; Draw query_ring content (geom response)
+    lea edi, [r12d - 180]
+    lea esi, [r13d - 100]
+    mov edx, 12
+    call draw_query_lines
+    jmp .done
+
+.focus_myco:
+    ; Title
+    lea edi, [r12d - 180]
+    lea esi, [r13d - 130]
+    lea rdx, [rel node_myco]
+    mov ecx, 4
+    mov r8d, [rel col_green]
+    call gfx_text
+    ; Draw query_ring content (colony response)
+    lea edi, [r12d - 180]
+    lea esi, [r13d - 100]
+    mov edx, 12
+    call draw_query_lines
+    jmp .done
+
+.focus_spore:
+    ; Title
+    lea edi, [r12d - 180]
+    lea esi, [r13d - 130]
+    lea rdx, [rel node_spore]
+    mov ecx, 5
+    mov r8d, [rel col_orange]
+    call gfx_text
+    ; Draw query_ring content (genes response)
     lea edi, [r12d - 180]
     lea esi, [r13d - 100]
     mov edx, 12
@@ -3819,6 +3758,9 @@ start_expand_anim:
     mov [rel anim_node], edi
     mov dword [rel anim_state], ANIM_EXPANDING
     mov dword [rel anim_progress], 0
+
+    ; Clear query_ring so panel shows fresh data from this node's command
+    mov dword [rel query_write], 0
 
     ; Get source rect from node_rects
     lea rax, [rel node_rects]
