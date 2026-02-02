@@ -362,9 +362,9 @@ finding, failed, success, insight, warning, session, location, question, todo, c
 ### 3-Layer Code RAG
 | Layer | Category | Fidelity | Content |
 |-------|----------|----------|---------|
-| High | code_high | 0.98 decay | Architecture, file purposes |
+| High | code_high | 0.98 decay | 1:1 raw source code |
 | Mid | code_mid | 0.96 decay | Function signatures, @entry |
-| Low | code_low | 0.92 decay | Gotchas, implementation details |
+| Low | code_low | 0.92 decay | Summaries, gotchas, patterns |
 
 All pure x86-64 assembly. No Python dependencies.
 

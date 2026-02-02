@@ -14,9 +14,9 @@ Context injection and MCP control interface for Claude Code.
 ### 2. 3-Layer Code RAG
 | Category | Decay | Fidelity | Content |
 |----------|-------|----------|---------|
-| code_high | 0.98 | High | Architecture, file purposes, system overview |
+| code_high | 0.98 | 1:1 | Raw source code verbatim |
 | code_mid | 0.96 | Medium | Function signatures, @entry points, @calls |
-| code_low | 0.92 | Low | Implementation gotchas, patterns, snippets |
+| code_low | 0.92 | Low | Summaries, gotchas, patterns, descriptions |
 
 ### Architecture
 ```

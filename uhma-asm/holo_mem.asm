@@ -29,9 +29,9 @@
 ;  10 = request     User requests (decay 0.80)
 ;
 ; CATEGORIES (3-Layer Code RAG):
-;  11 = code_high   File-level info (decay 0.98) - architecture, file purposes
-;  12 = code_mid    Function-level info (decay 0.96) - signatures, entry points
-;  13 = code_low    Implementation details (decay 0.92) - gotchas, patterns
+;  11 = code_high   1:1 raw source (decay 0.98) - full code verbatim
+;  12 = code_mid    Function-level (decay 0.96) - signatures, entry points, @calls
+;  13 = code_low    Summaries (decay 0.92) - gotchas, patterns, descriptions
 ;
 ; STORAGE:
 ;   Entries stored at HOLO_MEM_OFFSET in surface
