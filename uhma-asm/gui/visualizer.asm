@@ -378,6 +378,10 @@ section .bss
     input_buf:      resb 256
     input_len:      resd 1
 
+    ; Output buffer (last response from UHMA)
+    output_buf:     resb 4096
+    output_len:     resd 1
+
     ; Feedback
     feedback_msg:   resq 1
     feedback_timer: resd 1
@@ -1478,7 +1482,25 @@ do_send_input:
     ; Send via MCP
     lea rdi, [rel input_buf]
     call mcp_send_text
+    mov rbx, rax                ; save response ptr in rbx
 
+    ; Save response to output_buf
+    test rbx, rbx
+    jz .no_response
+    cmp byte [rbx], 0
+    je .no_response
+
+    ; Copy response using strcpy
+    lea rdi, [rel output_buf]
+    mov rsi, rbx
+    call strcpy
+
+    ; Get length
+    lea rdi, [rel output_buf]
+    call strlen
+    mov [rel output_len], eax
+
+.no_response:
     mov dword [rel input_len], 0
     lea rax, [rel msg_sent]
     mov [rel feedback_msg], rax
@@ -1521,6 +1543,9 @@ draw_frame:
 
     ; Input area
     call draw_input
+
+    ; Output panel (UHMA response)
+    call draw_output
 
     ; Status bar
     call draw_status
@@ -3154,6 +3179,103 @@ draw_input:
 
 .no_cursor:
     add rsp, 16
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; draw_output — UHMA response panel (right side of canvas)
+;; ============================================================
+draw_output:
+    push rbx
+    push r12
+    push r13
+    push r14
+    sub rsp, 8
+
+    ; Check if we have output to display
+    mov eax, [rel output_len]
+    test eax, eax
+    jz .output_done
+
+    ; Panel position: right side of screen, below menu bar
+    mov r12d, WIN_W - 420        ; x (right side)
+    mov r13d, MENU_H + 10        ; y (below menu)
+
+    ; Panel background
+    mov edi, r12d
+    mov esi, r13d
+    mov edx, 400
+    mov ecx, 300
+    mov r8d, 0x00151530          ; dark blue-gray
+    call gfx_fill_rect
+
+    ; Panel border
+    mov edi, r12d
+    mov esi, r13d
+    mov edx, 400
+    mov ecx, 300
+    mov r8d, [rel col_border]
+    call gfx_rect
+
+    ; Panel title
+    lea edi, [r12d + 10]
+    lea esi, [r13d + 18]
+    lea rdx, [rel lbl_output]
+    mov ecx, 11
+    mov r8d, [rel col_cyan]
+    call gfx_text
+
+    ; Draw output text (first 10 lines, 60 chars each)
+    lea rbx, [rel output_buf]
+    lea r14d, [r13d + 35]        ; y start for text
+    mov ecx, 10                   ; max lines
+
+.output_line:
+    push rcx
+
+    ; Check if we hit end of buffer
+    cmp byte [rbx], 0
+    je .output_lines_done
+
+    ; Draw line
+    lea edi, [r12d + 10]
+    mov esi, r14d
+    mov rdx, rbx
+    mov ecx, 55                   ; max chars per line
+    mov r8d, [rel col_text]
+    call gfx_text
+
+    ; Find end of line or next 55 chars
+    xor ecx, ecx
+.find_line_end:
+    cmp ecx, 55
+    jge .line_break
+    cmp byte [rbx + rcx], 0
+    je .output_lines_done_pop
+    cmp byte [rbx + rcx], 10
+    je .newline_found
+    inc ecx
+    jmp .find_line_end
+
+.newline_found:
+    inc ecx                       ; skip newline
+.line_break:
+    add rbx, rcx
+    add r14d, 14                  ; next line y
+
+    pop rcx
+    dec ecx
+    jnz .output_line
+    jmp .output_done
+
+.output_lines_done_pop:
+    pop rcx
+.output_lines_done:
+.output_done:
+    add rsp, 8
+    pop r14
     pop r13
     pop r12
     pop rbx
