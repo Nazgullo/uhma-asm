@@ -12,6 +12,10 @@ SRCS = boot.asm io.asm format.asm signal.asm surface.asm repl.asm \
        receipt.asm maturity.asm channels.asm hub_client.asm narrate.asm \
        holo_mem.asm
 
+# MPNet semantic embeddings (768-dim → 8192-dim projection)
+EMBED_SRCS = embed/matmul.asm embed/attention.asm embed/tokenize.asm embed/embed.asm
+EMBED_OBJS = $(EMBED_SRCS:.asm=.o)
+
 # Standalone hub server (separate binary)
 HUB_TARGET = hub
 HUB_SRCS = hub.asm
@@ -31,7 +35,7 @@ all: $(TARGET) $(HUB_TARGET) tools
 
 tools: $(FEEDER_TARGET) $(MCP_TARGET)
 
-$(TARGET): $(OBJS)
+$(TARGET): $(OBJS) $(EMBED_OBJS)
 	$(LD) $(LDFLAGS) -o $@ $^
 
 $(HUB_TARGET): hub.o
@@ -46,11 +50,14 @@ $(MCP_TARGET): tools/mcp_server.o
 tools/%.o: tools/%.asm include/syscalls.inc
 	$(NASM) $(NASMFLAGS) -o $@ $<
 
+embed/%.o: embed/%.asm include/syscalls.inc
+	$(NASM) $(NASMFLAGS) -o $@ $<
+
 %.o: %.asm include/constants.inc include/syscalls.inc include/vsa_ops.inc
 	$(NASM) $(NASMFLAGS) -o $@ $<
 
 clean:
-	rm -f $(OBJS) $(TARGET) $(HUB_TARGET) hub.o
+	rm -f $(OBJS) $(EMBED_OBJS) $(TARGET) $(HUB_TARGET) hub.o
 	rm -f tools/*.o $(FEEDER_TARGET) $(MCP_TARGET)
 
 run: $(TARGET)

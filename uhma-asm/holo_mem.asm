@@ -147,8 +147,11 @@ section .data
     cat_code_low:   db "code_low", 0
 
 section .bss
+    ; Embed status (0=available, -1=failed)
+    embed_available: resd 1
+
     ; Scratch vectors for query encoding
-    align 64
+    alignb 64
     hm_query_vec:   resb HOLO_VEC_BYTES
     hm_entry_vec:   resb HOLO_VEC_BYTES
     hm_scratch_vec: resb HOLO_VEC_BYTES
@@ -169,6 +172,10 @@ extern holo_cosim_f64
 extern holo_scale_f64
 extern vsa_normalize
 
+; MPNet semantic embeddings
+extern embed_init
+extern embed_text
+
 ;; ============================================================
 ;; holo_mem_init — Initialize holographic memory system
 ;; ============================================================
@@ -179,12 +186,17 @@ holo_mem_init:
 
     mov rbx, SURFACE_BASE
 
-    ; Check if already initialized (non-zero entry count)
+    ; Initialize MPNet embeddings (loads ~440MB weights)
+    ; Called every session since weights are mmap'd fresh
+    call embed_init
+    mov [rel embed_available], eax  ; 0=ok, -1=failed
+
+    ; Check if state already initialized (non-zero entry count)
     mov rax, [rbx + HOLO_MEM_STATE_OFFSET + HMS_NEXT_ID]
     test rax, rax
     jnz .already_init
 
-    ; Initialize state
+    ; Initialize state counters (first run only)
     mov dword [rbx + HOLO_MEM_STATE_OFFSET + HMS_ENTRY_COUNT], 0
     mov qword [rbx + HOLO_MEM_STATE_OFFSET + HMS_NEXT_ID], 1
     mov qword [rbx + HOLO_MEM_STATE_OFFSET + HMS_LAST_ADD], 0
@@ -367,21 +379,51 @@ holo_mem_add:
 
 ; Helper: encode entry content into holographic vector
 ; rdi = entry ptr
+; Uses MPNet semantic embeddings if available, falls back to hash
 .encode_entry_vec:
     push rbx
     push r12
+    push r13
+    push r14
     sub rsp, 8
 
     mov r12, rdi            ; save entry ptr
 
-    ; Generate base vector from content hash
+    ; Get content string length
+    lea rdi, [r12 + HME_CONTENT]
+    mov r13, rdi            ; save content ptr
+    xor ecx, ecx
+.strlen_loop:
+    cmp byte [rdi + rcx], 0
+    je .strlen_done
+    inc ecx
+    cmp ecx, HME_CONTENT_LEN
+    jl .strlen_loop
+.strlen_done:
+    mov r14d, ecx           ; save text_len
+
+    ; Check if embeddings available
+    cmp dword [rel embed_available], 0
+    jne .use_hash_fallback
+
+    ; Try MPNet embedding: embed_text(text, text_len, output_vec)
+    mov rdi, r13            ; text ptr
+    mov esi, r14d           ; text_len
+    lea rdx, [rel hm_entry_vec]  ; output (8192-dim f64)
+    call embed_text
+    test eax, eax
+    jns .embed_ok
+
+.use_hash_fallback:
+    ; Fallback: hash-based encoding if embed_text fails
     lea rdi, [r12 + HME_CONTENT]
     call fnv64_hash_string
-    mov edi, eax            ; seed = hash
+    mov edi, eax
     lea rsi, [rel hm_entry_vec]
     call holo_gen_vec
 
-    ; Bind with category vector
+.embed_ok:
+    ; Bind with category vector for category-aware retrieval
     mov edi, [r12 + HME_CATEGORY]
     add edi, 0x43415400     ; "CAT" + category number as seed
     lea rsi, [rel hm_scratch_vec]
@@ -409,6 +451,8 @@ holo_mem_add:
     jnz .copy_vec
 
     add rsp, 8
+    pop r14
+    pop r13
     pop r12
     pop rbx
     ret
@@ -445,13 +489,39 @@ holo_mem_query:
     ; Increment query count
     inc dword [rbx + HOLO_MEM_STATE_OFFSET + HMS_QUERY_COUNT]
 
-    ; Generate query vector
+    ; Get query string length
+    mov rdi, [rsp]
+    xor ecx, ecx
+.query_strlen:
+    cmp byte [rdi + rcx], 0
+    je .query_strlen_done
+    inc ecx
+    cmp ecx, 512
+    jl .query_strlen
+.query_strlen_done:
+    mov [rsp + 8], ecx      ; save text_len
+
+    ; Check if embeddings available
+    cmp dword [rel embed_available], 0
+    jne .query_use_hash
+
+    ; Generate query vector via MPNet embedding
+    mov rdi, [rsp]          ; text ptr
+    mov esi, [rsp + 8]      ; text_len
+    lea rdx, [rel hm_query_vec]
+    call embed_text
+    test eax, eax
+    jns .query_embed_ok
+
+.query_use_hash:
+    ; Fallback to hash-based
     mov rdi, [rsp]
     call fnv64_hash_string
     mov edi, eax
     lea rsi, [rel hm_query_vec]
     call holo_gen_vec
 
+.query_embed_ok:
     ; Normalize query vector
     lea rdi, [rel hm_query_vec]
     call vsa_normalize

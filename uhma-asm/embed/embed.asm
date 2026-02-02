@@ -70,7 +70,7 @@ section .data
 
 section .bss
     ; Model config
-    align 8
+    alignb 8
     vocab_size:     resd 1
     hidden_size:    resd 1
     num_layers_cfg: resd 1
@@ -80,7 +80,7 @@ section .bss
     projection_dim: resd 1
 
     ; Weight pointers
-    align 8
+    alignb 8
     embed_weights:  resq 1      ; [vocab_size, hidden] f32
     position_emb:   resq 1      ; [max_pos, hidden] f32
     emb_ln_weight:  resq 1      ; [hidden] f32
@@ -88,7 +88,7 @@ section .bss
     projection_w:   resq 1      ; [8192, 768] f32
 
     ; Per-layer weights (12 layers)
-    align 8
+    alignb 8
     layer_qkv_w:    resq 12     ; [2304, 768] f32
     layer_qkv_b:    resq 12     ; [2304] f32
     layer_out_w:    resq 12     ; [768, 768] f32
@@ -103,7 +103,7 @@ section .bss
     layer_ffn_ln_b: resq 12     ; [768] f32
 
     ; Scratch buffers
-    align 64
+    alignb 64
     token_ids:      resd MAX_SEQ        ; tokenized input
     hidden_state:   resd MAX_SEQ * HIDDEN_DIM  ; current hidden state
     scratch_buf:    resb 64 * 1024 * 1024  ; 64MB scratch for attention
@@ -327,6 +327,17 @@ embed_text:
     push r15
     sub rsp, 40
 
+    ; Check if weights loaded
+    mov rax, [rel embed_weights]
+    test rax, rax
+    jz .embed_text_fail
+    mov rax, [rel emb_ln_weight]
+    test rax, rax
+    jz .embed_text_fail
+    mov rax, [rel projection_w]
+    test rax, rax
+    jz .embed_text_fail
+
     mov r12, rdi            ; text
     mov r13d, esi           ; text_len
     mov r14, rdx            ; output
@@ -414,7 +425,12 @@ embed_text:
     jnz .convert_loop
 
     xor eax, eax
+    jmp .embed_text_done
 
+.embed_text_fail:
+    mov eax, -1
+
+.embed_text_done:
     add rsp, 40
     pop r15
     pop r14

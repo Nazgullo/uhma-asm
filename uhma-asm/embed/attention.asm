@@ -1,4 +1,4 @@
-; attention.asm — Multi-head self-attention for transformer inference
+; attention.asm — Multi-head self-attention for transformer inference (AVX2)
 ;
 ; @entry mha_forward(hidden, qkv_w, qkv_b, out_w, out_b, output, seq_len,
 ;                    rel_bias, scratch) -> void
@@ -21,7 +21,7 @@
 ;
 ; GOTCHAS:
 ;   - Memory layout: [seq, hidden] for inputs/outputs
-;   - Heads are computed in parallel where possible
+;   - Uses AVX2 (ymm registers, 8 f32/op)
 ;   - Scratch buffer needed for intermediate tensors
 
 %define HIDDEN_DIM  768
@@ -30,16 +30,14 @@
 %define SCALE       0.125       ; 1/sqrt(64) = 0.125
 
 section .data
-    align 64
-    scale_factor: times 16 dd 0.125     ; 1/sqrt(64)
-    neg_inf:      times 16 dd 0xff800000  ; -inf for masked softmax
-
-section .bss
-    align 64
-    ; Scratch space for attention computation
-    ; Q, K, V: [seq, hidden] each -> max 512 * 768 * 4 = 1.5MB each
-    ; scores: [heads, seq, seq] -> max 12 * 512 * 512 * 4 = 12MB
-    ; We'll use caller-provided scratch buffer
+    align 32
+    scale_factor: times 8 dd 0.125     ; 1/sqrt(64)
+    neg_inf:      times 8 dd 0xff800000  ; -inf for masked softmax
+    one_vec:      times 8 dd 1.0
+    half_vec:     times 8 dd 0.5
+    sixth_vec:    times 8 dd 0.16666667      ; 1/6
+    one_scalar:   dd 1.0
+    half_scalar:  dd 0.5
 
 section .text
 global mha_forward
@@ -81,52 +79,49 @@ softmax_f32:
 
 .sm_max_done:
     vmovss [rsp], xmm0      ; save max
-    vbroadcastss zmm2, xmm0 ; max broadcast
+    vbroadcastss ymm2, xmm0 ; max broadcast
 
     ; Step 2: Compute exp(x - max) and sum
-    vxorps zmm3, zmm3, zmm3 ; sum = 0
+    vxorps ymm3, ymm3, ymm3 ; sum = 0
     mov rdi, r10
     mov ecx, r11d
-    shr ecx, 4
+    shr ecx, 3
     jz .sm_exp_tail
 
 .sm_exp_loop:
-    vmovups zmm0, [rdi]
-    vsubps zmm0, zmm0, zmm2     ; x - max
+    vmovups ymm0, [rdi]
+    vsubps ymm0, ymm0, ymm2     ; x - max
 
     ; Approximate exp using polynomial: exp(x) ≈ 1 + x + x²/2 + x³/6
-    ; For better accuracy, clamp x to [-88, 88] to avoid overflow
-    vmovaps zmm1, zmm0          ; x
-    vmulps zmm4, zmm0, zmm0     ; x²
-    vmulps zmm5, zmm4, zmm0     ; x³
+    vmovaps ymm1, ymm0          ; x
+    vmulps ymm4, ymm0, ymm0     ; x²
+    vmulps ymm5, ymm4, ymm0     ; x³
 
     ; 1 + x
-    vmovaps zmm6, [rel one_vec]
-    vaddps zmm6, zmm6, zmm1
+    vmovaps ymm6, [rel one_vec]
+    vaddps ymm6, ymm6, ymm1
 
     ; + x²/2
-    vmulps zmm4, zmm4, [rel half_vec]
-    vaddps zmm6, zmm6, zmm4
+    vmulps ymm4, ymm4, [rel half_vec]
+    vaddps ymm6, ymm6, ymm4
 
     ; + x³/6
-    vmulps zmm5, zmm5, [rel sixth_vec]
-    vaddps zmm6, zmm6, zmm5
+    vmulps ymm5, ymm5, [rel sixth_vec]
+    vaddps ymm6, ymm6, ymm5
 
     ; Clamp to positive (exp is always > 0)
-    vxorps zmm7, zmm7, zmm7
-    vmaxps zmm6, zmm6, zmm7
+    vxorps ymm7, ymm7, ymm7
+    vmaxps ymm6, ymm6, ymm7
 
-    vmovups [rdi], zmm6         ; store exp(x-max)
-    vaddps zmm3, zmm3, zmm6     ; sum += exp
+    vmovups [rdi], ymm6         ; store exp(x-max)
+    vaddps ymm3, ymm3, ymm6     ; sum += exp
 
-    add rdi, 64
+    add rdi, 32
     dec ecx
     jnz .sm_exp_loop
 
 .sm_exp_tail:
-    ; Horizontal sum of zmm3
-    vextractf64x4 ymm0, zmm3, 1
-    vaddps ymm3, ymm3, ymm0
+    ; Horizontal sum of ymm3
     vextractf128 xmm0, ymm3, 1
     vaddps xmm3, xmm3, xmm0
     vhaddps xmm3, xmm3, xmm3
@@ -134,7 +129,7 @@ softmax_f32:
 
     ; Handle remaining elements
     mov ecx, r11d
-    and ecx, 15
+    and ecx, 7
     jz .sm_normalize
 
     vmovss xmm2, [rsp]          ; max
@@ -161,24 +156,24 @@ softmax_f32:
 
 .sm_normalize:
     ; Step 3: Divide by sum
-    vbroadcastss zmm3, xmm3     ; sum broadcast
+    vbroadcastss ymm3, xmm3     ; sum broadcast
 
     mov rdi, r10
     mov ecx, r11d
-    shr ecx, 4
+    shr ecx, 3
     jz .sm_norm_tail
 
 .sm_norm_loop:
-    vmovups zmm0, [rdi]
-    vdivps zmm0, zmm0, zmm3
-    vmovups [rdi], zmm0
-    add rdi, 64
+    vmovups ymm0, [rdi]
+    vdivps ymm0, ymm0, ymm3
+    vmovups [rdi], ymm0
+    add rdi, 32
     dec ecx
     jnz .sm_norm_loop
 
 .sm_norm_tail:
     mov ecx, r11d
-    and ecx, 15
+    and ecx, 7
     jz .sm_done
 
 .sm_norm_scalar:
@@ -190,6 +185,7 @@ softmax_f32:
     jnz .sm_norm_scalar
 
 .sm_done:
+    vzeroupper
     add rsp, 16
     pop r13
     pop r12
@@ -287,23 +283,7 @@ mha_forward:
     shl eax, 2              ; seq * 768 * 4
     mov r14d, eax           ; offset increment
 
-    ; Q = scratch + 0
-    ; K = scratch + r14
-    ; V = scratch + 2*r14
-    ; scores = scratch + 3*r14
-
     ; Step 1: Compute Q, K, V = hidden × W_qkv^T + bias
-    ; qkv_weight is [2304, 768], need to transpose or use transB
-    ; hidden is [seq, 768]
-    ; Result QKV is [seq, 2304]
-
-    ; Actually, let's compute Q, K, V separately for clarity
-    ; Q = hidden × W_q^T where W_q is first 768 rows of qkv_weight
-    ; But qkv_weight is stored [2304, 768], so W_q is [768, 768] at offset 0
-
-    ; For simplicity, compute all at once then split
-    ; QKV[seq, 2304] = hidden[seq, 768] × qkv_weight^T[768, 2304]
-
     ; Using matmul_f32_transB: C = A × B^T where B is stored transposed
     mov rdi, [rsp]          ; hidden [seq, 768]
     mov rsi, [rsp+8]        ; qkv_weight [2304, 768]
@@ -320,34 +300,8 @@ mha_forward:
     mov ecx, HIDDEN_DIM * 3 ; N = 2304
     call matmul_f32_add_bias
 
-    ; Now Q, K, V are interleaved in scratch as [seq, 2304]
-    ; Q[i] = scratch[i*2304 : i*2304+768]
-    ; K[i] = scratch[i*2304+768 : i*2304+1536]
-    ; V[i] = scratch[i*2304+1536 : i*2304+2304]
-
-    ; For each head h:
-    ;   Q_h[seq, 64] K_h[seq, 64] V_h[seq, 64]
-    ;   scores_h = Q_h × K_h^T / sqrt(64) [seq, seq]
-    ;   attn_h = softmax(scores_h) [seq, seq]
-    ;   context_h = attn_h × V_h [seq, 64]
-
-    ; This requires reorganizing memory or strided access
-    ; For now, use a simpler but slower approach: process sequentially
-
-    ; Allocate space for scores after QKV
-    ; scores_offset = 3 * seq * 768 * 4
-    mov eax, r12d
-    imul eax, HIDDEN_DIM * 3
-    shl eax, 2
-    mov r15d, eax           ; scores offset
-
-    ; Context output goes to output buffer (will be overwritten at end)
-    ; Actually we need intermediate context storage
-
-    ; SIMPLIFIED: For now, just compute a basic forward pass
+    ; SIMPLIFIED: For now, skip full attention and just copy input to output
     ; TODO: Implement full multi-head attention with proper head splitting
-
-    ; For now, skip attention and just copy input to output as placeholder
     mov rdi, [rsp+40]       ; output
     mov rsi, [rsp]          ; hidden
     mov ecx, r12d
@@ -356,6 +310,7 @@ mha_forward:
     rep movsb
 
     ; Clean up
+    vzeroupper
     add rsp, 96
     pop r15
     pop r14
@@ -364,11 +319,3 @@ mha_forward:
     pop rbx
     pop rbp
     ret
-
-section .data
-    align 64
-    one_vec:    times 16 dd 1.0
-    half_vec:   times 16 dd 0.5
-    sixth_vec:  times 16 dd 0.16666667      ; 1/6
-    one_scalar:  dd 1.0
-    half_scalar: dd 0.5

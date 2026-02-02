@@ -7,6 +7,7 @@
 ; @calls vsa.asm:vsa_init_random
 ; @calls verify.asm:verify_init
 ; @calls maturity.asm:maturity_init
+; @calls holo_mem.asm:holo_mem_init
 ; @calls channels.asm:channels_init
 ; @calls repl.asm:repl_run
 ;
@@ -17,6 +18,7 @@
 ;   4. vsa_init_random()        - seed random vectors for VSA arena
 ;   5. verify_init()            - assembly brittleness protection
 ;   6. maturity_init()          - developmental gating (Stage 0)
+;   6b. holo_mem_init()         - holographic memory + MPNet embeddings
 ;   7. channels_init()          - 6-channel TCP listeners (9999-9994)
 ;   8. repl_run()               - main loop (stdin + TCP channels)
 ;
@@ -38,6 +40,7 @@ extern verify_init
 extern verify_vsa_math
 extern maturity_init
 extern channels_init
+extern holo_mem_init
 
 ;; ============================================================
 ;; _start — Entry point
@@ -73,6 +76,9 @@ _start:
 
     ; 6. Initialize maturity/developmental gating
     call maturity_init
+
+    ; 6b. Initialize holographic memory (+ MPNet embeddings)
+    call holo_mem_init
 
     ; 7. Initialize metabolic energy pool
     mov rbx, SURFACE_BASE

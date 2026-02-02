@@ -1,4 +1,4 @@
-; matmul.asm — AVX-512/AVX2 matrix multiplication for transformer inference
+; matmul.asm — AVX2 matrix multiplication for transformer inference
 ;
 ; @entry matmul_f32(A, B, C, M, K, N) -> void
 ;        C[M×N] = A[M×K] × B[K×N], row-major
@@ -9,21 +9,20 @@
 ; @entry vec_add_f32(dst, src, n) -> void
 ; @entry vec_mul_f32(dst, src, n) -> void
 ;
-; SIMD: Uses AVX-512 (zmm, 16 f32/op) with AVX2 fallback (ymm, 8 f32/op)
-; TILING: 6×16 micro-kernel for cache efficiency
+; SIMD: Uses AVX2 (ymm, 8 f32/op)
 ;
 ; GOTCHAS:
-;   - Assumes 64-byte alignment for best performance
-;   - K dimension should be multiple of 16 for full SIMD utilization
-;   - Uses zmm0-zmm31 (AVX-512) or ymm0-ymm15 (AVX2)
+;   - Assumes 32-byte alignment for best performance
+;   - K dimension should be multiple of 8 for full SIMD utilization
+;   - Uses ymm0-ymm15
 
 section .data
-    align 64
+    align 32
     ; Constants for GELU approximation
-    gelu_const_a:   times 16 dd 0.044715      ; 0.044715
-    gelu_const_b:   times 16 dd 0.7978845608  ; sqrt(2/pi)
-    gelu_const_half: times 16 dd 0.5
-    gelu_const_one: times 16 dd 1.0
+    gelu_const_a:   times 8 dd 0.044715      ; 0.044715
+    gelu_const_b:   times 8 dd 0.7978845608  ; sqrt(2/pi)
+    gelu_const_half: times 8 dd 0.5
+    gelu_const_one: times 8 dd 1.0
 
 section .text
 global matmul_f32
@@ -77,116 +76,55 @@ matmul_f32:
     cmp ebx, r13d
     jge .done
 
-    ; Middle loop: for each column j of C (in blocks of 16)
+    ; Middle loop: for each column j of C (in blocks of 8)
     xor ecx, ecx            ; j = 0
 .col_loop:
     cmp ecx, r15d
-    jge .next_row
+    jge .row_next
 
-    ; Calculate remaining columns
-    mov eax, r15d
-    sub eax, ecx            ; remaining = N - j
-    cmp eax, 16
-    jl .col_tail
+    ; Accumulator for C[i, j:j+8]
+    vxorps ymm0, ymm0, ymm0
 
-    ; Inner loop: accumulate A[i,k] * B[k,j:j+16] into C[i,j:j+16]
-    ; Using AVX-512: process 16 columns at once
-    vxorps zmm0, zmm0, zmm0     ; accumulator for C[i,j:j+16]
-
+    ; Inner loop: dot product over K
     xor edx, edx            ; k = 0
 .k_loop:
     cmp edx, r14d
-    jge .store_result
+    jge .k_done
 
-    ; Load A[i,k] and broadcast
+    ; Load A[i, k] and broadcast
     mov eax, ebx
     imul eax, r14d          ; i * K
     add eax, edx            ; + k
-    vbroadcastss zmm1, [r10 + rax*4]    ; A[i,k] broadcast to all 16 lanes
+    vbroadcastss ymm1, [r10 + rax*4]
 
-    ; Load B[k,j:j+16]
+    ; Load B[k, j:j+8]
     mov eax, edx
     imul eax, r15d          ; k * N
     add eax, ecx            ; + j
-    vmovups zmm2, [r11 + rax*4]         ; B[k,j:j+16]
+    vmovups ymm2, [r11 + rax*4]
 
-    ; Accumulate: C += A[i,k] * B[k,j:j+16]
-    vfmadd231ps zmm0, zmm1, zmm2
+    ; Accumulate
+    vfmadd231ps ymm0, ymm1, ymm2
 
     inc edx
     jmp .k_loop
 
-.store_result:
-    ; Store C[i,j:j+16]
+.k_done:
+    ; Store C[i, j:j+8]
     mov eax, ebx
     imul eax, r15d          ; i * N
     add eax, ecx            ; + j
-    vmovups [r12 + rax*4], zmm0
+    vmovups [r12 + rax*4], ymm0
 
-    add ecx, 16
+    add ecx, 8
     jmp .col_loop
 
-.col_tail:
-    ; Handle remaining columns (< 16) with scalar or masked ops
-    cmp eax, 0
-    je .next_row
-
-    ; Create mask for remaining elements
-    mov edx, 1
-    shl edx, cl             ; This is wrong, need to use eax not cl
-    ; Actually let's just do scalar for tail
-
-    push rcx                ; save j
-    push rbx                ; save i
-
-.tail_col_loop:
-    cmp ecx, r15d
-    jge .tail_done
-
-    ; Scalar: C[i,j] = sum(A[i,k] * B[k,j])
-    vxorps xmm0, xmm0, xmm0
-    xor edx, edx            ; k = 0
-
-.tail_k_loop:
-    cmp edx, r14d
-    jge .tail_store
-
-    ; A[i,k]
-    mov eax, ebx
-    imul eax, r14d
-    add eax, edx
-    vmovss xmm1, [r10 + rax*4]
-
-    ; B[k,j]
-    mov eax, edx
-    imul eax, r15d
-    add eax, ecx
-    vmovss xmm2, [r11 + rax*4]
-
-    vfmadd231ss xmm0, xmm1, xmm2
-
-    inc edx
-    jmp .tail_k_loop
-
-.tail_store:
-    ; C[i,j]
-    mov eax, ebx
-    imul eax, r15d
-    add eax, ecx
-    vmovss [r12 + rax*4], xmm0
-
-    inc ecx
-    jmp .tail_col_loop
-
-.tail_done:
-    pop rbx
-    pop rcx
-
-.next_row:
+.row_next:
     inc ebx
     jmp .row_loop
 
 .done:
+    vzeroupper
     pop r15
     pop r14
     pop r13
@@ -199,10 +137,13 @@ matmul_f32:
 ;; matmul_f32_transB - Matrix multiply with B transposed
 ;; C[M×N] = A[M×K] × B^T[N×K]
 ;;
-;; This is more cache-friendly when B is stored as [N×K]
-;; Each row of B^T corresponds to a column of B
-;;
-;; Args: same as matmul_f32, but B is [N×K] not [K×N]
+;; Args:
+;;   rdi = A pointer (M × K)
+;;   rsi = BT pointer (N × K, B stored transposed)
+;;   rdx = C pointer (M × N)
+;;   ecx = M
+;;   r8d = K
+;;   r9d = N
 ;; ============================================================================
 matmul_f32_transB:
     push rbp
@@ -213,77 +154,76 @@ matmul_f32_transB:
     push r14
     push r15
 
-    mov r10, rdi            ; A [M×K]
-    mov r11, rsi            ; B^T [N×K]
-    mov r12, rdx            ; C [M×N]
+    mov r10, rdi            ; A
+    mov r11, rsi            ; BT
+    mov r12, rdx            ; C
     mov r13d, ecx           ; M
     mov r14d, r8d           ; K
     mov r15d, r9d           ; N
 
     ; For each row i of A
     xor ebx, ebx
-.tb_row_loop:
+.mtb_row:
     cmp ebx, r13d
-    jge .tb_done
+    jge .mtb_done
 
-    ; For each row j of B^T (= column j of B = column j of C)
+    ; For each row j of BT (column of B)
     xor ecx, ecx
-.tb_col_loop:
+.mtb_col:
     cmp ecx, r15d
-    jge .tb_next_row
+    jge .mtb_row_next
 
-    ; Compute dot product: C[i,j] = A[i,:] · B^T[j,:]
-    ; Both are contiguous K-element vectors!
+    ; Dot product A[i,:] · BT[j,:]
+    vxorps ymm0, ymm0, ymm0
 
-    ; Pointers
+    ; A row offset
     mov eax, ebx
     imul eax, r14d
-    lea rdi, [r10 + rax*4]      ; A[i,:] = &A[i*K]
+    shl eax, 2
+    lea rdi, [r10 + rax]
 
+    ; BT row offset
     mov eax, ecx
     imul eax, r14d
-    lea rsi, [r11 + rax*4]      ; B^T[j,:] = &B^T[j*K]
+    shl eax, 2
+    lea rsi, [r11 + rax]
 
-    ; Dot product using AVX-512
-    vxorps zmm0, zmm0, zmm0     ; accumulator
+    ; Vectorized dot product
+    mov edx, r14d
+    shr edx, 3              ; K / 8
+    jz .mtb_dot_tail
 
-    mov edx, r14d               ; k = K
-    shr edx, 4                  ; k / 16
-    jz .tb_dot_tail
-
-.tb_dot_loop:
-    vmovups zmm1, [rdi]
-    vmovups zmm2, [rsi]
-    vfmadd231ps zmm0, zmm1, zmm2
-    add rdi, 64
-    add rsi, 64
+.mtb_dot_loop:
+    vmovups ymm1, [rdi]
+    vmovups ymm2, [rsi]
+    vfmadd231ps ymm0, ymm1, ymm2
+    add rdi, 32
+    add rsi, 32
     dec edx
-    jnz .tb_dot_loop
+    jnz .mtb_dot_loop
 
-.tb_dot_tail:
-    ; Horizontal sum of zmm0
-    vextractf64x4 ymm1, zmm0, 1
-    vaddps ymm0, ymm0, ymm1
+.mtb_dot_tail:
+    ; Horizontal sum
     vextractf128 xmm1, ymm0, 1
     vaddps xmm0, xmm0, xmm1
     vhaddps xmm0, xmm0, xmm0
     vhaddps xmm0, xmm0, xmm0
 
-    ; Handle remaining K % 16 elements
+    ; Handle remaining K elements
     mov edx, r14d
-    and edx, 15
-    jz .tb_store
+    and edx, 7
+    jz .mtb_dot_done
 
-.tb_tail_loop:
+.mtb_dot_scalar:
     vmovss xmm1, [rdi]
     vmovss xmm2, [rsi]
     vfmadd231ss xmm0, xmm1, xmm2
     add rdi, 4
     add rsi, 4
     dec edx
-    jnz .tb_tail_loop
+    jnz .mtb_dot_scalar
 
-.tb_store:
+.mtb_dot_done:
     ; Store C[i,j]
     mov eax, ebx
     imul eax, r15d
@@ -291,13 +231,14 @@ matmul_f32_transB:
     vmovss [r12 + rax*4], xmm0
 
     inc ecx
-    jmp .tb_col_loop
+    jmp .mtb_col
 
-.tb_next_row:
+.mtb_row_next:
     inc ebx
-    jmp .tb_row_loop
+    jmp .mtb_row
 
-.tb_done:
+.mtb_done:
+    vzeroupper
     pop r15
     pop r14
     pop r13
@@ -307,14 +248,14 @@ matmul_f32_transB:
     ret
 
 ;; ============================================================================
-;; matmul_f32_add_bias - Add bias vector to each row of matrix
-;; C[i,j] += bias[j] for all i
+;; matmul_f32_add_bias - Add bias to each row
+;; C[i,j] += bias[j]
 ;;
 ;; Args:
-;;   rdi = C pointer (M × N, row-major, f32)
-;;   rsi = bias pointer (N, f32)
-;;   edx = M (rows)
-;;   ecx = N (columns)
+;;   rdi = C pointer (M × N)
+;;   rsi = bias pointer (N)
+;;   edx = M
+;;   ecx = N
 ;; ============================================================================
 matmul_f32_add_bias:
     push rbx
@@ -337,22 +278,22 @@ matmul_f32_add_bias:
     mov rsi, r11            ; bias
 
     mov edx, ebx            ; n = N
-    shr edx, 4              ; n / 16
+    shr edx, 3              ; n / 8
     jz .bias_tail
 
 .bias_vec_loop:
-    vmovups zmm0, [rdi]
-    vmovups zmm1, [rsi]
-    vaddps zmm0, zmm0, zmm1
-    vmovups [rdi], zmm0
-    add rdi, 64
-    add rsi, 64
+    vmovups ymm0, [rdi]
+    vmovups ymm1, [rsi]
+    vaddps ymm0, ymm0, ymm1
+    vmovups [rdi], ymm0
+    add rdi, 32
+    add rsi, 32
     dec edx
     jnz .bias_vec_loop
 
 .bias_tail:
     mov edx, ebx
-    and edx, 15
+    and edx, 7
     jz .bias_next_row
 
 .bias_scalar_loop:
@@ -369,6 +310,7 @@ matmul_f32_add_bias:
     jmp .bias_row_loop
 
 .bias_done:
+    vzeroupper
     pop r12
     pop rbx
     ret
@@ -384,20 +326,20 @@ matmul_f32_add_bias:
 ;; ============================================================================
 vec_add_f32:
     mov ecx, edx
-    shr ecx, 4              ; n / 16
+    shr ecx, 3              ; n / 8
     jz .va_tail
 
 .va_loop:
-    vmovups zmm0, [rdi]
-    vaddps zmm0, zmm0, [rsi]
-    vmovups [rdi], zmm0
-    add rdi, 64
-    add rsi, 64
+    vmovups ymm0, [rdi]
+    vaddps ymm0, ymm0, [rsi]
+    vmovups [rdi], ymm0
+    add rdi, 32
+    add rsi, 32
     dec ecx
     jnz .va_loop
 
 .va_tail:
-    and edx, 15
+    and edx, 7
     jz .va_done
 
 .va_scalar:
@@ -410,6 +352,7 @@ vec_add_f32:
     jnz .va_scalar
 
 .va_done:
+    vzeroupper
     ret
 
 ;; ============================================================================
@@ -423,20 +366,20 @@ vec_add_f32:
 ;; ============================================================================
 vec_mul_f32:
     mov ecx, edx
-    shr ecx, 4
+    shr ecx, 3              ; n / 8
     jz .vm_tail
 
 .vm_loop:
-    vmovups zmm0, [rdi]
-    vmulps zmm0, zmm0, [rsi]
-    vmovups [rdi], zmm0
-    add rdi, 64
-    add rsi, 64
+    vmovups ymm0, [rdi]
+    vmulps ymm0, ymm0, [rsi]
+    vmovups [rdi], ymm0
+    add rdi, 32
+    add rsi, 32
     dec ecx
     jnz .vm_loop
 
 .vm_tail:
-    and edx, 15
+    and edx, 7
     jz .vm_done
 
 .vm_scalar:
@@ -449,80 +392,106 @@ vec_mul_f32:
     jnz .vm_scalar
 
 .vm_done:
+    vzeroupper
     ret
 
 ;; ============================================================================
-;; vec_gelu_f32 - GELU activation (approximation)
-;; x = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+;; vec_gelu_f32 - GELU activation (Gaussian Error Linear Unit)
+;; x[i] = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+;;
+;; Approximation: 0.5 * x * (1 + tanh(0.7978845608 * x * (1 + 0.044715 * x^2)))
 ;;
 ;; Args:
-;;   rdi = data pointer (in-place)
-;;   esi = n (number of elements)
+;;   rdi = x pointer (in-place)
+;;   edx = n
 ;; ============================================================================
 vec_gelu_f32:
     push rbx
-    mov ebx, esi
 
-    ; Process 16 elements at a time
-    mov ecx, ebx
-    shr ecx, 4
+    mov rbx, rdi
+    mov ecx, edx
+    shr ecx, 3
     jz .gelu_tail
 
-    vmovaps zmm4, [rel gelu_const_a]      ; 0.044715
-    vmovaps zmm5, [rel gelu_const_b]      ; sqrt(2/pi)
-    vmovaps zmm6, [rel gelu_const_half]   ; 0.5
-    vmovaps zmm7, [rel gelu_const_one]    ; 1.0
+    vmovaps ymm4, [rel gelu_const_a]     ; 0.044715
+    vmovaps ymm5, [rel gelu_const_b]     ; sqrt(2/pi)
+    vmovaps ymm6, [rel gelu_const_half]  ; 0.5
+    vmovaps ymm7, [rel gelu_const_one]   ; 1.0
 
 .gelu_loop:
-    vmovups zmm0, [rdi]           ; x
+    vmovups ymm0, [rbx]                   ; x
 
-    ; x^3
-    vmulps zmm1, zmm0, zmm0       ; x^2
-    vmulps zmm1, zmm1, zmm0       ; x^3
+    ; x^2
+    vmulps ymm1, ymm0, ymm0
 
-    ; 0.044715 * x^3
-    vmulps zmm1, zmm1, zmm4
+    ; 0.044715 * x^2
+    vmulps ymm1, ymm1, ymm4
 
-    ; x + 0.044715 * x^3
-    vaddps zmm1, zmm1, zmm0
+    ; 1 + 0.044715 * x^2
+    vaddps ymm1, ymm1, ymm7
 
-    ; sqrt(2/pi) * (x + 0.044715 * x^3)
-    vmulps zmm1, zmm1, zmm5
+    ; x * (1 + 0.044715 * x^2)
+    vmulps ymm1, ymm1, ymm0
 
-    ; tanh approximation: use polynomial or just clamp
-    ; Simplified: tanh(x) ≈ x for small x, ±1 for large x
-    ; Better: use rational approximation
-    ; For now, use a simple clamp as placeholder
-    vmovaps zmm2, zmm7            ; 1.0
-    vmovaps zmm3, zmm7
-    vxorps zmm3, zmm3, [rel neg_mask]  ; -1.0 (need to define)
-    vmaxps zmm1, zmm1, zmm3       ; max(-1, x)
-    vminps zmm1, zmm1, zmm2       ; min(1, x)
+    ; sqrt(2/pi) * x * (1 + 0.044715 * x^2)
+    vmulps ymm1, ymm1, ymm5
+
+    ; tanh approximation: tanh(x) ≈ x for small x, clamp to [-1,1]
+    ; Simple approximation: tanh(x) ≈ x / (1 + |x|)
+    vxorps ymm2, ymm2, ymm2
+    vsubps ymm2, ymm2, ymm1       ; -x
+    vmaxps ymm2, ymm1, ymm2       ; |x|
+    vaddps ymm2, ymm2, ymm7       ; 1 + |x|
+    vdivps ymm1, ymm1, ymm2       ; x / (1 + |x|) ≈ tanh(x)
 
     ; 1 + tanh(...)
-    vaddps zmm1, zmm1, zmm7
+    vaddps ymm1, ymm1, ymm7
 
     ; 0.5 * x * (1 + tanh(...))
-    vmulps zmm0, zmm0, zmm6       ; 0.5 * x
-    vmulps zmm0, zmm0, zmm1       ; * (1 + tanh(...))
+    vmulps ymm0, ymm0, ymm6
+    vmulps ymm0, ymm0, ymm1
 
-    vmovups [rdi], zmm0
-    add rdi, 64
+    vmovups [rbx], ymm0
+    add rbx, 32
     dec ecx
     jnz .gelu_loop
 
 .gelu_tail:
-    ; Scalar tail - simplified for now
-    and ebx, 15
+    and edx, 7
     jz .gelu_done
 
+    ; Scalar tail
+    vmovss xmm4, [rel gelu_const_a]
+    vmovss xmm5, [rel gelu_const_b]
+    vmovss xmm6, [rel gelu_const_half]
+    vmovss xmm7, [rel gelu_const_one]
+
 .gelu_scalar:
-    ; TODO: scalar GELU
-    dec ebx
-    add rdi, 4
+    vmovss xmm0, [rbx]
+    vmulss xmm1, xmm0, xmm0       ; x^2
+    vmulss xmm1, xmm1, xmm4       ; 0.044715 * x^2
+    vaddss xmm1, xmm1, xmm7       ; 1 + 0.044715 * x^2
+    vmulss xmm1, xmm1, xmm0       ; x * (...)
+    vmulss xmm1, xmm1, xmm5       ; sqrt(2/pi) * x * (...)
+
+    ; tanh approximation
+    vxorps xmm2, xmm2, xmm2
+    vsubss xmm2, xmm2, xmm1
+    vmaxss xmm2, xmm1, xmm2
+    vaddss xmm2, xmm2, xmm7
+    vdivss xmm1, xmm1, xmm2
+
+    vaddss xmm1, xmm1, xmm7       ; 1 + tanh
+    vmulss xmm0, xmm0, xmm6       ; 0.5 * x
+    vmulss xmm0, xmm0, xmm1       ; 0.5 * x * (1 + tanh)
+    vmovss [rbx], xmm0
+
+    add rbx, 4
+    dec edx
     jnz .gelu_scalar
 
 .gelu_done:
+    vzeroupper
     pop rbx
     ret
 
@@ -551,22 +520,20 @@ layernorm_f32:
     vmovss [rsp], xmm0      ; eps
 
     ; Step 1: Compute mean
-    vxorps zmm0, zmm0, zmm0     ; sum = 0
+    vxorps ymm0, ymm0, ymm0     ; sum = 0
     mov rdi, r10
     mov ecx, r13d
-    shr ecx, 4
+    shr ecx, 3
     jz .ln_mean_tail
 
 .ln_mean_loop:
-    vaddps zmm0, zmm0, [rdi]
-    add rdi, 64
+    vaddps ymm0, ymm0, [rdi]
+    add rdi, 32
     dec ecx
     jnz .ln_mean_loop
 
 .ln_mean_tail:
     ; Horizontal sum
-    vextractf64x4 ymm1, zmm0, 1
-    vaddps ymm0, ymm0, ymm1
     vextractf128 xmm1, ymm0, 1
     vaddps xmm0, xmm0, xmm1
     vhaddps xmm0, xmm0, xmm0
@@ -574,7 +541,7 @@ layernorm_f32:
 
     ; Handle tail
     mov ecx, r13d
-    and ecx, 15
+    and ecx, 7
     jz .ln_mean_done
 
 .ln_mean_scalar:
@@ -590,26 +557,24 @@ layernorm_f32:
     vmovss [rsp+4], xmm0
 
     ; Step 2: Compute variance
-    vbroadcastss zmm2, xmm0     ; mean broadcast
-    vxorps zmm0, zmm0, zmm0     ; var_sum = 0
+    vbroadcastss ymm2, xmm0     ; mean broadcast
+    vxorps ymm0, ymm0, ymm0     ; var_sum = 0
     mov rdi, r10
     mov ecx, r13d
-    shr ecx, 4
+    shr ecx, 3
     jz .ln_var_tail
 
 .ln_var_loop:
-    vmovups zmm1, [rdi]
-    vsubps zmm1, zmm1, zmm2     ; x - mean
-    vmulps zmm1, zmm1, zmm1     ; (x - mean)^2
-    vaddps zmm0, zmm0, zmm1
-    add rdi, 64
+    vmovups ymm1, [rdi]
+    vsubps ymm1, ymm1, ymm2     ; x - mean
+    vmulps ymm1, ymm1, ymm1     ; (x - mean)^2
+    vaddps ymm0, ymm0, ymm1
+    add rdi, 32
     dec ecx
     jnz .ln_var_loop
 
 .ln_var_tail:
     ; Horizontal sum
-    vextractf64x4 ymm1, zmm0, 1
-    vaddps ymm0, ymm0, ymm1
     vextractf128 xmm1, ymm0, 1
     vaddps xmm0, xmm0, xmm1
     vhaddps xmm0, xmm0, xmm0
@@ -617,7 +582,7 @@ layernorm_f32:
 
     ; Tail
     mov ecx, r13d
-    and ecx, 15
+    and ecx, 7
     jz .ln_var_done
     vmovss xmm2, [rsp+4]        ; mean
 
@@ -631,58 +596,53 @@ layernorm_f32:
     jnz .ln_var_scalar
 
 .ln_var_done:
-    ; var = var_sum / n
+    ; var = sum / n
     vcvtsi2ss xmm1, xmm1, r13d
-    vdivss xmm0, xmm0, xmm1
-    ; std = sqrt(var + eps)
+    vdivss xmm0, xmm0, xmm1     ; variance
+    ; sqrt(var + eps)
     vaddss xmm0, xmm0, [rsp]    ; + eps
     vsqrtss xmm0, xmm0, xmm0    ; sqrt
     vmovss [rsp+8], xmm0        ; save std
 
-    ; Step 3: Normalize and scale
-    vbroadcastss zmm3, [rsp+4]  ; mean
-    vbroadcastss zmm4, [rsp+8]  ; std
+    ; Step 3: Normalize and apply gamma/beta
+    vmovss xmm2, [rsp+4]        ; mean
+    vmovss xmm3, [rsp+8]        ; std
+    vbroadcastss ymm2, xmm2
+    vbroadcastss ymm3, xmm3
 
     mov rdi, r10
     mov rsi, r11                ; gamma
     mov rdx, r12                ; beta
     mov ecx, r13d
-    shr ecx, 4
+    shr ecx, 3
     jz .ln_norm_tail
 
 .ln_norm_loop:
-    vmovups zmm0, [rdi]
-    vmovups zmm1, [rsi]         ; gamma
-    vmovups zmm2, [rdx]         ; beta
-
-    vsubps zmm0, zmm0, zmm3     ; x - mean
-    vdivps zmm0, zmm0, zmm4     ; / std
-    vmulps zmm0, zmm0, zmm1     ; * gamma
-    vaddps zmm0, zmm0, zmm2     ; + beta
-
-    vmovups [rdi], zmm0
-    add rdi, 64
-    add rsi, 64
-    add rdx, 64
+    vmovups ymm0, [rdi]
+    vsubps ymm0, ymm0, ymm2     ; x - mean
+    vdivps ymm0, ymm0, ymm3     ; / std
+    vmulps ymm0, ymm0, [rsi]    ; * gamma
+    vaddps ymm0, ymm0, [rdx]    ; + beta
+    vmovups [rdi], ymm0
+    add rdi, 32
+    add rsi, 32
+    add rdx, 32
     dec ecx
     jnz .ln_norm_loop
 
 .ln_norm_tail:
     mov ecx, r13d
-    and ecx, 15
+    and ecx, 7
     jz .ln_done
-
-    vmovss xmm3, [rsp+4]        ; mean
-    vmovss xmm4, [rsp+8]        ; std
+    vmovss xmm2, [rsp+4]
+    vmovss xmm3, [rsp+8]
 
 .ln_norm_scalar:
     vmovss xmm0, [rdi]
-    vmovss xmm1, [rsi]
-    vmovss xmm2, [rdx]
-    vsubss xmm0, xmm0, xmm3
-    vdivss xmm0, xmm0, xmm4
-    vmulss xmm0, xmm0, xmm1
-    vaddss xmm0, xmm0, xmm2
+    vsubss xmm0, xmm0, xmm2
+    vdivss xmm0, xmm0, xmm3
+    vmulss xmm0, xmm0, [rsi]
+    vaddss xmm0, xmm0, [rdx]
     vmovss [rdi], xmm0
     add rdi, 4
     add rsi, 4
@@ -691,13 +651,10 @@ layernorm_f32:
     jnz .ln_norm_scalar
 
 .ln_done:
+    vzeroupper
     add rsp, 32
     pop r14
     pop r13
     pop r12
     pop rbx
     ret
-
-section .data
-    align 64
-    neg_mask: times 16 dd 0x80000000  ; Sign bit for negation
