@@ -62,8 +62,11 @@ section .data
                     db '{"name":"dream","description":"Trigger dream cycle","inputSchema":{"type":"object","properties":{}}},'
                     db '{"name":"observe","description":"Trigger observation","inputSchema":{"type":"object","properties":{}}},'
                     db '{"name":"raw","description":"Send raw command","inputSchema":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}},'
-                    db '{"name":"mem_add","description":"Add to holographic memory","inputSchema":{"type":"object","properties":{"category":{"type":"string"},"content":{"type":"string"}},"required":["category","content"]}},'
-                    db '{"name":"mem_query","description":"Query holographic memory","inputSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}}', 0
+                    db '{"name":"mem_add","description":"Add to holographic memory","inputSchema":{"type":"object","properties":{"category":{"type":"string"},"content":{"type":"string"},"context":{"type":"string"}},"required":["category","content"]}},'
+                    db '{"name":"mem_query","description":"Query holographic memory","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}},'
+                    db '{"name":"mem_state","description":"Get memory cognitive state","inputSchema":{"type":"object","properties":{}}},'
+                    db '{"name":"mem_recent","description":"Get recent memory entries","inputSchema":{"type":"object","properties":{"limit":{"type":"integer"}}}},'
+                    db '{"name":"mem_summary","description":"Get memory summary","inputSchema":{"type":"object","properties":{}}}', 0
     tools_list_end: db ']}}', 10, 0
 
     ; Tool names (for matching)
@@ -89,6 +92,9 @@ section .data
     tool_colony:    db "colony", 0
     tool_mem_add:   db "mem_add", 0
     tool_mem_query: db "mem_query", 0
+    tool_mem_state: db "mem_state", 0
+    tool_mem_recent: db "mem_recent", 0
+    tool_mem_summary: db "mem_summary", 0
 
     ; UHMA command templates
     cmd_ccmode_on:  db "ccmode", 10, 0
@@ -109,9 +115,6 @@ section .data
     cmd_hive:       db "hive", 10, 0
     cmd_colony:     db "colony", 10, 0
     cmd_misses:     db "misses ", 0
-    cmd_mem_add:    db "mem_add ", 0
-    cmd_mem_query:  db "mem_query ", 0
-    cmd_mem_state:  db "mem_state", 10, 0
 
     ; Ports
     QUERY_IN:       equ 9997
@@ -168,6 +171,14 @@ section .bss
 
 section .text
 
+; Holographic memory functions (from holo_mem.asm)
+extern holo_mem_init
+extern holo_mem_add
+extern holo_mem_query
+extern holo_mem_state
+extern holo_mem_recent
+extern holo_mem_summary
+
 global _start
 
 ;; ============================================================
@@ -179,10 +190,12 @@ _start:
     mov dword [rel fd_query_in], -1
     mov dword [rel fd_query_out], -1
 
-    ; Connect to UHMA
+    ; Initialize holographic memory (Claude's exclusive memory)
+    call holo_mem_init
+
+    ; Try to connect to UHMA (optional - mem_* commands work without it)
     call connect_uhma
-    test eax, eax
-    jz .uhma_failed
+    ; Don't exit on failure - mem_* commands work standalone
 
     ; Main loop: read requests, process, respond
 .main_loop:
@@ -636,6 +649,27 @@ dispatch_request:
     test eax, eax
     jnz .do_mem_query
 
+    ; mem_state
+    lea rdi, [rel tool_mem_state]
+    mov rsi, rbx
+    call match_tool_name
+    test eax, eax
+    jnz .do_mem_state
+
+    ; mem_recent
+    lea rdi, [rel tool_mem_recent]
+    mov rsi, rbx
+    call match_tool_name
+    test eax, eax
+    jnz .do_mem_recent
+
+    ; mem_summary
+    lea rdi, [rel tool_mem_summary]
+    mov rsi, rbx
+    call match_tool_name
+    test eax, eax
+    jnz .do_mem_summary
+
     ; Unknown tool - return error
     jmp .dispatch_unknown
 
@@ -742,78 +776,101 @@ dispatch_request:
     jmp .dispatch_ret
 
 .do_mem_add:
-    ; Build "mem_add <category> <content>" command
-    lea rdi, [rel send_buf]
-    lea rsi, [rel cmd_mem_add]
-.copy_mem_add:
-    lodsb
-    test al, al
-    jz .add_cat
-    stosb
-    jmp .copy_mem_add
-.add_cat:
-    ; Copy category (up to quote)
+    ; Call holo_mem_add(category, content, context, source)
+    ; Parse category from req_category
     mov rsi, [rel req_category]
     test rsi, rsi
-    jz .add_space
-.copy_cat:
-    lodsb
-    cmp al, '"'
-    je .add_space
-    test al, al
-    jz .add_space
-    stosb
-    jmp .copy_cat
-.add_space:
-    mov byte [rdi], ' '
-    inc rdi
-    ; Copy content (up to quote)
+    jz .dispatch_unknown
+    call parse_category_num     ; returns eax = category number
+    push rax                    ; save category
+    ; Get content
     mov rsi, [rel req_content]
     test rsi, rsi
-    jz .finish_mem_add
-.copy_content:
-    lodsb
-    cmp al, '"'
-    je .finish_mem_add
-    test al, al
-    jz .finish_mem_add
-    stosb
-    jmp .copy_content
-.finish_mem_add:
-    mov byte [rdi], 10
-    mov byte [rdi + 1], 0
-    lea rsi, [rel send_buf]
-    call uhma_command
+    jz .dispatch_unknown
+    lea rdi, [rel send_buf]
+    call extract_json_string
+    ; Call holo_mem_add(edi=category, rsi=content, rdx=context, ecx=source)
+    pop rdi                     ; category
+    lea rsi, [rel send_buf]     ; content
+    xor edx, edx                ; context = NULL
+    xor ecx, ecx                ; source = NULL
+    call holo_mem_add
+    ; Format response with entry_id
+    mov [rel req_n], eax        ; reuse req_n for entry_id
+    lea rdi, [rel resp_buf]
+    mov byte [rdi], 'A'
+    mov byte [rdi+1], 'd'
+    mov byte [rdi+2], 'd'
+    mov byte [rdi+3], 'e'
+    mov byte [rdi+4], 'd'
+    mov byte [rdi+5], ' '
+    mov byte [rdi+6], '#'
+    add rdi, 7
+    mov eax, [rel req_n]
+    call itoa_inline
+    mov byte [rdi], 0
+    call send_success_response
     jmp .dispatch_ret
 
 .do_mem_query:
-    ; Build "mem_query <query>" command
-    lea rdi, [rel send_buf]
-    lea rsi, [rel cmd_mem_query]
-.copy_mem_query:
-    lodsb
-    test al, al
-    jz .add_query
-    stosb
-    jmp .copy_mem_query
-.add_query:
-    ; Copy query text (from req_text which holds "query" value)
+    ; Call holo_mem_query(query, limit)
     mov rsi, [rel req_text]
     test rsi, rsi
-    jz .finish_mem_query
-.copy_query:
-    lodsb
-    cmp al, '"'
-    je .finish_mem_query
-    test al, al
-    jz .finish_mem_query
-    stosb
-    jmp .copy_query
-.finish_mem_query:
-    mov byte [rdi], 10
-    mov byte [rdi + 1], 0
-    lea rsi, [rel send_buf]
-    call uhma_command
+    jz .dispatch_unknown
+    lea rdi, [rel send_buf]
+    call extract_json_string
+    lea rdi, [rel send_buf]
+    mov esi, [rel req_n]
+    test esi, esi
+    jnz .query_limit_ok
+    mov esi, 10
+.query_limit_ok:
+    call holo_mem_query
+    ; Response already printed to stdout by holo_mem_query
+    ; Format empty success response
+    lea rdi, [rel resp_buf]
+    mov byte [rdi], 'Q'
+    mov byte [rdi+1], 'u'
+    mov byte [rdi+2], 'e'
+    mov byte [rdi+3], 'r'
+    mov byte [rdi+4], 'y'
+    mov byte [rdi+5], ' '
+    mov byte [rdi+6], 'O'
+    mov byte [rdi+7], 'K'
+    mov byte [rdi+8], 0
+    call send_success_response
+    jmp .dispatch_ret
+
+.do_mem_state:
+    call holo_mem_state
+    lea rdi, [rel resp_buf]
+    mov byte [rdi], 'O'
+    mov byte [rdi+1], 'K'
+    mov byte [rdi+2], 0
+    call send_success_response
+    jmp .dispatch_ret
+
+.do_mem_recent:
+    mov edi, [rel req_n]
+    test edi, edi
+    jnz .recent_limit_ok
+    mov edi, 10
+.recent_limit_ok:
+    call holo_mem_recent
+    lea rdi, [rel resp_buf]
+    mov byte [rdi], 'O'
+    mov byte [rdi+1], 'K'
+    mov byte [rdi+2], 0
+    call send_success_response
+    jmp .dispatch_ret
+
+.do_mem_summary:
+    call holo_mem_summary
+    lea rdi, [rel resp_buf]
+    mov byte [rdi], 'O'
+    mov byte [rdi+1], 'K'
+    mov byte [rdi+2], 0
+    call send_success_response
     jmp .dispatch_ret
 
 .dispatch_unknown:
@@ -1703,3 +1760,96 @@ atoi:
 exit:
     mov eax, SYS_EXIT
     syscall
+
+;; ============================================================
+;; parse_category_num — Convert category string to number
+;; rsi = category string (from JSON, with quotes stripped)
+;; Returns: eax = category number (0-13)
+;; ============================================================
+parse_category_num:
+    push rbx
+    mov rbx, rsi
+
+    ; "finding" = 0
+    cmp dword [rbx], 'find'
+    jne .not_finding
+    mov eax, 0
+    jmp .cat_ret
+.not_finding:
+
+    ; "failed" = 1
+    cmp dword [rbx], 'fail'
+    jne .not_failed
+    mov eax, 1
+    jmp .cat_ret
+.not_failed:
+
+    ; "success" = 2
+    cmp dword [rbx], 'succ'
+    jne .not_success
+    mov eax, 2
+    jmp .cat_ret
+.not_success:
+
+    ; "insight" = 3
+    cmp dword [rbx], 'insi'
+    jne .not_insight
+    mov eax, 3
+    jmp .cat_ret
+.not_insight:
+
+    ; "warning" = 4
+    cmp dword [rbx], 'warn'
+    jne .not_warning
+    mov eax, 4
+    jmp .cat_ret
+.not_warning:
+
+    ; "session" = 5
+    cmp dword [rbx], 'sess'
+    jne .not_session
+    mov eax, 5
+    jmp .cat_ret
+.not_session:
+
+    ; "location" = 6
+    cmp dword [rbx], 'loca'
+    jne .not_location
+    mov eax, 6
+    jmp .cat_ret
+.not_location:
+
+    ; "question" = 7
+    cmp dword [rbx], 'ques'
+    jne .not_question
+    mov eax, 7
+    jmp .cat_ret
+.not_question:
+
+    ; "todo" = 8
+    cmp dword [rbx], 'todo'
+    jne .not_todo
+    mov eax, 8
+    jmp .cat_ret
+.not_todo:
+
+    ; "context" = 9
+    cmp dword [rbx], 'cont'
+    jne .not_context
+    mov eax, 9
+    jmp .cat_ret
+.not_context:
+
+    ; "request" = 10
+    cmp dword [rbx], 'requ'
+    jne .not_request
+    mov eax, 10
+    jmp .cat_ret
+.not_request:
+
+    ; Default to finding
+    mov eax, 0
+
+.cat_ret:
+    pop rbx
+    ret

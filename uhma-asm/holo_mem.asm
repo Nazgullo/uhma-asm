@@ -8,8 +8,8 @@
 ; @entry holo_mem_outcome(edi=entry_id, esi=worked) -> void  ; record outcome
 ; @entry holo_mem_summary() -> void  ; prints summary stats
 ;
-; @calls vsa.asm:holo_gen_vec, holo_bind_f64, holo_superpose_f64, holo_cosim_f64
-; @calledby repl.asm (mem_* commands)
+; STANDALONE: Uses own 6GB mmap file, NOT UHMA's surface.
+; @calledby tools/mcp_server.asm (mem_* commands)
 ;
 ; DUAL PURPOSE:
 ;   1. Chat Sessions Memory - findings, insights, sessions, warnings
@@ -56,10 +56,14 @@
 ;   - Category traces enable "find similar warnings" type queries
 ;
 %include "syscalls.inc"
-%include "constants.inc"
 
-; Layout offsets from SURFACE_BASE
-%define HOLO_MEM_OFFSET       0x10200000    ; After scratch + workbuf
+; Standalone 6GB surface (same file as Python version)
+%define HOLO_SURFACE_SIZE     0x180000000   ; 6GB
+%define HOLO_VEC_DIM          1024
+%define HOLO_VEC_BYTES        8192          ; 1024 * 8
+
+; Layout offsets from mmap'd surface base
+%define HOLO_MEM_OFFSET       0             ; Entries at start
 %define HOLO_MEM_ENTRY_SIZE   2048          ; bytes per entry
 %define HOLO_MEM_MAX_ENTRIES  4096          ; 8MB total
 %define HOLO_MEM_TRACE_OFFSET 0x10A00000    ; Category traces (14 * 8KB = 112KB)
@@ -106,7 +110,9 @@
 %define HMS_QUERY_COUNT 20          ; u32 total queries
 
 section .data
+    hm_surface_path: db "HOLO-memory/memory/holo_surface.dat", 0
     hm_init_msg:    db "[HOLO_MEM] Holographic memory initialized", 10, 0
+    hm_mmap_fail:   db "[HOLO_MEM] ERROR: mmap failed", 10, 0
     hm_add_msg:     db "[HOLO_MEM] Added entry #", 0
     hm_query_msg:   db "[HOLO_MEM] Query results:", 10, 0
     hm_recent_msg:  db "[HOLO_MEM] Recent entries:", 10, 0
@@ -147,6 +153,9 @@ section .data
     cat_code_low:   db "code_low", 0
 
 section .bss
+    ; Surface base (mmap'd)
+    hm_surface_base: resq 1
+
     ; Embed status (0=available, -1=failed)
     embed_available: resd 1
 
@@ -165,12 +174,6 @@ extern print_cstr
 extern print_u64
 extern print_f64
 extern print_newline
-extern holo_gen_vec
-extern holo_bind_f64
-extern holo_superpose_f64
-extern holo_cosim_f64
-extern holo_scale_f64
-extern vsa_normalize
 
 ; MPNet semantic embeddings
 extern embed_init
@@ -178,18 +181,52 @@ extern embed_text
 
 ;; ============================================================
 ;; holo_mem_init — Initialize holographic memory system
+;; mmaps the 6GB surface file used by Python version
 ;; ============================================================
 global holo_mem_init
 holo_mem_init:
     push rbx
+    push r12
     sub rsp, 8
 
-    mov rbx, SURFACE_BASE
+    ; Open surface file (create if not exists)
+    mov eax, SYS_OPEN
+    lea rdi, [rel hm_surface_path]
+    mov esi, O_RDWR | O_CREAT
+    mov edx, 0644o
+    syscall
+    test eax, eax
+    js .mmap_fail
+    mov r12d, eax               ; save fd
 
-    ; Initialize MPNet embeddings (loads ~440MB weights)
-    ; Called every session since weights are mmap'd fresh
+    ; Extend file to 6GB if needed
+    mov eax, SYS_FTRUNCATE
+    mov edi, r12d
+    mov rsi, HOLO_SURFACE_SIZE
+    syscall
+
+    ; mmap the file
+    mov eax, SYS_MMAP
+    xor edi, edi                ; addr = NULL
+    mov rsi, HOLO_SURFACE_SIZE  ; length
+    mov edx, PROT_READ | PROT_WRITE
+    mov r10d, MAP_SHARED
+    mov r8d, r12d               ; fd
+    xor r9d, r9d                ; offset = 0
+    syscall
+    cmp rax, -1
+    je .mmap_fail
+    mov [rel hm_surface_base], rax
+    mov rbx, rax
+
+    ; Close fd (mmap keeps reference)
+    mov eax, SYS_CLOSE
+    mov edi, r12d
+    syscall
+
+    ; Initialize MPNet embeddings
     call embed_init
-    mov [rel embed_available], eax  ; 0=ok, -1=failed
+    mov [rel embed_available], eax
 
     ; Check if state already initialized (non-zero entry count)
     mov rax, [rbx + HOLO_MEM_STATE_OFFSET + HMS_NEXT_ID]
@@ -207,6 +244,16 @@ holo_mem_init:
     call print_cstr
 
     add rsp, 8
+    pop r12
+    pop rbx
+    ret
+
+.mmap_fail:
+    lea rdi, [rel hm_mmap_fail]
+    call print_cstr
+    mov qword [rel hm_surface_base], 0
+    add rsp, 8
+    pop r12
     pop rbx
     ret
 
@@ -227,7 +274,7 @@ holo_mem_add:
     push r15
     sub rsp, 24
 
-    mov rbx, SURFACE_BASE
+    mov rbx, [rel hm_surface_base]
 
     ; Save parameters
     mov r12d, edi           ; category
@@ -471,7 +518,7 @@ holo_mem_query:
     push r15
     sub rsp, 24
 
-    mov rbx, SURFACE_BASE
+    mov rbx, [rel hm_surface_base]
 
     ; Save query and limit
     mov [rsp], rdi          ; query string
@@ -755,7 +802,7 @@ hm_find_entry_by_id:
     push r12
     push r13
 
-    mov rbx, SURFACE_BASE
+    mov rbx, [rel hm_surface_base]
     mov r12, rax            ; target ID
     mov r13d, [rbx + HOLO_MEM_STATE_OFFSET + HMS_ENTRY_COUNT]
 
@@ -796,7 +843,7 @@ holo_mem_recent:
     push r13
     sub rsp, 8
 
-    mov rbx, SURFACE_BASE
+    mov rbx, [rel hm_surface_base]
 
     mov r12d, edi           ; limit
     test r12d, r12d
@@ -884,7 +931,7 @@ holo_mem_state:
     push r13
     sub rsp, 8
 
-    mov rbx, SURFACE_BASE
+    mov rbx, [rel hm_surface_base]
 
     lea rdi, [rel hm_state_msg]
     call print_cstr
@@ -1020,7 +1067,7 @@ holo_mem_outcome:
     push r13
     sub rsp, 8
 
-    mov rbx, SURFACE_BASE
+    mov rbx, [rel hm_surface_base]
     mov r12d, edi           ; entry_id
     mov r13d, esi           ; worked
 
@@ -1083,7 +1130,7 @@ holo_mem_summary:
     push rbx
     sub rsp, 8
 
-    mov rbx, SURFACE_BASE
+    mov rbx, [rel hm_surface_base]
 
     lea rdi, [rel hm_summary_msg]
     call print_cstr
@@ -1122,4 +1169,312 @@ fnv64_hash_string:
     mov rdx, rax
     shr rdx, 32
     xor eax, edx
+    ret
+
+;; ============================================================
+;; INLINE VSA FUNCTIONS (standalone, no UHMA dependency)
+;; ============================================================
+
+;; ------------------------------------------------------------
+;; holo_gen_vec — Generate pseudo-random vector from seed
+;; edi = seed (32-bit)
+;; rsi = output vector ptr (1024 f64 = 8192 bytes)
+;; Uses xorshift64 PRNG, normalizes to approximately unit length
+;; ------------------------------------------------------------
+global holo_gen_vec
+holo_gen_vec:
+    push rbx
+    push r12
+    push r13
+
+    mov r12, rsi                ; output ptr
+
+    ; Expand seed to 64-bit state
+    mov eax, edi
+    test eax, eax
+    jnz .seed_ok
+    mov eax, 0x12345678         ; default seed if 0
+.seed_ok:
+    ; Mix seed with golden ratio
+    imul rax, rax, 0x9E3779B97F4A7C15
+    mov rbx, rax                ; PRNG state
+
+    mov r13d, HOLO_VEC_DIM      ; counter
+
+.gen_loop:
+    ; xorshift64
+    mov rax, rbx
+    shr rax, 12
+    xor rbx, rax
+    mov rax, rbx
+    shl rax, 25
+    xor rbx, rax
+    mov rax, rbx
+    shr rax, 27
+    xor rbx, rax
+
+    ; Convert to f64 in range [-1, 1]
+    ; Take bits, mask to 52-bit mantissa, create double
+    mov rax, rbx
+    imul rax, rax, 0x5851F42D4C957F2D  ; more mixing
+
+    ; Create f64: sign from bit 63, exponent 0x3FF (1.x), mantissa from bits
+    mov rcx, rax
+    and rcx, 0x000FFFFFFFFFFFFF     ; mantissa bits
+    or rcx, 0x3FF0000000000000      ; exponent for [1.0, 2.0)
+    mov [r12], rcx
+
+    ; Subtract 1.5 to center around 0 in range [-0.5, 0.5]
+    movsd xmm0, [r12]
+    mov rax, 0x3FF8000000000000     ; 1.5
+    movq xmm1, rax
+    subsd xmm0, xmm1
+
+    ; Scale to [-1, 1]
+    mov rax, 0x4000000000000000     ; 2.0
+    movq xmm1, rax
+    mulsd xmm0, xmm1
+    movsd [r12], xmm0
+
+    add r12, 8
+    dec r13d
+    jnz .gen_loop
+
+    ; Normalize the vector
+    sub r12, HOLO_VEC_BYTES     ; restore ptr to start
+    mov rdi, r12
+    call vsa_normalize
+
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ------------------------------------------------------------
+;; holo_bind_f64 — Element-wise multiplication (binding)
+;; rdi = vec_a ptr (input)
+;; rsi = vec_b ptr (input)
+;; rdx = output ptr (can be same as vec_a or vec_b)
+;; ------------------------------------------------------------
+global holo_bind_f64
+holo_bind_f64:
+    push rbx
+    push r12
+    push r13
+    push r14
+
+    mov r12, rdi                ; vec_a
+    mov r13, rsi                ; vec_b
+    mov r14, rdx                ; output
+
+    mov ebx, HOLO_VEC_DIM / 4   ; process 4 at a time with AVX
+
+.bind_loop:
+    ; Load 4 doubles from each vector
+    vmovupd ymm0, [r12]
+    vmovupd ymm1, [r13]
+    vmulpd ymm0, ymm0, ymm1
+    vmovupd [r14], ymm0
+
+    add r12, 32
+    add r13, 32
+    add r14, 32
+    dec ebx
+    jnz .bind_loop
+
+    vzeroupper
+
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ------------------------------------------------------------
+;; holo_superpose_f64 — Element-wise addition (superposition)
+;; rdi = target ptr (accumulator, modified in place)
+;; rsi = source ptr (added to target)
+;; ------------------------------------------------------------
+global holo_superpose_f64
+holo_superpose_f64:
+    push rbx
+    push r12
+    push r13
+
+    mov r12, rdi                ; target
+    mov r13, rsi                ; source
+
+    mov ebx, HOLO_VEC_DIM / 4   ; process 4 at a time with AVX
+
+.super_loop:
+    vmovupd ymm0, [r12]
+    vmovupd ymm1, [r13]
+    vaddpd ymm0, ymm0, ymm1
+    vmovupd [r12], ymm0
+
+    add r12, 32
+    add r13, 32
+    dec ebx
+    jnz .super_loop
+
+    vzeroupper
+
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ------------------------------------------------------------
+;; holo_cosim_f64 — Cosine similarity
+;; rdi = vec_a ptr
+;; rsi = vec_b ptr
+;; Returns: xmm0 = dot(a,b) / (|a| * |b|)
+;; ------------------------------------------------------------
+global holo_cosim_f64
+holo_cosim_f64:
+    push rbx
+    push r12
+    push r13
+    sub rsp, 24                 ; local storage for dot, mag_a, mag_b
+
+    mov r12, rdi                ; vec_a
+    mov r13, rsi                ; vec_b
+
+    ; Initialize accumulators
+    vxorpd ymm2, ymm2, ymm2     ; dot product
+    vxorpd ymm3, ymm3, ymm3     ; magnitude a squared
+    vxorpd ymm4, ymm4, ymm4     ; magnitude b squared
+
+    mov ebx, HOLO_VEC_DIM / 4
+
+.cosim_loop:
+    vmovupd ymm0, [r12]         ; a
+    vmovupd ymm1, [r13]         ; b
+
+    ; dot += a * b
+    vmulpd ymm5, ymm0, ymm1
+    vaddpd ymm2, ymm2, ymm5
+
+    ; mag_a += a * a
+    vmulpd ymm5, ymm0, ymm0
+    vaddpd ymm3, ymm3, ymm5
+
+    ; mag_b += b * b
+    vmulpd ymm5, ymm1, ymm1
+    vaddpd ymm4, ymm4, ymm5
+
+    add r12, 32
+    add r13, 32
+    dec ebx
+    jnz .cosim_loop
+
+    ; Horizontal sum for dot product (ymm2)
+    vextractf128 xmm0, ymm2, 1
+    vaddpd xmm2, xmm2, xmm0
+    vhaddpd xmm2, xmm2, xmm2
+    movsd [rsp], xmm2           ; dot
+
+    ; Horizontal sum for mag_a (ymm3)
+    vextractf128 xmm0, ymm3, 1
+    vaddpd xmm3, xmm3, xmm0
+    vhaddpd xmm3, xmm3, xmm3
+    sqrtsd xmm3, xmm3           ; sqrt(mag_a)
+    movsd [rsp + 8], xmm3       ; |a|
+
+    ; Horizontal sum for mag_b (ymm4)
+    vextractf128 xmm0, ymm4, 1
+    vaddpd xmm4, xmm4, xmm0
+    vhaddpd xmm4, xmm4, xmm4
+    sqrtsd xmm4, xmm4           ; sqrt(mag_b)
+    movsd [rsp + 16], xmm4      ; |b|
+
+    vzeroupper
+
+    ; cosim = dot / (|a| * |b|)
+    movsd xmm0, [rsp]           ; dot
+    movsd xmm1, [rsp + 8]       ; |a|
+    movsd xmm2, [rsp + 16]      ; |b|
+    mulsd xmm1, xmm2            ; |a| * |b|
+
+    ; Check for zero magnitude
+    xorpd xmm3, xmm3
+    ucomisd xmm1, xmm3
+    jbe .cosim_zero
+
+    divsd xmm0, xmm1
+    jmp .cosim_done
+
+.cosim_zero:
+    xorpd xmm0, xmm0            ; return 0 if either vector is zero
+
+.cosim_done:
+    add rsp, 24
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ------------------------------------------------------------
+;; vsa_normalize — Normalize vector to unit length
+;; rdi = vector ptr (modified in place)
+;; ------------------------------------------------------------
+global vsa_normalize
+vsa_normalize:
+    push rbx
+    push r12
+    sub rsp, 8
+
+    mov r12, rdi                ; vector ptr
+
+    ; Compute magnitude squared
+    vxorpd ymm2, ymm2, ymm2
+    mov ebx, HOLO_VEC_DIM / 4
+    mov rdi, r12
+
+.norm_mag_loop:
+    vmovupd ymm0, [rdi]
+    vmulpd ymm0, ymm0, ymm0
+    vaddpd ymm2, ymm2, ymm0
+    add rdi, 32
+    dec ebx
+    jnz .norm_mag_loop
+
+    ; Horizontal sum
+    vextractf128 xmm0, ymm2, 1
+    vaddpd xmm2, xmm2, xmm0
+    vhaddpd xmm2, xmm2, xmm2
+
+    ; sqrt to get magnitude
+    sqrtsd xmm2, xmm2
+    movsd [rsp], xmm2
+
+    vzeroupper
+
+    ; Check for zero magnitude
+    xorpd xmm0, xmm0
+    ucomisd xmm2, xmm0
+    jbe .norm_done              ; skip if zero
+
+    ; Divide all elements by magnitude
+    movsd xmm1, [rsp]           ; magnitude
+    mov ebx, HOLO_VEC_DIM / 4
+    mov rdi, r12
+
+    ; Broadcast magnitude to ymm1 for parallel division
+    vbroadcastsd ymm1, xmm1
+
+.norm_div_loop:
+    vmovupd ymm0, [rdi]
+    vdivpd ymm0, ymm0, ymm1
+    vmovupd [rdi], ymm0
+    add rdi, 32
+    dec ebx
+    jnz .norm_div_loop
+
+    vzeroupper
+
+.norm_done:
+    add rsp, 8
+    pop r12
+    pop rbx
     ret

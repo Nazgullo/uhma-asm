@@ -9,8 +9,7 @@ SRCS = boot.asm io.asm format.asm signal.asm surface.asm repl.asm \
        observe.asm modify.asm gate.asm decode.asm drives.asm \
        evolve.asm dreams.asm persist.asm introspect.asm trace.asm \
        symbolic.asm genes.asm factor.asm verify.asm presence.asm \
-       receipt.asm maturity.asm channels.asm hub_client.asm narrate.asm \
-       holo_mem.asm
+       receipt.asm maturity.asm channels.asm hub_client.asm narrate.asm
 
 # MPNet semantic embeddings (768-dim → 8192-dim projection)
 EMBED_SRCS = embed/matmul.asm embed/attention.asm embed/tokenize.asm embed/embed.asm
@@ -35,7 +34,7 @@ all: $(TARGET) $(HUB_TARGET) tools
 
 tools: $(FEEDER_TARGET) $(MCP_TARGET)
 
-$(TARGET): $(OBJS) $(EMBED_OBJS)
+$(TARGET): $(OBJS)
 	$(LD) $(LDFLAGS) -o $@ $^
 
 $(HUB_TARGET): hub.o
@@ -44,7 +43,7 @@ $(HUB_TARGET): hub.o
 $(FEEDER_TARGET): tools/feeder.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
-$(MCP_TARGET): tools/mcp_server.o
+$(MCP_TARGET): tools/mcp_server.o holo_mem.o format.o $(EMBED_OBJS)
 	$(LD) $(LDFLAGS) -o $@ $^
 
 tools/%.o: tools/%.asm include/syscalls.inc
