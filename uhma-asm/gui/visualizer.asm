@@ -341,10 +341,10 @@ section .data
     ANIM_STEP       equ 13          ; 255 / 20 ≈ 13
 
     ; Ring layout constants (semi-3D orbital view)
-    RING_CENTER_X   equ CANVAS_X + CANVAS_W/2
-    RING_CENTER_Y   equ CANVAS_Y + CANVAS_H/2 + 50  ; slightly below center for perspective
-    RING_RADIUS_X   equ 380         ; horizontal radius (wider for perspective)
-    RING_RADIUS_Y   equ 180         ; vertical radius (shorter for 3D tilt)
+    RING_CENTER_X   equ CANVAS_X + CANVAS_W/2   ; centered
+    RING_CENTER_Y   equ CANVAS_Y + CANVAS_H/2 + 50  ; below center for perspective
+    RING_RADIUS_X   equ 253         ; 2/3 of original (all connections 1/3 shorter)
+    RING_RADIUS_Y   equ 120         ; 2/3 of original, keeps ellipse ratio
     RING_DEPTH_SCALE equ 60         ; how much size varies with depth (%)
 
     ; Layout constants
@@ -366,12 +366,12 @@ section .data
     ; Legacy constants for click handling
     MAP_W           equ CANVAS_W
     MAP_H           equ CANVAS_H
-    ; Output panel layout (right side, 3 stacked panels)
-    OUT_PANEL_X     equ WIN_W - 320       ; x position
-    OUT_PANEL_W     equ 310               ; panel width
-    OUT_PANEL_H     equ 180               ; panel height
-    OUT_PANEL_GAP   equ 5                 ; gap between panels
-    OUT_FEED_Y      equ MENU_H + 10       ; FEED panel y
+    ; Output panel layout (overlay on right edge, compact)
+    OUT_PANEL_W     equ 200               ; panel width (compact)
+    OUT_PANEL_X     equ WIN_W - OUT_PANEL_W - 3  ; flush right
+    OUT_PANEL_H     equ 160               ; panel height
+    OUT_PANEL_GAP   equ 3                 ; gap between panels
+    OUT_FEED_Y      equ MENU_H + 8        ; FEED panel y
     OUT_QUERY_Y     equ OUT_FEED_Y + OUT_PANEL_H + OUT_PANEL_GAP
     OUT_DEBUG_Y     equ OUT_QUERY_Y + OUT_PANEL_H + OUT_PANEL_GAP
 
@@ -1646,7 +1646,7 @@ draw_frame:
     ; Input area
     call draw_input
 
-    ; Output panel (UHMA response)
+    ; Output panels (3 live streams: FEED, QUERY, DEBUG)
     call draw_output
 
     ; Status bar
@@ -3411,7 +3411,7 @@ draw_output:
     push r13
     push r14
     push r15
-    sub rsp, 72                  ; line buffer (64) + alignment (8)
+    sub rsp, 8                   ; align stack (5 pushes = 40, need 8 more for 16-byte alignment)
 
     ; Draw FEED panel
     mov edi, OUT_PANEL_X
@@ -3440,7 +3440,7 @@ draw_output:
     mov r9d, [rel debug_paused]
     call draw_ring_panel
 
-    add rsp, 72
+    add rsp, 8
     pop r15
     pop r14
     pop r13
@@ -3490,11 +3490,13 @@ draw_ring_panel:
 .draw_border:
     call gfx_rect
 
-    ; Panel title
-    lea edi, [r12d + 10]
-    lea esi, [r13d + 14]
+    ; Panel title (use fixed safe length)
+    mov edi, r12d
+    add edi, 10
+    mov esi, r13d
+    add esi, 14
     mov rdx, [rsp + 64]         ; label ptr
-    mov ecx, 15
+    mov ecx, 12                 ; max label length
     mov r8d, [rel col_cyan]
     call gfx_text
 
@@ -3510,9 +3512,7 @@ draw_ring_panel:
 .not_paused:
 
     ; Draw ring buffer content (last ~10 lines before view_pos)
-    ; Work backwards from view_pos to find line starts
-    ; We'll display up to 10 lines, 40 chars each
-    ; Stack layout: [rsp+0..63]=line buffer, [rsp+72]=loop counter, [rsp+80]=char count
+    ; Stack layout: [rsp+0..63]=line buffer, [rsp+72]=loop counter, [rsp+76]=scan limit
 
     ; Calculate start position: go back ~400 chars from view_pos
     mov eax, r15d               ; view_pos
@@ -3523,34 +3523,37 @@ draw_ring_panel:
     mov eax, r13d
     add eax, 30
     mov r15d, eax               ; y for first line
-    mov dword [rsp + 72], 10    ; loop counter
+    mov dword [rsp + 72], 10    ; max lines
 
 .scan_lines:
     ; Copy one line from ring to stack buffer
     lea rdi, [rsp]              ; line buffer
     xor ecx, ecx                ; char count
+    mov dword [rsp + 76], 80    ; scan limit (prevent infinite loop on empty buffer)
+
 .copy_line:
-    cmp ecx, 40                 ; max chars per line
+    dec dword [rsp + 76]        ; decrement scan limit
+    jz .line_done               ; exit if scanned too many bytes
+    cmp ecx, 24                 ; max chars per line (fits 200px panel)
     jge .line_done
     mov eax, ebx
     and eax, RING_MASK
     movzx edx, byte [r14 + rax]
+    inc ebx                     ; always advance scan position
     test dl, dl                 ; null?
-    jz .next_char
+    jz .copy_line               ; skip nulls, continue scanning
     cmp dl, 10                  ; newline?
     je .line_done
     cmp dl, 13                  ; CR?
-    je .next_char
+    je .copy_line               ; skip CR, continue
+    cmp dl, 32                  ; printable? (>= space)
+    jl .copy_line               ; skip control chars
     mov [rdi + rcx], dl
     inc ecx
-.next_char:
-    inc ebx
     jmp .copy_line
 
 .line_done:
     mov byte [rdi + rcx], 0     ; null terminate
-    mov [rsp + 80], ecx         ; save char count
-    inc ebx                     ; skip newline
 
     ; Draw line if not empty
     test ecx, ecx
@@ -3560,7 +3563,7 @@ draw_ring_panel:
     add edi, 10
     mov esi, r15d
     lea rdx, [rsp]              ; line buffer
-    mov ecx, [rsp + 80]         ; char count
+    ; ecx already has char count
     mov r8d, [rel col_text]
     call gfx_text
 

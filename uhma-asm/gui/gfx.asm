@@ -168,11 +168,11 @@ gfx_init:
     mov [rel font], rax
 
     ; Select input events
-    ; KeyPressMask=0x1, ButtonPressMask=0x4, PointerMotionMask=0x40,
-    ; ExposureMask=0x8000, StructureNotifyMask=0x20000
+    ; KeyPressMask=0x1, ButtonPressMask=0x4, ButtonReleaseMask=0x8,
+    ; PointerMotionMask=0x40, ExposureMask=0x8000, StructureNotifyMask=0x20000
     mov rdi, r12
     mov rsi, [rel window]
-    mov rdx, 0x028045       ; All needed events including mouse motion
+    mov rdx, 0x02804D       ; Added ButtonReleaseMask (0x8)
     call XSelectInput
 
     ; Map window
