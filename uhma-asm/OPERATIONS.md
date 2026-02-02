@@ -2,6 +2,8 @@
 
 A complete guide for operating UHMA correctly.
 
+**Architecture**: Pure x86-64 assembly. No Python dependencies.
+
 ---
 
 ## Quick Start
@@ -12,14 +14,17 @@ cd /home/peter/Desktop/STARWARS/uhma-asm
 # Build if needed
 make
 
-# Single training cycle
-./feed.sh --cycles 1
+# Start UHMA interactively
+./uhma
 
-# Training + autonomous live mode
-./feed.sh --cycles 1 --live
+# Start UHMA headless (TCP-only)
+./uhma < /dev/null &
+
+# Training via feeder
+./tools/feeder --corpus corpus/ --cycles 1
 
 # Graceful shutdown
-./feed.sh --shutdown
+./tools/feeder --shutdown
 ```
 
 ---
@@ -35,31 +40,28 @@ UHMA is a self-modifying x86-64 assembly program that learns patterns through ho
 
 ---
 
-## Training with feed.sh
+## Training with feeder (Assembly)
 
-`feed.sh` is the universal training script. It handles all UHMA communication correctly.
+`tools/feeder` is the pure x86-64 assembly training client. No Python required.
 
 ### Basic Commands
 
 ```bash
-# Preview what would happen (no actual training)
-./feed.sh --dry-run
-
 # Single cycle through corpus/
-./feed.sh --cycles 1
+./tools/feeder --corpus corpus/ --cycles 1
 
 # Infinite training (Ctrl+C to stop)
-./feed.sh --cycles 0
-
-# Self-learning mode (feeds UHMA's responses back)
-./feed.sh --mastery
+./tools/feeder --cycles 0
 
 # Custom corpus directory
-./feed.sh --corpus data/ --cycles 1
+./tools/feeder --corpus data/ --cycles 1
 
 # Faster/slower pacing
-./feed.sh --pause 2        # 2 seconds between files
-./feed.sh --pause 30       # 30 seconds between files
+./tools/feeder --pause 2        # 2 seconds between files
+./tools/feeder --pause 30       # 30 seconds between files
+
+# Spawn UHMA if not running
+./tools/feeder --spawn --corpus corpus/ --cycles 1
 ```
 
 ### All Options
@@ -69,24 +71,17 @@ UHMA is a self-modifying x86-64 assembly program that learns patterns through ho
 | `--corpus DIR` | corpus/ | Directory with .txt files |
 | `--pause N` | 5 | Seconds between files |
 | `--consolidate N` | 30 | Minutes between observe+dream |
-| `--save-every N` | 30 | Minutes between checkpoints |
-| `--order ORDER` | alpha | alpha/random/reverse |
-| `--cycles N` | 0 | Number of cycles (0=infinite) |
-| `--self-learn` | off | Feed UHMA's responses back |
-| `--mastery` | - | Alias for --cycles 0 --self-learn |
-| `--live` | off | Enter autonomous mode after training |
-| `--live-pause N` | 10 | Seconds to wait before live mode |
-| `--shutdown [NAME]` | - | Graceful shutdown |
-| `--dry-run` | off | Preview without running |
+| `--cycles N` | 1 | Number of cycles (0=infinite) |
+| `--spawn` | off | Spawn UHMA if not running |
+| `--shutdown` | - | Graceful shutdown |
 
-### What feed.sh Does
+### What feeder Does
 
-1. **Starts UHMA** (if not running)
+1. Connects to UHMA's TCP channels (ports 9999/9997/9995)
 2. **Starts persistent drainers** for output ports (9998, 9996, 9994)
 3. **Feeds each .txt file** via `eat filepath` command
 4. **Consolidates** (observe + dream) at intervals
 5. **Saves checkpoints** with automatic cleanup (keeps last 3)
-6. **Alerts Claude** on 5 consecutive failures (via ALERT_CLAUDE.txt)
 
 ---
 
@@ -96,11 +91,12 @@ UHMA is a self-modifying x86-64 assembly program that learns patterns through ho
 
 ```bash
 # From command line
-./feed.sh --shutdown              # Auto-named save
-./feed.sh --shutdown my_save      # Custom name
+./tools/feeder --shutdown
 
-# During training: Ctrl+C
-# (Automatically saves and exits gracefully)
+# From REPL
+./uhma
+> save mystate
+> quit
 ```
 
 **Shutdown sequence:**
@@ -123,24 +119,22 @@ pkill -f "nc localhost"  # Kill drainers
 
 ## Live Autonomous Mode
 
-After training, UHMA can self-explore:
+UHMA can self-explore via the GUI or by toggling batch_mode:
 
 ```bash
-# Train corpus, then enter live mode
-./feed.sh --cycles 1 --live
+# Start GUI (enables autonomous mode automatically)
+./gui/uhma-viz
 
-# With custom wait time
-./feed.sh --cycles 1 --live --live-pause 30
+# Or via REPL
+./uhma
+> batch     # toggle batch_mode off = autonomous
 ```
 
 **How it works:**
-1. Completes training cycles
-2. Waits N seconds for user input (default 10)
-3. If no input, enters autonomous exploration
-4. Feeds ALL files in exploration path (no filtering)
-5. Consolidates every 50 files
-6. Saves every 100 files
-7. Expands exploration based on maturity:
+1. When `batch_mode=0`, UHMA self-consolidates
+2. Auto-dreams when dream_pressure exceeds threshold
+3. Auto-observes to update self-model
+4. Expands exploration based on maturity:
    - **Stage 0 (Infant)**: uhma-asm folder only
    - **Stage 1 (Child)**: Desktop
    - **Stage 2+ (Adolescent/Adult)**: Home folder
@@ -198,7 +192,7 @@ while true; do nc localhost 9994 >> debug.out || sleep 1; done &
 echo "eat file.txt" | timeout 2 nc -N localhost 9999 || true
 ```
 
-**feed.sh handles this automatically.** Only use raw TCP if you have a specific need.
+**tools/feeder handles this automatically.** Only use raw TCP if you have a specific need.
 
 ---
 
@@ -240,14 +234,12 @@ echo "eat file.txt" | timeout 2 nc -N localhost 9999 || true
 
 ## Files
 
-### Scripts
+### Tools (Pure Assembly)
 
 | File | Purpose |
 |------|---------|
-| `feed.sh` | Universal training script (replaces all old training scripts) |
-| `validate.sh` | Validation and testing |
-| `hub_claude.py` | Claude connector for multi-agent hub |
-| `hub_gemini.py` | Gemini connector for multi-agent hub |
+| `tools/feeder` | Training client (connects to UHMA TCP) |
+| `tools/mcp_server` | MCP JSON-RPC server for Claude Code |
 
 ### Core
 
@@ -281,7 +273,7 @@ echo "eat file.txt" | timeout 2 nc -N localhost 9999 || true
 ### UHMA Hangs
 
 **Cause:** Output ports not drained
-**Solution:** Use feed.sh (handles draining automatically)
+**Solution:** Use tools/feeder (handles draining automatically)
 
 ### Port Conflicts
 
@@ -290,7 +282,7 @@ echo "eat file.txt" | timeout 2 nc -N localhost 9999 || true
 ```bash
 pkill -9 uhma
 pkill -f "nc localhost"
-./feed.sh --cycles 1
+./tools/feeder --spawn --cycles 1
 ```
 
 ### UHMA Blocks at Startup
@@ -316,19 +308,21 @@ pkill -f "nc localhost"
 
 ```bash
 rm -f uhma.surface checkpoint_* cycle_*
-./feed.sh --cycles 2 --pause 5
+./uhma < /dev/null &
+./tools/feeder --corpus corpus/ --cycles 2 --pause 5
 ```
 
 ### Resume Training
 
 ```bash
-./feed.sh --cycles 1  # Continues from existing surface
+./tools/feeder --spawn --cycles 1  # Continues from existing surface
 ```
 
-### Training + Live Mode
+### Training + GUI Monitoring
 
 ```bash
-./feed.sh --cycles 1 --live --live-pause 5
+./gui/uhma-viz &                   # Spawns UHMA in autonomous mode
+./tools/feeder --cycles 1          # Feed corpus
 ```
 
 ### Debug Session
@@ -346,20 +340,41 @@ rm -f uhma.surface checkpoint_* cycle_*
 ### Graceful Stop
 
 ```bash
-./feed.sh --shutdown my_checkpoint
+./tools/feeder --shutdown
 ```
 
 ---
 
-## For AI Systems
+## For AI Systems (Claude Code)
 
-1. **Use feed.sh** - it handles all the TCP complexity
+1. **Use MCP tools** - `mcp__uhma__*` handles all communication
 2. **Check status** frequently to monitor progress
-3. **Use --dry-run** first to preview
-4. **Graceful shutdown** with `--shutdown` or Ctrl+C
-5. **Check feed.log** for debugging
+3. **Use mem_add/mem_query** for cross-session memory
+4. **Graceful shutdown** with `mcp__uhma__quit`
 
 The key insight: UHMA learns by prediction error. Feed it text, let it fail, consolidate the failures into patterns. Repeat until accuracy climbs.
+
+## 3-Layer Holographic RAG Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Layer 3: MCP Interface (tools/mcp_server.asm)              │
+│  - Claude Code ←→ JSON-RPC ←→ UHMA TCP                      │
+│  - mem_add, mem_query, status, dream, etc.                  │
+├─────────────────────────────────────────────────────────────┤
+│  Layer 2: Claude Memory (holo_mem.asm)                      │
+│  - Cross-session persistence for Claude                     │
+│  - Categories: finding, failed, success, insight, warning   │
+│  - VSA similarity search (1024-dim f64)                     │
+├─────────────────────────────────────────────────────────────┤
+│  Layer 1: UHMA Core (surface, vsa.asm, receipt.asm)         │
+│  - Self-modifying x86-64 patterns                           │
+│  - Unified trace (8-dim holographic receipts)               │
+│  - 8GB memory-mapped surface                                │
+└─────────────────────────────────────────────────────────────┘
+```
+
+All layers pure assembly. No Python dependencies.
 
 ---
 

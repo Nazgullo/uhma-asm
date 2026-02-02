@@ -2,48 +2,84 @@
 
 Context injection and MCP control interface for Claude Code.
 
-## Components
+**Note**: Core tools (MCP server, feeder, holographic memory) are now pure x86-64 assembly. Python files in this directory are legacy/support utilities.
 
-### 1. MCP Server (`server.py`)
+## Architecture: 3-Layer Holographic RAG
 
-Full UHMA control interface via Model Context Protocol. Exposes 27 tools for command, control, and communication with UHMA.
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Layer 3: MCP Interface (../mcp_server)                     │
+│  - Claude Code ←→ JSON-RPC ←→ UHMA TCP                      │
+│  - 28 tools: status, mem_add, mem_query, dream, etc.        │
+├─────────────────────────────────────────────────────────────┤
+│  Layer 2: Claude Memory (holo_mem.asm in UHMA)              │
+│  - Cross-session persistence for Claude                     │
+│  - Categories: finding, failed, success, insight, warning   │
+│  - VSA similarity search (1024-dim f64)                     │
+├─────────────────────────────────────────────────────────────┤
+│  Layer 1: UHMA Core (surface, vsa.asm, receipt.asm)         │
+│  - Self-modifying x86-64 patterns                           │
+│  - Unified trace (8-dim holographic receipts)               │
+│  - 8GB memory-mapped surface                                │
+└─────────────────────────────────────────────────────────────┘
+```
 
-**Setup**: Create `.mcp.json` in project root (NOT `~/.claude/mcp.json`):
+## Assembly Tools (Primary)
+
+| Tool | Location | Purpose |
+|------|----------|---------|
+| `mcp_server` | `../mcp_server` | MCP JSON-RPC server for Claude Code |
+| `feeder` | `../feeder` | Training client for UHMA |
+| `holo_mem.asm` | `../../holo_mem.asm` | Holographic memory (integrated in UHMA) |
+
+### MCP Server Setup
+
+Create `.mcp.json` in project root:
 
 ```json
 {
   "mcpServers": {
     "uhma": {
-      "command": "python3",
-      "env": {"PYTHONUNBUFFERED": "1"},
-      "args": ["/path/to/uhma-asm/tools/rag/server.py"],
+      "command": "/path/to/uhma-asm/tools/mcp_server",
       "cwd": "/path/to/uhma-asm"
     }
   }
 }
 ```
 
-**Important**: Restart Claude Code after modifying `.mcp.json`. Verify with `/mcp` command.
+**Important**: UHMA must be running before MCP server starts (connects to TCP ports 9997/9996).
 
-**Tools Exposed**:
+Restart Claude Code after changes. Verify with `/mcp`.
+
+### MCP Tools Exposed
+
 | Category | Tools |
 |----------|-------|
 | Input | `input` (process text), `raw` (escape hatch) |
-| Status | `help`, `status`, `self`, `metacog`, `debugger`, `genes`, `subroutines`, `regions`, `presence`, `drives` |
-| Debug | `why`, `misses`, `receipts`, `listen`, `trace` |
+| Status | `help`, `status`, `self`, `metacog`, `intro`, `presence`, `drives`, `regions` |
+| Debug | `why`, `misses`, `receipts`, `trace`, `listen` |
 | Actions | `dream`, `observe`, `compact`, `reset` |
 | I/O | `save`, `load`, `eat` (digest file) |
-| Hive | `hive`, `share`, `colony`, `export`, `import_gene` |
+| Memory | `mem_add`, `mem_query`, `mem_outcome`, `mem_state`, `mem_summary`, `mem_recent` |
+| Hive | `hive`, `colony`, `export`, `import_gene` |
 | Other | `geom`, `web_fetch`, `quit` |
 
-UHMA auto-spawns on first tool call if not running.
+## Python Support Files (Legacy)
 
-### 2. PreToolUse Hook (`hook.py`)
+These are optional utilities, not required for core operation:
+
+| File | Purpose |
+|------|---------|
+| `hook.py` | PreToolUse hook (context injection) |
+| `context.py` | Context generation functions |
+| `query.py` | CLI for querying RAG index |
+| `capture.py` | Session capture utilities |
+
+### PreToolUse Hook (Optional)
 
 Injects context before Claude Code edits/reads `.asm` files:
 - File descriptions, entry points, gotchas
 - Dependency information
-- Session context and memory entries
 
 **Config**: In `~/.claude/settings.json`:
 ```json
@@ -59,35 +95,23 @@ Injects context before Claude Code edits/reads `.asm` files:
 }
 ```
 
-### 3. RAG Index (`index.json`)
+## Memory Files
 
-Pre-built index of UHMA codebase:
-- 29 files with descriptions, entry points, gotchas
-- 223+ functions with signatures
-- Full dependency graph
-
-**Rebuild**:
-```bash
-python3 build.py
+```
+memory/
+├── holo_entries.json   # JSON entries (backup/export)
+├── holo_surface.dat    # VSA surface (mmap'd)
+├── holo_traces.npz     # Category trace vectors
+└── holo_state.json     # System state
 ```
 
-### 4. Semantic Memory (`memory.py`)
+## Archived Python Tools
 
-Cross-session persistence for findings, failures, insights:
-- TF-IDF search
-- Theme clustering
-- Session tracking
+Original Python implementations moved to `archives/`:
+- `server.py` → `tools/mcp_server` (assembly)
+- `holo_memory.py` → `holo_mem.asm` (assembly)
+- `feed.sh` → `tools/feeder` (assembly)
 
-**Files**: `memory/entries.json`, `memory/current_state.md`
+---
 
-## File Reference
-
-| File | Purpose |
-|------|---------|
-| `server.py` | MCP server (UHMA control interface) |
-| `hook.py` | PreToolUse hook (context injection) |
-| `build.py` | RAG index builder |
-| `context.py` | Context generation functions |
-| `query.py` | CLI for querying index |
-| `memory.py` | Semantic memory system |
-| `index.json` | Generated index |
+*Last updated: 2026-02-01*
