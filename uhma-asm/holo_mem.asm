@@ -11,17 +11,27 @@
 ; @calls vsa.asm:holo_gen_vec, holo_bind_f64, holo_superpose_f64, holo_cosim_f64
 ; @calledby repl.asm (mem_* commands)
 ;
-; CATEGORIES:
-;   0 = finding     Confirmed facts
-;   1 = failed      What didn't work
-;   2 = success     What worked
-;   3 = insight     Aha moments
-;   4 = warning     Gotchas to remember
-;   5 = session     Session summaries
-;   6 = location    Code locations
-;   7 = question    Open questions (fast decay)
-;   8 = todo        Tasks
-;   9 = context     Temporary context (fast decay)
+; DUAL PURPOSE:
+;   1. Chat Sessions Memory - findings, insights, sessions, warnings
+;   2. 3-Layer Code RAG - file/function/implementation fidelity levels
+;
+; CATEGORIES (Chat Sessions):
+;   0 = finding     Confirmed facts (decay 0.95)
+;   1 = failed      What didn't work (decay 0.90)
+;   2 = success     What worked (decay 0.95)
+;   3 = insight     Aha moments (decay 0.95)
+;   4 = warning     Gotchas to remember (decay 0.92)
+;   5 = session     Session summaries (decay 0.85)
+;   6 = location    Code locations (decay 0.98)
+;   7 = question    Open questions (decay 0.80)
+;   8 = todo        Tasks (decay 0.85)
+;   9 = context     Temporary context (decay 0.70)
+;  10 = request     User requests (decay 0.80)
+;
+; CATEGORIES (3-Layer Code RAG):
+;  11 = code_high   File-level info (decay 0.98) - architecture, file purposes
+;  12 = code_mid    Function-level info (decay 0.96) - signatures, entry points
+;  13 = code_low    Implementation details (decay 0.92) - gotchas, patterns
 ;
 ; STORAGE:
 ;   Entries stored at HOLO_MEM_OFFSET in surface
@@ -52,7 +62,7 @@
 %define HOLO_MEM_OFFSET       0x10200000    ; After scratch + workbuf
 %define HOLO_MEM_ENTRY_SIZE   2048          ; bytes per entry
 %define HOLO_MEM_MAX_ENTRIES  4096          ; 8MB total
-%define HOLO_MEM_TRACE_OFFSET 0x10A00000    ; Category traces (10 * 8KB = 80KB)
+%define HOLO_MEM_TRACE_OFFSET 0x10A00000    ; Category traces (14 * 8KB = 112KB)
 %define HOLO_MEM_STATE_OFFSET 0x10A20000    ; State counters
 
 ; Entry field offsets
@@ -71,7 +81,7 @@
 %define HME_VEC         1024        ; f64[128] compressed vector
 %define HME_VEC_SIZE    1024        ; 128 * 8
 
-; Categories
+; Categories (Chat Sessions)
 %define CAT_FINDING     0
 %define CAT_FAILED      1
 %define CAT_SUCCESS     2
@@ -82,7 +92,12 @@
 %define CAT_QUESTION    7
 %define CAT_TODO        8
 %define CAT_CONTEXT     9
-%define CAT_COUNT       10
+%define CAT_REQUEST     10
+; Categories (3-Layer Code RAG)
+%define CAT_CODE_HIGH   11      ; File-level (architecture, purposes)
+%define CAT_CODE_MID    12      ; Function-level (signatures, entry points)
+%define CAT_CODE_LOW    13      ; Implementation (gotchas, patterns)
+%define CAT_COUNT       14
 
 ; State offsets
 %define HMS_ENTRY_COUNT 0           ; u32 total entries
@@ -111,10 +126,11 @@ section .data
     hm_findings_lbl: db "  Findings: ", 0
     hm_insights_lbl: db "  Insights: ", 0
 
-    ; Category names
+    ; Category names (14 categories)
     cat_names:
         dq cat_finding, cat_failed, cat_success, cat_insight, cat_warning
         dq cat_session, cat_location, cat_question, cat_todo, cat_context
+        dq cat_request, cat_code_high, cat_code_mid, cat_code_low
     cat_finding:    db "finding", 0
     cat_failed:     db "failed", 0
     cat_success:    db "success", 0
@@ -125,6 +141,10 @@ section .data
     cat_question:   db "question", 0
     cat_todo:       db "todo", 0
     cat_context:    db "context", 0
+    cat_request:    db "request", 0
+    cat_code_high:  db "code_high", 0
+    cat_code_mid:   db "code_mid", 0
+    cat_code_low:   db "code_low", 0
 
 section .bss
     ; Scratch vectors for query encoding

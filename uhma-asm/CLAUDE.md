@@ -455,46 +455,62 @@ npx localtunnel --port 8080             # localtunnel
 - Full dependency graph
 - Rebuilt via: `python3 tools/rag/build.py`
 
-## 3-Layer Holographic RAG Architecture
+## Claude Holographic Memory (Dual Purpose)
+
+The holographic memory (`holo_mem.asm`) serves two purposes:
+
+### 1. Chat Sessions Memory (6GB Surface)
+Cross-session persistence for all conversations, findings, insights:
+
+| Category | Decay | Purpose |
+|----------|-------|---------|
+| finding | 0.95 | Confirmed facts |
+| failed | 0.90 | What didn't work |
+| success | 0.95 | What worked |
+| insight | 0.95 | Aha moments |
+| warning | 0.92 | Gotchas to remember |
+| session | 0.85 | Session summaries |
+| location | 0.98 | Code locations |
+| question | 0.80 | Open questions (fast decay) |
+| todo | 0.85 | Tasks |
+| context | 0.70 | Temporary context (fast decay) |
+| request | 0.80 | User requests |
+
+### 2. 3-Layer Code RAG
+UHMA codebase at 3 fidelity levels:
+
+| Category | Decay | Fidelity | Content |
+|----------|-------|----------|---------|
+| code_high | 0.98 | High | Architecture, file purposes, system overview |
+| code_mid | 0.96 | Medium | Function signatures, @entry points, @calls |
+| code_low | 0.92 | Low | Implementation gotchas, patterns, snippets |
+
+### Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Layer 3: MCP Interface (tools/mcp_server)                  │
-│  - Claude Code ←→ JSON-RPC (stdin/stdout) ←→ UHMA TCP       │
-│  - 28 tools: status, mem_add, mem_query, dream, etc.        │
-│  - Pure x86-64 assembly                                     │
+│  MCP Interface (tools/mcp_server)                           │
+│  - Claude Code ←→ JSON-RPC ←→ UHMA TCP                      │
+│  - mem_add, mem_query with category selection               │
 ├─────────────────────────────────────────────────────────────┤
-│  Layer 2: Claude Memory (holo_mem.asm)                      │
-│  - Cross-session persistence for Claude                     │
-│  - Categories: finding, failed, success, insight, warning   │
+│  Holographic Memory (holo_mem.asm)                          │
+│  - 14 categories (11 chat + 3 code RAG)                     │
 │  - VSA similarity search (1024-dim f64 vectors)             │
-│  - Stored in UHMA surface at HOLO_MEM_OFFSET                │
+│  - Category traces for resonance queries                    │
 ├─────────────────────────────────────────────────────────────┤
-│  Layer 1: UHMA Core (surface, vsa.asm, receipt.asm)         │
-│  - Self-modifying x86-64 patterns                           │
-│  - Unified trace (8-dim holographic receipts)               │
-│  - 8GB memory-mapped surface                                │
-│  - Semantic self-model (97.3% self-recognition)             │
+│  UHMA Surface (8GB memory-mapped)                           │
+│  - Entries at HOLO_MEM_OFFSET (4096 max, 2KB each)          │
+│  - Category traces at HOLO_MEM_TRACE_OFFSET (14 × 8KB)      │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-All layers pure x86-64 assembly. No Python dependencies for core operation.
-
-## Claude Holographic Memory System
-
-The holographic memory (`holo_mem.asm`) integrates directly into UHMA's surface for Claude's cross-session persistence.
-
-### Architecture
-- **1024-dim f64 vectors** (same as UHMA core)
-- **Stored in UHMA surface** at `HOLO_MEM_OFFSET` (160GB offset)
-- **VSA operations**: bind, superpose, cosine similarity
-- **Each entry**: 2048 bytes (id, category, outcome, content, context, vector)
+All pure x86-64 assembly. No Python dependencies.
 
 ### Entry Storage Layout
 ```
 Entry (2048 bytes):
 ├── [0-7]       u64 entry_id
-├── [8-11]      u32 category
+├── [8-11]      u32 category (0-13)
 ├── [12-15]     u32 outcome_count
 ├── [16-19]     f32 outcome_ratio
 ├── [20-23]     u32 timestamp
@@ -505,24 +521,16 @@ Entry (2048 bytes):
 └── [1024-2047] f64[128] compressed_vec (holographic summary)
 ```
 
-### Categories
-| ID | Category | Purpose |
-|----|----------|---------|
-| 0 | finding | Confirmed facts |
-| 1 | failed | What didn't work |
-| 2 | success | What worked |
-| 3 | insight | Aha moments |
-| 4 | warning | Gotchas to remember |
-| 5 | session | Session summaries |
-| 6 | location | Code locations |
-| 7 | question | Open questions |
-| 8 | todo | Tasks |
-| 9 | context | Temporary context |
-
 ### MCP Usage (via Claude Code)
 ```
-# Add an entry
+# Chat session entries
 mcp__uhma__mem_add(category="finding", content="rcx is caller-saved")
+mcp__uhma__mem_add(category="warning", content="stack must be 16-byte aligned")
+
+# Code RAG entries (3 fidelity levels)
+mcp__uhma__mem_add(category="code_high", content="dispatch.asm handles token prediction")
+mcp__uhma__mem_add(category="code_mid", content="dispatch_predict(edi=token) -> eax=predicted")
+mcp__uhma__mem_add(category="code_low", content="must reload r14 after fault recovery")
 
 # Query by semantic similarity
 mcp__uhma__mem_query(query="register clobbering")
@@ -532,32 +540,27 @@ mcp__uhma__mem_outcome(entry_id="42", worked=true)
 
 # View state
 mcp__uhma__mem_state()
-
-# View recent entries
-mcp__uhma__mem_recent(limit=10)
-
-# Get summary stats
-mcp__uhma__mem_summary()
 ```
 
 ### REPL Usage (direct)
 ```bash
 ./uhma
 > mem_add finding "rcx is caller-saved" "debugging registers"
+> mem_add code_high "boot.asm is the entry point"
 > mem_query "register"
 > mem_state
 > mem_recent 10
 ```
 
 ### Persistence
-All holographic memory entries are stored in the UHMA surface file (`uhma.surface`). This means:
+All holographic memory entries stored in UHMA surface file (`uhma.surface`):
 - Entries persist across UHMA restarts
-- Entries persist across Claude sessions (as long as same surface)
-- No separate database or file - everything in one memory-mapped surface
+- Entries persist across Claude sessions (same surface)
+- No separate database - everything in one memory-mapped surface
 
 ### Semantic Search
 Queries use VSA cosine similarity:
-1. Query text encoded as 1024-dim f64 vector (character-level encoding)
+1. Query text encoded as 1024-dim f64 vector
 2. Compared against category trace vectors
 3. Entries above similarity threshold returned
 4. Results ranked by similarity score

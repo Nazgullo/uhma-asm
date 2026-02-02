@@ -4,23 +4,35 @@ Context injection and MCP control interface for Claude Code.
 
 **Note**: Core tools (MCP server, feeder, holographic memory) are now pure x86-64 assembly. Python files in this directory are legacy/support utilities.
 
-## Architecture: 3-Layer Holographic RAG
+## Claude Holographic Memory (Dual Purpose)
 
+### 1. Chat Sessions Memory (6GB Surface)
+11 categories for cross-session persistence:
+- finding, failed, success, insight, warning, session
+- location, question, todo, context, request
+
+### 2. 3-Layer Code RAG
+| Category | Decay | Fidelity | Content |
+|----------|-------|----------|---------|
+| code_high | 0.98 | High | Architecture, file purposes, system overview |
+| code_mid | 0.96 | Medium | Function signatures, @entry points, @calls |
+| code_low | 0.92 | Low | Implementation gotchas, patterns, snippets |
+
+### Architecture
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Layer 3: MCP Interface (../mcp_server)                     │
+│  MCP Interface (../mcp_server)                              │
 │  - Claude Code ←→ JSON-RPC ←→ UHMA TCP                      │
-│  - 28 tools: status, mem_add, mem_query, dream, etc.        │
+│  - mem_add category="code_high|code_mid|code_low|finding|.."│
 ├─────────────────────────────────────────────────────────────┤
-│  Layer 2: Claude Memory (holo_mem.asm in UHMA)              │
-│  - Cross-session persistence for Claude                     │
-│  - Categories: finding, failed, success, insight, warning   │
-│  - VSA similarity search (1024-dim f64)                     │
+│  Holographic Memory (holo_mem.asm)                          │
+│  - 14 categories (11 chat + 3 code RAG)                     │
+│  - VSA similarity search (1024-dim f64 vectors)             │
+│  - Category traces for resonance queries                    │
 ├─────────────────────────────────────────────────────────────┤
-│  Layer 1: UHMA Core (surface, vsa.asm, receipt.asm)         │
-│  - Self-modifying x86-64 patterns                           │
-│  - Unified trace (8-dim holographic receipts)               │
-│  - 8GB memory-mapped surface                                │
+│  UHMA Surface (8GB memory-mapped)                           │
+│  - 4096 entries × 2KB = 8MB entry storage                   │
+│  - 14 category traces × 8KB = 112KB trace storage           │
 └─────────────────────────────────────────────────────────────┘
 ```
 

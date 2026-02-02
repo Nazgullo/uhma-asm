@@ -354,27 +354,19 @@ rm -f uhma.surface checkpoint_* cycle_*
 
 The key insight: UHMA learns by prediction error. Feed it text, let it fail, consolidate the failures into patterns. Repeat until accuracy climbs.
 
-## 3-Layer Holographic RAG Architecture
+## Holographic Memory (Dual Purpose)
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  Layer 3: MCP Interface (tools/mcp_server.asm)              │
-│  - Claude Code ←→ JSON-RPC ←→ UHMA TCP                      │
-│  - mem_add, mem_query, status, dream, etc.                  │
-├─────────────────────────────────────────────────────────────┤
-│  Layer 2: Claude Memory (holo_mem.asm)                      │
-│  - Cross-session persistence for Claude                     │
-│  - Categories: finding, failed, success, insight, warning   │
-│  - VSA similarity search (1024-dim f64)                     │
-├─────────────────────────────────────────────────────────────┤
-│  Layer 1: UHMA Core (surface, vsa.asm, receipt.asm)         │
-│  - Self-modifying x86-64 patterns                           │
-│  - Unified trace (8-dim holographic receipts)               │
-│  - 8GB memory-mapped surface                                │
-└─────────────────────────────────────────────────────────────┘
-```
+### Chat Sessions (11 categories)
+finding, failed, success, insight, warning, session, location, question, todo, context, request
 
-All layers pure assembly. No Python dependencies.
+### 3-Layer Code RAG
+| Layer | Category | Fidelity | Content |
+|-------|----------|----------|---------|
+| High | code_high | 0.98 decay | Architecture, file purposes |
+| Mid | code_mid | 0.96 decay | Function signatures, @entry |
+| Low | code_low | 0.92 decay | Gotchas, implementation details |
+
+All pure x86-64 assembly. No Python dependencies.
 
 ---
 
