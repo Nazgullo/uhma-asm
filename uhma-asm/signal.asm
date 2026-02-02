@@ -176,11 +176,21 @@ fault_handler:
     ; Increment fault counter
     inc qword [rel fault_count]
 
-    ; Print fault message
     mov rbx, rdi              ; save signum
     mov r13, rsi              ; save siginfo_t pointer
     mov r12, rdx              ; save ucontext
 
+    ; FIRST check for SIGPIPE before ANY printing (to avoid infinite loop)
+    cmp ebx, SIGPIPE
+    jne .not_sigpipe
+    ; Check sigpipe_mode: 0=exit, 1=ignore
+    cmp dword [rel sigpipe_mode], 0
+    je .exit_clean
+    ; TCP mode: silently ignore and continue (DO NOT print - causes infinite loop)
+    jmp .handler_done
+.not_sigpipe:
+
+    ; Print fault message (only for non-SIGPIPE signals)
     lea rdi, [rel fault_msg]
     call print_cstr
 
@@ -204,18 +214,6 @@ fault_handler:
 
     ; Dump trace buffer (shows execution path leading to fault)
     call journey_dump
-
-    ; Special case: SIGPIPE = stdout closed
-    cmp ebx, SIGPIPE
-    jne .not_sigpipe
-    ; Check sigpipe_mode: 0=exit, 1=ignore
-    cmp dword [rel sigpipe_mode], 0
-    je .exit_clean
-    ; TCP mode: print message and continue
-    lea rdi, [rel sigpipe_ignore_msg]
-    call print_cstr
-    jmp .handler_done
-.not_sigpipe:
 
     ; Special case: SIGTRAP = INT 3 breakpoint (self-debugger)
     cmp ebx, SIGTRAP

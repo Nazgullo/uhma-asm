@@ -250,7 +250,7 @@ channels_poll:
     mov eax, [rcx + r12 * 4]
     lea rcx, [rbx + 56 + r12 * 8]     ; offset 7*8 = 56
     mov [rcx], eax
-    mov word [rcx + 4], POLLIN
+    mov word [rcx + 4], POLLIN | POLLHUP  ; also watch for hangup
     mov word [rcx + 6], 0
 
     inc r12d
@@ -271,7 +271,64 @@ channels_poll:
     test ax, POLLIN
     jnz .poll_stdin
 
+    ; FIRST: Check ALL clients for hangup/error, cleanup pairs together
+    xor r12d, r12d
+.check_hangup:
+    cmp r12d, NUM_CHANNELS
+    jge .check_listeners_start
+
+    lea rcx, [rbx + 56 + r12 * 8]
+    movzx eax, word [rcx + 6]
+    ; Check for POLLHUP or POLLERR
+    test ax, POLLHUP | POLLERR
+    jz .next_hangup
+
+    ; Hangup/error detected - get pair base (even channel number)
+    mov edi, r12d
+    and edi, 0xFFFFFFFE          ; pair_base = r12 & ~1 (clear low bit to get even)
+
+    ; Close input channel (pair_base)
+    lea rcx, [rel client_fds]
+    mov eax, [rcx + rdi * 4]
+    cmp eax, -1
+    je .close_output_hangup
+    push r12
+    push rdi
+    mov edi, eax
+    mov eax, SYS_CLOSE
+    syscall
+    pop rdi
+    pop r12
+    lea rcx, [rel client_fds]
+    mov dword [rcx + rdi * 4], -1
+
+.close_output_hangup:
+    ; Close output channel (pair_base + 1)
+    mov edi, r12d
+    and edi, 0xFFFFFFFE
+    inc edi                       ; pair_base + 1
+    cmp edi, NUM_CHANNELS
+    jge .next_hangup
+    lea rcx, [rel client_fds]
+    mov eax, [rcx + rdi * 4]
+    cmp eax, -1
+    je .next_hangup
+    push r12
+    push rdi
+    mov edi, eax
+    mov eax, SYS_CLOSE
+    syscall
+    pop rdi
+    pop r12
+    lea rcx, [rel client_fds]
+    mov dword [rcx + rdi * 4], -1
+
+.next_hangup:
+    inc r12d
+    jmp .check_hangup
+
     ; Check listeners for new connections
+.check_listeners_start:
     xor r12d, r12d
 .check_listeners:
     cmp r12d, NUM_CHANNELS
@@ -404,6 +461,7 @@ channels_read:
     jmp .read_ret
 
 .read_disconnect:
+    ; Close this channel
     lea rcx, [rel client_fds]
     mov edi, [rcx + r12 * 4]
     push rax
@@ -414,13 +472,49 @@ channels_read:
     lea rcx, [rel client_fds]
     mov dword [rcx + r12 * 4], -1
 
+    ; NOTE: Don't print disconnect message here - output_fd might point to closed socket
+    ; The hangup detection in poll loop handles cleanup and would double-close anyway
+
+    ; Close paired channel too (input+1=output, or output-1=input)
+    mov eax, r12d
+    test eax, 1
+    jnz .close_paired_input
+    ; This was input channel (even), close output (r12+1)
+    mov edi, r12d
+    inc edi
+    jmp .do_close_pair
+.close_paired_input:
+    ; This was output channel (odd), close input (r12-1)
+    mov edi, r12d
+    dec edi
+.do_close_pair:
+    cmp edi, NUM_CHANNELS
+    jge .read_ret_zero
+    lea rcx, [rel client_fds]
+    mov eax, [rcx + rdi * 4]
+    cmp eax, -1
+    je .read_ret_zero
+    ; Save rdi (pair channel) before syscall
+    push rdi
+    mov edi, eax
+    mov eax, SYS_CLOSE
+    syscall
+    pop rdi
+    ; Mark pair as -1
+    lea rcx, [rel client_fds]
+    mov dword [rcx + rdi * 4], -1
+    ; Print pair disconnect
+    push rdi
     lea rdi, [rel ch_close_msg]
     call print_cstr
-    mov edi, r12d
+    pop rdi
+    push rdi
     call print_u64
     lea rdi, [rel ch_close_end]
     call print_cstr
+    pop rdi
 
+.read_ret_zero:
     xor eax, eax
     jmp .read_ret
 
@@ -455,6 +549,10 @@ channels_write:
 
     mov eax, SYS_WRITE
     syscall
+
+    ; Check for write error (EPIPE etc) - just return 0, don't close
+    test eax, eax
+    js .write_err
     jmp .write_ret
 
 .write_err:

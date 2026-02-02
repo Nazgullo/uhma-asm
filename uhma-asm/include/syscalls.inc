@@ -27,6 +27,8 @@
 %define SYS_RT_SIGRETURN    15
 %define SYS_NANOSLEEP       35
 %define SYS_GETPID          39
+%define SYS_FORK            57
+%define SYS_EXECVE          59
 %define SYS_EXIT            60
 %define SYS_FCNTL           72
 %define SYS_FTRUNCATE       77
@@ -101,5 +103,8 @@
 
 ; poll events
 %define POLLIN              0x0001
+%define POLLOUT             0x0004
+%define POLLERR             0x0008
+%define POLLHUP             0x0010
 
 %endif

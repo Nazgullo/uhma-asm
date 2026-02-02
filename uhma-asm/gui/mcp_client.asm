@@ -59,6 +59,8 @@ section .data
     err_spawn:      db "GUI: failed to spawn UHMA (try ./feed.sh first)", 10, 0
     err_socket:     db "GUI: socket error", 10, 0
     msg_connected:  db "GUI: connected to UHMA (%d channels)", 10, 0
+    msg_autonomous: db "GUI: enabled autonomous mode (batch_mode=0)", 10, 0
+    cmd_batch:      db "batch", 0
 
 section .bss
     ; TCP sockets (6-channel)
@@ -75,6 +77,11 @@ section .bss
     req_buf:        resb 4096
     resp_buf:       resb 65536
     status_cache:   resb 8192
+
+    ; pollfd struct: { int fd; short events; short revents; }
+    poll_fd:        resd 1          ; fd
+    poll_events:    resw 1          ; events (POLLIN = 1)
+    poll_revents:   resw 1          ; revents
 
 section .text
 
@@ -97,6 +104,7 @@ extern memcpy
 extern strcpy
 extern strcat
 extern htons
+extern poll
 
 global mcp_init
 global mcp_shutdown
@@ -170,6 +178,25 @@ mcp_init:
     xor eax, eax
     call printf
 
+    ; If we spawned UHMA (not connecting to existing), enable autonomous mode
+    ; batch_mode=1 by default (batch), sending "batch" toggles to 0 (autonomous)
+    cmp dword [rel mcp_pid], 0
+    je .skip_autonomous      ; connected to existing UHMA, respect its mode
+
+    ; Small delay for UHMA to be ready
+    mov edi, 500000          ; 500ms
+    call usleep
+
+    ; Send "batch" to toggle to autonomous mode
+    lea rdi, [rel cmd_batch]
+    xor esi, esi
+    call mcp_call
+
+    lea rdi, [rel msg_autonomous]
+    xor eax, eax
+    call printf
+
+.skip_autonomous:
     mov eax, 1
     jmp .done
 
@@ -485,6 +512,19 @@ mcp_call_ch:
     lea rsi, [rel req_buf]
     xor ecx, ecx                ; flags = 0
     call send
+
+    ; Poll OUTPUT socket with 2 second timeout before recv
+    mov [rel poll_fd], ebx              ; fd = output socket
+    mov word [rel poll_events], 1       ; POLLIN = 1
+    mov word [rel poll_revents], 0
+    lea rdi, [rel poll_fd]              ; pollfd struct
+    mov esi, 1                          ; nfds = 1
+    mov edx, 2000                       ; timeout = 2000ms
+    call poll
+
+    ; Check if data ready (poll returns > 0 and revents has POLLIN)
+    cmp eax, 0
+    jle .ch_no_response                 ; timeout or error
 
     ; Read response via TCP from OUTPUT socket
     mov edi, ebx                ; OUTPUT socket fd (recv here)
