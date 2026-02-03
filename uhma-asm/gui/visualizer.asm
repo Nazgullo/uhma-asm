@@ -270,21 +270,21 @@ section .data
     db 117, 118, 120, 121, 122, 122, 123, 124, 125, 125, 126, 126, 127, 127, 127, 127
 
     ; Node angles (0-255 = 0-360 degrees) for ring positions
-    ; UHMA at center (no angle), BRAIN at top, others distributed
+    ; UHMA at center (no angle), others evenly distributed (256/11 ≈ 23 apart)
     ; Format: angle for each NODE_* (0=right, 64=top, 128=left, 192=bottom)
     node_angles:
     db 0        ; NODE_UHMA - center, not on ring
-    db 64       ; NODE_BRAIN - top (90°)
-    db 96       ; NODE_REGIONS - top-left
-    db 32       ; NODE_TOKENS - top-right
-    db 128      ; NODE_STATE - left (180°)
-    db 0        ; NODE_PREDICT - right (0°)
-    db 160      ; NODE_DISPATCH - bottom-left
-    db 224      ; NODE_ACCURACY - bottom-right
-    db 144      ; NODE_HIVE - lower-left
-    db 240      ; NODE_ROSETTA - lower-right
-    db 112      ; NODE_MYCO - upper-left
-    db 16       ; NODE_SPORE - upper-right
+    db 70       ; NODE_BRAIN - top
+    db 93       ; NODE_REGIONS - upper-left
+    db 47       ; NODE_TOKENS - upper-right
+    db 140     ; NODE_STATE - left
+    db 0        ; NODE_PREDICT - right
+    db 186      ; NODE_DISPATCH - lower-left
+    db 233      ; NODE_ACCURACY - lower-right
+    db 163      ; NODE_HIVE - left-bottom
+    db 210      ; NODE_ROSETTA - bottom-right
+    db 116      ; NODE_MYCO - left-top
+    db 23       ; NODE_SPORE - right-top
 
     ; Colors (0x00RRGGBB)
     col_bg:         dd 0x001a1a2e
@@ -355,11 +355,15 @@ section .data
     ANIM_STEP       equ 13          ; 255 / 20 ≈ 13
 
     ; Ring layout constants (semi-3D orbital view)
-    RING_CENTER_X   equ CANVAS_X + CANVAS_W/2   ; centered
-    RING_CENTER_Y   equ CANVAS_Y + CANVAS_H/2 + 50  ; below center for perspective
-    RING_RADIUS_X   equ 253         ; 2/3 of original (all connections 1/3 shorter)
-    RING_RADIUS_Y   equ 120         ; 2/3 of original, keeps ellipse ratio
-    RING_DEPTH_SCALE equ 60         ; how much size varies with depth (%)
+    RING_CENTER_X   equ CANVAS_X + CANVAS_W/3         ; left third
+    RING_CENTER_Y   equ CANVAS_Y + CANVAS_H/2         ; center (UHMA position was correct)
+    RING_RADIUS_X   equ 350         ; even wider spread to prevent overlap
+    RING_RADIUS_Y   equ 120         ; taller ellipse for more vertical spread
+    RING_DEPTH_SCALE equ 100        ; strong 3D depth (far=small, near=big)
+    UHMA_Y_OFFSET   equ 0           ; UHMA at center
+    ; Node sizes for ring nodes (smaller to prevent overlap)
+    RNODE_W         equ 80          ; ring node width
+    RNODE_H         equ 40          ; ring node height
 
     ; Layout constants
     WIN_W           equ 1280
@@ -380,12 +384,12 @@ section .data
     ; Legacy constants for click handling
     MAP_W           equ CANVAS_W
     MAP_H           equ CANVAS_H
-    ; Output panel layout (overlay on right edge, compact)
-    OUT_PANEL_W     equ 200               ; panel width (compact)
-    OUT_PANEL_X     equ WIN_W - OUT_PANEL_W - 3  ; flush right
-    OUT_PANEL_H     equ 160               ; panel height
-    OUT_PANEL_GAP   equ 3                 ; gap between panels
-    OUT_FEED_Y      equ MENU_H + 8        ; FEED panel y
+    ; Output panel layout (right side, larger panels)
+    OUT_PANEL_W     equ 280               ; wider panels
+    OUT_PANEL_X     equ WIN_W - OUT_PANEL_W - 10  ; 10px from right edge
+    OUT_PANEL_H     equ 180               ; taller panels
+    OUT_PANEL_GAP   equ 5                 ; gap between panels
+    OUT_FEED_Y      equ MENU_H + 10       ; FEED panel y
     OUT_QUERY_Y     equ OUT_FEED_Y + OUT_PANEL_H + OUT_PANEL_GAP
     OUT_DEBUG_Y     equ OUT_QUERY_Y + OUT_PANEL_H + OUT_PANEL_GAP
 
@@ -1784,11 +1788,10 @@ draw_buttons:
     mov r8d, [rel col_border]
     call gfx_rect
 
-    ; Label - center text in button
-    add r13d, 5
-    add r14d, 20
-    mov edi, r13d
-    mov esi, r14d
+    ; Label position - will be adjusted for centering in .draw_lbl
+    mov [rsp], r13d         ; save btn_x
+    mov [rsp+4], r15d       ; save btn_w
+    add r14d, 20            ; y position
     mov r8d, [rel col_text]
 
     ; Get label and length for this button
@@ -1865,6 +1868,14 @@ draw_buttons:
     mov ecx, 4
 
 .draw_lbl:
+    ; Calculate centered x: btn_x + (btn_w - text_len*8) / 2
+    mov eax, ecx            ; text length
+    shl eax, 3              ; * 8 (pixels per char)
+    mov edi, [rsp+4]        ; btn_w
+    sub edi, eax            ; btn_w - text_pixels
+    shr edi, 1              ; / 2
+    add edi, [rsp]          ; + btn_x
+    mov esi, r14d           ; y
     call gfx_text
 
     add rbx, 16
@@ -1928,31 +1939,31 @@ draw_mindmap:
     cmp eax, 1
     je .draw_brain_view
 
-    ; Calculate center of canvas
-    mov r12d, CANVAS_X + CANVAS_W / 2   ; center x
-    mov r13d, CANVAS_Y + CANVAS_H / 2   ; center y
+    ; Calculate center (use ring center for carousel alignment)
+    mov r12d, RING_CENTER_X             ; center x (same as ring)
+    mov r13d, RING_CENTER_Y             ; ring orbit center y
 
     ; Always draw nodes first, then overlay animation or focused panel
 
     ; === ROOT VIEW: Show main system nodes ===
-    
-    ; Central "UHMA" node
+
+    ; Central "UHMA" node (drawn in front - below ring center for 3D depth)
     lea edi, [r12d - 60]
-    lea esi, [r13d - 25]
+    lea esi, [r13d + UHMA_Y_OFFSET - 25]   ; offset down = in front
     mov edx, 120
     mov ecx, 50
     mov r8d, [rel col_dispatch]
     call gfx_fill_rect
 
     lea edi, [r12d - 60]
-    lea esi, [r13d - 25]
+    lea esi, [r13d + UHMA_Y_OFFSET - 25]
     mov edx, 120
     mov ecx, 50
     mov r8d, [rel col_white]
     call gfx_rect
 
-    lea edi, [r12d - 30]
-    lea esi, [r13d + 5]
+    lea edi, [r12d - 13]
+    lea esi, [r13d + UHMA_Y_OFFSET + 5]
     lea rdx, [rel node_uhma]
     mov ecx, 4
     mov r8d, [rel col_white]
@@ -1962,45 +1973,52 @@ draw_mindmap:
     lea rax, [rel node_rects]
     lea edi, [r12d - 60]
     mov [rax + NODE_UHMA*16], edi
-    lea edi, [r13d - 25]
+    lea edi, [r13d + UHMA_Y_OFFSET - 25]
     mov [rax + NODE_UHMA*16 + 4], edi
     mov dword [rax + NODE_UHMA*16 + 8], 120
     mov dword [rax + NODE_UHMA*16 + 12], 50
 
     ; === BRAIN node - using ring layout ===
     mov edi, 64                 ; angle 64 = top of ring
-    call calc_ring_pos          ; eax=x, edx=y
-    mov r14d, eax
-    sub r14d, 50                ; center the 100px wide node
-    mov r15d, edx
-    sub r15d, 22                ; center the 45px tall node
+    call calc_ring_pos          ; eax=x (center), edx=y (center)
+    mov r14d, eax               ; node center x
+    mov r15d, edx               ; node center y
 
-    ; Connection line: from UHMA top to BRAIN bottom
-    mov edi, r12d               ; UHMA center x
-    lea esi, [r13d - 25]        ; UHMA top edge
-    lea edx, [r14d + 50]        ; BRAIN center x
-    lea ecx, [r15d + 45]        ; BRAIN bottom edge
+    ; Connection line: from BRAIN center to UHMA edge
+    mov edi, r14d               ; outer x
+    mov esi, r15d               ; outer y
+    call calc_uhma_edge         ; eax=edge_x, edx=edge_y
+    mov [rsp], eax              ; save edge_x
+    mov [rsp+4], edx            ; save edge_y
+    mov edi, r14d               ; BRAIN center x
+    mov esi, r15d               ; BRAIN center y
+    mov edx, [rsp]              ; UHMA edge x
+    mov ecx, [rsp+4]            ; UHMA edge y
     mov r8d, [rel col_magenta]
     call gfx_line
+
+    ; Adjust to top-left for drawing
+    sub r14d, RNODE_W/2
+    sub r15d, RNODE_H/2
 
     ; Node box - magenta/purple for brain
     mov edi, r14d
     mov esi, r15d
-    mov edx, 100
-    mov ecx, 45
+    mov edx, RNODE_W
+    mov ecx, RNODE_H
     mov r8d, 0x00663388         ; purple fill
     call gfx_fill_rect
 
     mov edi, r14d
     mov esi, r15d
-    mov edx, 100
-    mov ecx, 45
+    mov edx, RNODE_W
+    mov ecx, RNODE_H
     mov r8d, [rel col_magenta]
     call gfx_rect
 
-    ; Label
-    lea edi, [r14d + 25]
-    lea esi, [r15d + 28]
+    ; Label centered: "BRAIN" = 5 chars
+    lea edi, [r14d + 26]
+    lea esi, [r15d + 25]
     lea rdx, [rel node_brain]
     mov ecx, 5
     mov r8d, [rel col_white]
@@ -2010,37 +2028,44 @@ draw_mindmap:
     lea rax, [rel node_rects]
     mov [rax + NODE_BRAIN*16], r14d
     mov [rax + NODE_BRAIN*16 + 4], r15d
-    mov dword [rax + NODE_BRAIN*16 + 8], 100
-    mov dword [rax + NODE_BRAIN*16 + 12], 45
+    mov dword [rax + NODE_BRAIN*16 + 8], RNODE_W
+    mov dword [rax + NODE_BRAIN*16 + 12], RNODE_H
 
-    ; === REGIONS node - ring layout (angle 96 = top-left) ===
-    mov edi, 96
+    ; === REGIONS node - ring layout ===
+    movzx edi, byte [rel node_angles + NODE_REGIONS]
     call calc_ring_pos
-    mov r14d, eax
-    sub r14d, 50
-    mov r15d, edx
-    sub r15d, 20
+    mov r14d, eax               ; center x
+    mov r15d, edx               ; center y
 
-    ; Connection line: from UHMA to REGIONS
-    lea edi, [r12d - 50]
-    lea esi, [r13d - 20]
-    lea edx, [r14d + 100]
-    lea ecx, [r15d + 40]
+    ; Connection line: from REGIONS center to UHMA edge
+    mov edi, r14d
+    mov esi, r15d
+    call calc_uhma_edge
+    mov [rsp], eax
+    mov [rsp+4], edx
+    mov edi, r14d
+    mov esi, r15d
+    mov edx, [rsp]
+    mov ecx, [rsp+4]
     mov r8d, [rel col_cyan]
     call gfx_line
+
+    ; Adjust to top-left
+    sub r14d, RNODE_W/2
+    sub r15d, RNODE_H/2
 
     ; Node box
     mov edi, r14d
     mov esi, r15d
-    mov edx, 100
-    mov ecx, 40
+    mov edx, RNODE_W
+    mov ecx, RNODE_H
     mov r8d, [rel col_nursery]
     call gfx_fill_rect
 
     mov edi, r14d
     mov esi, r15d
-    mov edx, 100
-    mov ecx, 40
+    mov edx, RNODE_W
+    mov ecx, RNODE_H
     mov r8d, [rel col_white]
     call gfx_rect
 
@@ -2048,8 +2073,8 @@ draw_mindmap:
     lea rax, [rel node_rects]
     mov [rax + NODE_REGIONS*16], r14d
     mov [rax + NODE_REGIONS*16 + 4], r15d
-    mov dword [rax + NODE_REGIONS*16 + 8], 100
-    mov dword [rax + NODE_REGIONS*16 + 12], 40
+    mov dword [rax + NODE_REGIONS*16 + 8], RNODE_W
+    mov dword [rax + NODE_REGIONS*16 + 12], RNODE_H
 
     ; Region count inside node
     mov eax, [rbx + STATE_OFFSET + ST_REGION_COUNT]
@@ -2057,47 +2082,55 @@ draw_mindmap:
     call format_num
     mov [rsp + 32], eax
 
-    lea edi, [r14d + 10]
-    lea esi, [r15d + 15]
+    ; Label centered: "REGIONS" = 7 chars
+    lea edi, [r14d + 22]
+    lea esi, [r15d + 19]
     lea rdx, [rel node_regions]
     mov ecx, 7
     mov r8d, [rel col_text]
     call gfx_text
 
-    lea edi, [r14d + 10]
-    lea esi, [r15d + 28]
+    ; Count centered below
+    lea edi, [r14d + 36]
+    lea esi, [r15d + 30]
     lea rdx, [rsp]
     mov ecx, [rsp + 32]
     mov r8d, [rel col_white]
     call gfx_text
 
-    ; === TOKENS node - ring layout (angle 32 = top-right) ===
-    mov edi, 32
+    ; === TOKENS node - ring layout ===
+    movzx edi, byte [rel node_angles + NODE_TOKENS]
     call calc_ring_pos
     mov r14d, eax
-    sub r14d, 50
     mov r15d, edx
-    sub r15d, 20
 
-    ; Connection line
-    lea edi, [r12d + 50]
-    lea esi, [r13d - 20]
-    mov edx, r14d
-    lea ecx, [r15d + 40]
+    ; Connection line: to UHMA edge
+    mov edi, r14d
+    mov esi, r15d
+    call calc_uhma_edge
+    mov [rsp], eax
+    mov [rsp+4], edx
+    mov edi, r14d
+    mov esi, r15d
+    mov edx, [rsp]
+    mov ecx, [rsp+4]
     mov r8d, [rel col_cyan]
     call gfx_line
 
+    sub r14d, RNODE_W/2
+    sub r15d, RNODE_H/2
+
     mov edi, r14d
     mov esi, r15d
-    mov edx, 100
-    mov ecx, 40
+    mov edx, RNODE_W
+    mov ecx, RNODE_H
     mov r8d, 0x00448866
     call gfx_fill_rect
 
     mov edi, r14d
     mov esi, r15d
-    mov edx, 100
-    mov ecx, 40
+    mov edx, RNODE_W
+    mov ecx, RNODE_H
     mov r8d, [rel col_white]
     call gfx_rect
 
@@ -2105,55 +2138,63 @@ draw_mindmap:
     lea rax, [rel node_rects]
     mov [rax + NODE_TOKENS*16], r14d
     mov [rax + NODE_TOKENS*16 + 4], r15d
-    mov dword [rax + NODE_TOKENS*16 + 8], 100
-    mov dword [rax + NODE_TOKENS*16 + 12], 40
+    mov dword [rax + NODE_TOKENS*16 + 8], RNODE_W
+    mov dword [rax + NODE_TOKENS*16 + 12], RNODE_H
 
     mov eax, [rbx + STATE_OFFSET + ST_TOKEN_COUNT]
     lea rdi, [rsp]
     call format_num
     mov [rsp + 32], eax
 
-    lea edi, [r14d + 10]
-    lea esi, [r15d + 15]
+    ; Label centered: "TOKENS" = 6 chars
+    lea edi, [r14d + 24]
+    lea esi, [r15d + 18]
     lea rdx, [rel node_tokens]
     mov ecx, 6
     mov r8d, [rel col_text]
     call gfx_text
 
-    lea edi, [r14d + 10]
-    lea esi, [r15d + 28]
+    ; Count centered
+    lea edi, [r14d + 36]
+    lea esi, [r15d + 30]
     lea rdx, [rsp]
     mov ecx, [rsp + 32]
     mov r8d, [rel col_white]
     call gfx_text
 
-    ; === STATE node - ring layout (angle 128 = left) ===
-    mov edi, 128
+    ; === STATE node - ring layout ===
+    movzx edi, byte [rel node_angles + NODE_STATE]
     call calc_ring_pos
     mov r14d, eax
-    sub r14d, 45
     mov r15d, edx
-    sub r15d, 20
 
-    ; Connection line
-    lea edi, [r12d - 60]
-    mov esi, r13d
-    lea edx, [r14d + 90]
-    lea ecx, [r15d + 20]
+    ; Connection line: to UHMA edge
+    mov edi, r14d
+    mov esi, r15d
+    call calc_uhma_edge
+    mov [rsp], eax
+    mov [rsp+4], edx
+    mov edi, r14d
+    mov esi, r15d
+    mov edx, [rsp]
+    mov ecx, [rsp+4]
     mov r8d, [rel col_cyan]
     call gfx_line
 
+    sub r14d, RNODE_W/2
+    sub r15d, RNODE_H/2
+
     mov edi, r14d
     mov esi, r15d
-    mov edx, 90
-    mov ecx, 40
+    mov edx, RNODE_W
+    mov ecx, RNODE_H
     mov r8d, 0x00664488
     call gfx_fill_rect
 
     mov edi, r14d
     mov esi, r15d
-    mov edx, 90
-    mov ecx, 40
+    mov edx, RNODE_W
+    mov ecx, RNODE_H
     mov r8d, [rel col_white]
     call gfx_rect
 
@@ -2161,25 +2202,18 @@ draw_mindmap:
     lea rax, [rel node_rects]
     mov [rax + NODE_STATE*16], r14d
     mov [rax + NODE_STATE*16 + 4], r15d
-    mov dword [rax + NODE_STATE*16 + 8], 90
-    mov dword [rax + NODE_STATE*16 + 12], 40
+    mov dword [rax + NODE_STATE*16 + 8], RNODE_W
+    mov dword [rax + NODE_STATE*16 + 12], RNODE_H
 
-    ; Get state name
-    mov eax, [rbx + STATE_OFFSET + ST_INTRO_STATE]
-    cmp eax, 7
-    jl .state_ok
-    xor eax, eax
-.state_ok:
-    lea rcx, [rel intro_names]
-    mov rdx, [rcx + rax * 8]
-    
-    lea edi, [r14d + 8]
-    lea esi, [r15d + 15]
+    ; Label centered: "STATE" = 5 chars
+    lea edi, [r14d + 28]
+    lea esi, [r15d + 18]
     lea rdx, [rel node_state]
     mov ecx, 5
     mov r8d, [rel col_text]
     call gfx_text
 
+    ; State name centered
     mov eax, [rbx + STATE_OFFSET + ST_INTRO_STATE]
     cmp eax, 7
     jl .state_ok2
@@ -2187,39 +2221,45 @@ draw_mindmap:
 .state_ok2:
     lea rcx, [rel intro_names]
     mov rdx, [rcx + rax * 8]
-    lea edi, [r14d + 8]
-    lea esi, [r15d + 28]
-    mov ecx, 10
+    lea edi, [r14d + 12]
+    lea esi, [r15d + 30]
+    mov ecx, 9
     mov r8d, [rel col_green]
     call gfx_text
 
-    ; === PREDICT node - ring layout (angle 0 = right) ===
-    xor edi, edi                ; angle 0
+    ; === PREDICT node - ring layout ===
+    movzx edi, byte [rel node_angles + NODE_PREDICT]
     call calc_ring_pos
     mov r14d, eax
-    sub r14d, 50
     mov r15d, edx
-    sub r15d, 20
 
-    ; Connection line
-    lea edi, [r12d + 60]
-    mov esi, r13d
-    mov edx, r14d
-    lea ecx, [r15d + 20]
+    ; Connection line: to UHMA edge
+    mov edi, r14d
+    mov esi, r15d
+    call calc_uhma_edge
+    mov [rsp], eax
+    mov [rsp+4], edx
+    mov edi, r14d
+    mov esi, r15d
+    mov edx, [rsp]
+    mov ecx, [rsp+4]
     mov r8d, [rel col_cyan]
     call gfx_line
 
+    sub r14d, RNODE_W/2
+    sub r15d, RNODE_H/2
+
     mov edi, r14d
     mov esi, r15d
-    mov edx, 100
-    mov ecx, 40
+    mov edx, RNODE_W
+    mov ecx, RNODE_H
     mov r8d, 0x00886644
     call gfx_fill_rect
 
     mov edi, r14d
     mov esi, r15d
-    mov edx, 100
-    mov ecx, 40
+    mov edx, RNODE_W
+    mov ecx, RNODE_H
     mov r8d, [rel col_white]
     call gfx_rect
 
@@ -2227,56 +2267,64 @@ draw_mindmap:
     lea rax, [rel node_rects]
     mov [rax + NODE_PREDICT*16], r14d
     mov [rax + NODE_PREDICT*16 + 4], r15d
-    mov dword [rax + NODE_PREDICT*16 + 8], 100
-    mov dword [rax + NODE_PREDICT*16 + 12], 40
+    mov dword [rax + NODE_PREDICT*16 + 8], RNODE_W
+    mov dword [rax + NODE_PREDICT*16 + 12], RNODE_H
 
-    lea edi, [r14d + 10]
-    lea esi, [r15d + 15]
+    ; Label centered: "PREDICT" = 7 chars
+    lea edi, [r14d + 22]
+    lea esi, [r15d + 18]
     lea rdx, [rel node_predict]
     mov ecx, 7
     mov r8d, [rel col_text]
     call gfx_text
 
-    ; Show last prediction
+    ; Show last prediction (hex value, truncate to 8 chars max)
     mov eax, [rbx + STATE_OFFSET + ST_LAST_PREDICT]
     lea rdi, [rsp]
     call format_hex
     mov [rsp + 32], eax
 
-    lea edi, [r14d + 10]
-    lea esi, [r15d + 28]
+    ; Hex value centered
+    lea edi, [r14d + 16]
+    lea esi, [r15d + 30]
     lea rdx, [rsp]
-    mov ecx, [rsp + 32]
+    mov ecx, 8              ; max 8 chars to fit
     mov r8d, [rel col_yellow]
     call gfx_text
 
-    ; === DISPATCH node - ring layout (angle 160 = bottom-left) ===
-    mov edi, 160
+    ; === DISPATCH node - ring layout ===
+    movzx edi, byte [rel node_angles + NODE_DISPATCH]
     call calc_ring_pos
     mov r14d, eax
-    sub r14d, 50
     mov r15d, edx
-    sub r15d, 20
 
-    ; Connection line
-    lea edi, [r12d - 50]
-    lea esi, [r13d + 25]
-    lea edx, [r14d + 100]
-    mov ecx, r15d
+    ; Connection line: to UHMA edge
+    mov edi, r14d
+    mov esi, r15d
+    call calc_uhma_edge
+    mov [rsp], eax
+    mov [rsp+4], edx
+    mov edi, r14d
+    mov esi, r15d
+    mov edx, [rsp]
+    mov ecx, [rsp+4]
     mov r8d, [rel col_cyan]
     call gfx_line
 
+    sub r14d, RNODE_W/2
+    sub r15d, RNODE_H/2
+
     mov edi, r14d
     mov esi, r15d
-    mov edx, 100
-    mov ecx, 40
+    mov edx, RNODE_W
+    mov ecx, RNODE_H
     mov r8d, [rel col_dispatch]
     call gfx_fill_rect
 
     mov edi, r14d
     mov esi, r15d
-    mov edx, 100
-    mov ecx, 40
+    mov edx, RNODE_W
+    mov ecx, RNODE_H
     mov r8d, [rel col_white]
     call gfx_rect
 
@@ -2284,17 +2332,18 @@ draw_mindmap:
     lea rax, [rel node_rects]
     mov [rax + NODE_DISPATCH*16], r14d
     mov [rax + NODE_DISPATCH*16 + 4], r15d
-    mov dword [rax + NODE_DISPATCH*16 + 8], 100
-    mov dword [rax + NODE_DISPATCH*16 + 12], 40
+    mov dword [rax + NODE_DISPATCH*16 + 8], RNODE_W
+    mov dword [rax + NODE_DISPATCH*16 + 12], RNODE_H
 
-    lea edi, [r14d + 10]
-    lea esi, [r15d + 15]
+    ; Label centered: "DISPATCH" = 8 chars
+    lea edi, [r14d + 16]
+    lea esi, [r15d + 18]
     lea rdx, [rel node_dispatch]
     mov ecx, 8
     mov r8d, [rel col_text]
     call gfx_text
 
-    ; Get mode name
+    ; Mode name centered
     mov eax, [rbx + STATE_OFFSET + ST_DISPATCH_MODE]
     cmp eax, 8
     jl .mode_ok
@@ -2302,39 +2351,45 @@ draw_mindmap:
 .mode_ok:
     lea rcx, [rel mode_names]
     mov rdx, [rcx + rax * 8]
-    lea edi, [r14d + 10]
-    lea esi, [r15d + 28]
-    mov ecx, 10
+    lea edi, [r14d + 12]
+    lea esi, [r15d + 30]
+    mov ecx, 9                  ; max 9 chars
     mov r8d, [rel col_yellow]
     call gfx_text
 
-    ; === ACCURACY node - ring layout (angle 224 = bottom-right) ===
-    mov edi, 224
+    ; === ACCURACY node - ring layout ===
+    movzx edi, byte [rel node_angles + NODE_ACCURACY]
     call calc_ring_pos
     mov r14d, eax
-    sub r14d, 50
     mov r15d, edx
-    sub r15d, 20
 
-    ; Connection line
-    lea edi, [r12d + 50]
-    lea esi, [r13d + 25]
-    mov edx, r14d
-    mov ecx, r15d
+    ; Connection line: to UHMA edge
+    mov edi, r14d
+    mov esi, r15d
+    call calc_uhma_edge
+    mov [rsp], eax
+    mov [rsp+4], edx
+    mov edi, r14d
+    mov esi, r15d
+    mov edx, [rsp]
+    mov ecx, [rsp+4]
     mov r8d, [rel col_cyan]
     call gfx_line
 
+    sub r14d, RNODE_W/2
+    sub r15d, RNODE_H/2
+
     mov edi, r14d
     mov esi, r15d
-    mov edx, 100
-    mov ecx, 40
+    mov edx, RNODE_W
+    mov ecx, RNODE_H
     mov r8d, 0x00446688
     call gfx_fill_rect
 
     mov edi, r14d
     mov esi, r15d
-    mov edx, 100
-    mov ecx, 40
+    mov edx, RNODE_W
+    mov ecx, RNODE_H
     mov r8d, [rel col_white]
     call gfx_rect
 
@@ -2342,11 +2397,12 @@ draw_mindmap:
     lea rax, [rel node_rects]
     mov [rax + NODE_ACCURACY*16], r14d
     mov [rax + NODE_ACCURACY*16 + 4], r15d
-    mov dword [rax + NODE_ACCURACY*16 + 8], 100
-    mov dword [rax + NODE_ACCURACY*16 + 12], 40
+    mov dword [rax + NODE_ACCURACY*16 + 8], RNODE_W
+    mov dword [rax + NODE_ACCURACY*16 + 12], RNODE_H
 
-    lea edi, [r14d + 10]
-    lea esi, [r15d + 15]
+    ; Label centered: "ACCURACY" = 8 chars
+    lea edi, [r14d + 16]
+    lea esi, [r15d + 18]
     lea rdx, [rel node_accuracy]
     mov ecx, 8
     mov r8d, [rel col_text]
@@ -2364,23 +2420,28 @@ draw_mindmap:
     lea rdi, [rsp]
     call format_num
     mov [rsp + 32], eax
-    lea edi, [r14d + 10]
-    lea esi, [r15d + 28]
+    ; Percentage centered
+    lea edi, [r14d + 32]
+    lea esi, [r15d + 30]
     lea rdx, [rsp]
     mov ecx, [rsp + 32]
     mov r8d, [rel col_green]
     call gfx_text
-    ; Add % sign
-    lea edi, [r14d + 35]
-    lea esi, [r15d + 28]
+    ; Add % sign after number
+    mov eax, [rsp + 32]
+    shl eax, 3              ; text width in pixels
+    lea edi, [r14d + 32]
+    add edi, eax            ; after number
+    lea esi, [r15d + 30]
     lea rdx, [rel pct_sign]
     mov ecx, 1
     mov r8d, [rel col_green]
     call gfx_text
     jmp .acc_done
 .no_acc:
-    lea edi, [r14d + 10]
-    lea esi, [r15d + 28]
+    ; Center "N/A"
+    lea edi, [r14d + 32]
+    lea esi, [r15d + 30]
     lea rdx, [rel node_na]
     mov ecx, 3
     mov r8d, [rel col_text_dim]
@@ -2389,34 +2450,41 @@ draw_mindmap:
 
     ; === NEW FEATURE NODES ===
 
-    ; === HIVE node - ring layout (angle 144 = lower-left) ===
-    mov edi, 144
+    ; === HIVE node - ring layout (larger node for pheromone bars) ===
+    movzx edi, byte [rel node_angles + NODE_HIVE]
     call calc_ring_pos
     mov r14d, eax
-    sub r14d, 55
     mov r15d, edx
-    sub r15d, 35
 
-    ; Connection line
-    lea edi, [r12d - 60]
-    lea esi, [r13d + 20]
-    lea edx, [r14d + 110]
-    mov ecx, r15d
+    ; Connection line: to UHMA edge
+    mov edi, r14d
+    mov esi, r15d
+    call calc_uhma_edge
+    mov [rsp], eax
+    mov [rsp+4], edx
+    mov edi, r14d
+    mov esi, r15d
+    mov edx, [rsp]
+    mov ecx, [rsp+4]
     mov r8d, [rel col_yellow]
     call gfx_line
+
+    ; Adjust to top-left (HIVE is 90x55)
+    sub r14d, 45
+    sub r15d, 27
 
     ; Node box - yellow/gold for hive
     mov edi, r14d
     mov esi, r15d
-    mov edx, 110
-    mov ecx, 70
+    mov edx, 90
+    mov ecx, 55
     mov r8d, 0x00554422
     call gfx_fill_rect
 
     mov edi, r14d
     mov esi, r15d
-    mov edx, 110
-    mov ecx, 70
+    mov edx, 90
+    mov ecx, 55
     mov r8d, [rel col_yellow]
     call gfx_rect
 
@@ -2424,18 +2492,18 @@ draw_mindmap:
     lea rax, [rel node_rects]
     mov [rax + NODE_HIVE*16], r14d
     mov [rax + NODE_HIVE*16 + 4], r15d
-    mov dword [rax + NODE_HIVE*16 + 8], 110
-    mov dword [rax + NODE_HIVE*16 + 12], 70
+    mov dword [rax + NODE_HIVE*16 + 8], 90
+    mov dword [rax + NODE_HIVE*16 + 12], 55
 
-    ; Label
-    lea edi, [r14d + 20]
-    lea esi, [r15d + 15]
+    ; Label centered: "HIVE" = 4 chars in 90px panel
+    lea edi, [r14d + 30]
+    lea esi, [r15d + 32]
     lea rdx, [rel node_hive]
     mov ecx, 4
     mov r8d, [rel col_white]
     call gfx_text
 
-    ; Draw pheromone level bars
+    ; Draw pheromone level bars (within 90px width, 8px margin each side = 74px max)
     ; Dream pheromone bar
     movsd xmm0, [rbx + STATE_OFFSET + ST_DREAM_PRESSURE]
     mulsd xmm0, qword [rel bar_scale_60]
@@ -2452,7 +2520,7 @@ draw_mindmap:
 .hive_d_draw:
     push rax
     lea edi, [r14d + 8]
-    lea esi, [r15d + 28]
+    lea esi, [r15d + 23]
     mov edx, eax
     mov ecx, 8
     mov r8d, [rel col_magenta]
@@ -2475,7 +2543,7 @@ draw_mindmap:
 .hive_o_draw:
     push rax
     lea edi, [r14d + 8]
-    lea esi, [r15d + 40]
+    lea esi, [r15d + 33]
     mov edx, eax
     mov ecx, 8
     mov r8d, [rel col_green]
@@ -2497,62 +2565,69 @@ draw_mindmap:
     xor eax, eax
 .hive_e_draw:
     lea edi, [r14d + 8]
-    lea esi, [r15d + 52]
+    lea esi, [r15d + 43]
     mov edx, eax
     mov ecx, 8
     mov r8d, [rel col_orange]
     call gfx_fill_rect
 
-    ; Bar labels (D/O/E)
-    lea edi, [r14d + 75]
-    lea esi, [r15d + 35]
+    ; Bar labels (D/O/E) - inside panel
+    lea edi, [r14d + 72]
+    lea esi, [r15d + 23]
     lea rdx, [rel lbl_d]
     mov ecx, 1
     mov r8d, [rel col_magenta]
     call gfx_text
 
-    lea edi, [r14d + 75]
-    lea esi, [r15d + 47]
+    lea edi, [r14d + 72]
+    lea esi, [r15d + 33]
     lea rdx, [rel lbl_o]
     mov ecx, 1
     mov r8d, [rel col_green]
     call gfx_text
 
-    lea edi, [r14d + 75]
-    lea esi, [r15d + 59]
+    lea edi, [r14d + 72]
+    lea esi, [r15d + 43]
     lea rdx, [rel lbl_e]
     mov ecx, 1
     mov r8d, [rel col_orange]
     call gfx_text
 
-    ; === ROSETTA node - ring layout (angle 240 = lower-right) ===
-    mov edi, 240
+    ; === ROSETTA node - ring layout ===
+    movzx edi, byte [rel node_angles + NODE_ROSETTA]
     call calc_ring_pos
-    mov r14d, eax
-    sub r14d, 50
-    mov r15d, edx
-    sub r15d, 25
+    mov r14d, eax               ; node center x
+    mov r15d, edx               ; node center y
 
-    ; Connection line
-    lea edi, [r12d + 60]
-    lea esi, [r13d + 20]
-    mov edx, r14d
-    mov ecx, r15d
+    ; Connection line: to UHMA edge
+    mov edi, r14d
+    mov esi, r15d
+    call calc_uhma_edge
+    mov [rsp], eax
+    mov [rsp+4], edx
+    mov edi, r14d
+    mov esi, r15d
+    mov edx, [rsp]
+    mov ecx, [rsp+4]
     mov r8d, [rel col_cyan]
     call gfx_line
+
+    ; Adjust to top-left for drawing
+    sub r14d, RNODE_W/2
+    sub r15d, RNODE_H/2
 
     ; Node box - cyan for rosetta
     mov edi, r14d
     mov esi, r15d
-    mov edx, 100
-    mov ecx, 50
+    mov edx, RNODE_W
+    mov ecx, RNODE_H
     mov r8d, 0x00224455
     call gfx_fill_rect
 
     mov edi, r14d
     mov esi, r15d
-    mov edx, 100
-    mov ecx, 50
+    mov edx, RNODE_W
+    mov ecx, RNODE_H
     mov r8d, [rel col_cyan]
     call gfx_rect
 
@@ -2560,18 +2635,18 @@ draw_mindmap:
     lea rax, [rel node_rects]
     mov [rax + NODE_ROSETTA*16], r14d
     mov [rax + NODE_ROSETTA*16 + 4], r15d
-    mov dword [rax + NODE_ROSETTA*16 + 8], 100
-    mov dword [rax + NODE_ROSETTA*16 + 12], 50
+    mov dword [rax + NODE_ROSETTA*16 + 8], RNODE_W
+    mov dword [rax + NODE_ROSETTA*16 + 12], RNODE_H
 
-    ; Label
-    lea edi, [r14d + 10]
-    lea esi, [r15d + 15]
+    ; Label centered: "ROSETTA" = 7 chars
+    lea edi, [r14d + 22]
+    lea esi, [r15d + 18]
     lea rdx, [rel node_rosetta]
     mov ecx, 7
     mov r8d, [rel col_white]
     call gfx_text
 
-    ; Get cached verify mode and display
+    ; Get cached verify mode
     mov eax, [rel geom_mode]
     cmp eax, 0
     jne .ros_not_abs
@@ -2588,39 +2663,46 @@ draw_mindmap:
     lea rdx, [rel geom_mode_both]
     mov ecx, 4
 .ros_show:
-    lea edi, [r14d + 10]
-    lea esi, [r15d + 35]
+    lea edi, [r14d + 16]
+    lea esi, [r15d + 30]
     mov r8d, [rel col_cyan]
     call gfx_text
 
-    ; === MYCO node - ring layout (angle 112 = upper-left) ===
-    mov edi, 112
+    ; === MYCO node - ring layout ===
+    movzx edi, byte [rel node_angles + NODE_MYCO]
     call calc_ring_pos
-    mov r14d, eax
-    sub r14d, 45
-    mov r15d, edx
-    sub r15d, 25
+    mov r14d, eax               ; node center x
+    mov r15d, edx               ; node center y
 
-    ; Connection line
-    lea edi, [r12d - 60]
-    lea esi, [r13d - 10]
-    lea edx, [r14d + 90]
-    lea ecx, [r15d + 25]
+    ; Connection line: to UHMA edge
+    mov edi, r14d
+    mov esi, r15d
+    call calc_uhma_edge
+    mov [rsp], eax
+    mov [rsp+4], edx
+    mov edi, r14d
+    mov esi, r15d
+    mov edx, [rsp]
+    mov ecx, [rsp+4]
     mov r8d, [rel col_green]
     call gfx_line
+
+    ; Adjust to top-left for drawing
+    sub r14d, RNODE_W/2
+    sub r15d, RNODE_H/2
 
     ; Node box - green for myco
     mov edi, r14d
     mov esi, r15d
-    mov edx, 90
-    mov ecx, 50
+    mov edx, RNODE_W
+    mov ecx, RNODE_H
     mov r8d, 0x00224422
     call gfx_fill_rect
 
     mov edi, r14d
     mov esi, r15d
-    mov edx, 90
-    mov ecx, 50
+    mov edx, RNODE_W
+    mov ecx, RNODE_H
     mov r8d, [rel col_green]
     call gfx_rect
 
@@ -2628,12 +2710,12 @@ draw_mindmap:
     lea rax, [rel node_rects]
     mov [rax + NODE_MYCO*16], r14d
     mov [rax + NODE_MYCO*16 + 4], r15d
-    mov dword [rax + NODE_MYCO*16 + 8], 90
-    mov dword [rax + NODE_MYCO*16 + 12], 50
+    mov dword [rax + NODE_MYCO*16 + 8], RNODE_W
+    mov dword [rax + NODE_MYCO*16 + 12], RNODE_H
 
-    ; Label
-    lea edi, [r14d + 15]
-    lea esi, [r15d + 15]
+    ; Label centered: "MYCO" = 4 chars
+    lea edi, [r14d + 30]
+    lea esi, [r15d + 18]
     lea rdx, [rel node_myco]
     mov ecx, 4
     mov r8d, [rel col_white]
@@ -2650,39 +2732,46 @@ draw_mindmap:
     lea rdx, [rel colony_solo]
     mov ecx, 4
 .myco_show:
-    lea edi, [r14d + 10]
-    lea esi, [r15d + 35]
+    lea edi, [r14d + 24]
+    lea esi, [r15d + 30]
     mov r8d, [rel col_green]
     call gfx_text
 
-    ; === SPORE node - ring layout (angle 16 = upper-right) ===
-    mov edi, 16
+    ; === SPORE node - ring layout ===
+    movzx edi, byte [rel node_angles + NODE_SPORE]
     call calc_ring_pos
-    mov r14d, eax
-    sub r14d, 45
-    mov r15d, edx
-    sub r15d, 25
+    mov r14d, eax               ; node center x
+    mov r15d, edx               ; node center y
 
-    ; Connection line
-    lea edi, [r12d + 60]
-    lea esi, [r13d - 10]
-    mov edx, r14d
-    lea ecx, [r15d + 25]
+    ; Connection line: to UHMA edge
+    mov edi, r14d
+    mov esi, r15d
+    call calc_uhma_edge
+    mov [rsp], eax
+    mov [rsp+4], edx
+    mov edi, r14d
+    mov esi, r15d
+    mov edx, [rsp]
+    mov ecx, [rsp+4]
     mov r8d, [rel col_orange]
     call gfx_line
+
+    ; Adjust to top-left for drawing
+    sub r14d, RNODE_W/2
+    sub r15d, RNODE_H/2
 
     ; Node box - orange for spore
     mov edi, r14d
     mov esi, r15d
-    mov edx, 90
-    mov ecx, 50
+    mov edx, RNODE_W
+    mov ecx, RNODE_H
     mov r8d, 0x00443322
     call gfx_fill_rect
 
     mov edi, r14d
     mov esi, r15d
-    mov edx, 90
-    mov ecx, 50
+    mov edx, RNODE_W
+    mov ecx, RNODE_H
     mov r8d, [rel col_orange]
     call gfx_rect
 
@@ -2690,20 +2779,20 @@ draw_mindmap:
     lea rax, [rel node_rects]
     mov [rax + NODE_SPORE*16], r14d
     mov [rax + NODE_SPORE*16 + 4], r15d
-    mov dword [rax + NODE_SPORE*16 + 8], 90
-    mov dword [rax + NODE_SPORE*16 + 12], 50
+    mov dword [rax + NODE_SPORE*16 + 8], RNODE_W
+    mov dword [rax + NODE_SPORE*16 + 12], RNODE_H
 
-    ; Label
-    lea edi, [r14d + 15]
-    lea esi, [r15d + 15]
+    ; Label centered: "SPORE" = 5 chars
+    lea edi, [r14d + 28]
+    lea esi, [r15d + 18]
     lea rdx, [rel node_spore]
     mov ecx, 5
     mov r8d, [rel col_white]
     call gfx_text
 
-    ; Show gene status
-    lea edi, [r14d + 10]
-    lea esi, [r15d + 35]
+    ; Show gene status centered
+    lea edi, [r14d + 22]
+    lea esi, [r15d + 30]
     lea rdx, [rel lbl_genes]
     mov ecx, 7
     mov r8d, [rel col_orange]
@@ -2849,20 +2938,24 @@ draw_mindmap:
     mov r8d, [rel col_cyan]
     call gfx_text
 
-    ; Draw large expanded panel
-    lea edi, [r12d - 200]
-    lea esi, [r13d - 150]
-    mov edx, 400
-    mov ecx, 300
+    ; Draw large expanded panel (fixed position, bigger)
+    mov edi, CANVAS_X + 30
+    mov esi, CANVAS_Y + 50
+    mov edx, 650                 ; bigger panel
+    mov ecx, 500                 ; taller panel
     mov r8d, [rel col_panel_hi]
     call gfx_fill_rect
 
-    lea edi, [r12d - 200]
-    lea esi, [r13d - 150]
-    mov edx, 400
-    mov ecx, 300
+    mov edi, CANVAS_X + 30
+    mov esi, CANVAS_Y + 50
+    mov edx, 650
+    mov ecx, 500
     mov r8d, [rel col_white]
     call gfx_rect
+
+    ; Set text position for panel content
+    mov r12d, CANVAS_X + 50      ; text x
+    mov r13d, CANVAS_Y + 80      ; text y (title)
 
     ; Dispatch based on focus_node (each shows context-specific live data)
     mov eax, [rel focus_node]
@@ -2890,166 +2983,166 @@ draw_mindmap:
 
 .focus_regions:
     ; Title
-    lea edi, [r12d - 180]
-    lea esi, [r13d - 130]
+    mov edi, r12d
+    mov esi, r13d
     lea rdx, [rel node_regions]
     mov ecx, 7
     mov r8d, [rel col_cyan]
     call gfx_text
     ; Draw query_ring content (status response)
-    lea edi, [r12d - 180]
-    lea esi, [r13d - 100]
-    mov edx, 12                  ; max lines
+    mov edi, r12d
+    lea esi, [r13d + 25]
+    mov edx, 22                  ; max lines
     call draw_query_lines
     jmp .done
 
 .focus_tokens:
     ; Title
-    lea edi, [r12d - 180]
-    lea esi, [r13d - 130]
+    mov edi, r12d
+    mov esi, r13d
     lea rdx, [rel node_tokens]
     mov ecx, 6
     mov r8d, [rel col_cyan]
     call gfx_text
     ; Draw query_ring content
-    lea edi, [r12d - 180]
-    lea esi, [r13d - 100]
-    mov edx, 12
+    mov edi, r12d
+    lea esi, [r13d + 25]
+    mov edx, 22
     call draw_query_lines
     jmp .done
 
 .focus_state:
     ; Title
-    lea edi, [r12d - 180]
-    lea esi, [r13d - 130]
+    mov edi, r12d
+    mov esi, r13d
     lea rdx, [rel node_state]
     mov ecx, 5
     mov r8d, [rel col_cyan]
     call gfx_text
     ; Draw query_ring content (intro response)
-    lea edi, [r12d - 180]
-    lea esi, [r13d - 100]
-    mov edx, 12
+    mov edi, r12d
+    lea esi, [r13d + 25]
+    mov edx, 22
     call draw_query_lines
     jmp .done
 
 .focus_predict:
     ; Title
-    lea edi, [r12d - 180]
-    lea esi, [r13d - 130]
+    mov edi, r12d
+    mov esi, r13d
     lea rdx, [rel node_predict]
     mov ecx, 7
     mov r8d, [rel col_cyan]
     call gfx_text
     ; Draw query_ring content
-    lea edi, [r12d - 180]
-    lea esi, [r13d - 100]
-    mov edx, 12
+    mov edi, r12d
+    lea esi, [r13d + 25]
+    mov edx, 22
     call draw_query_lines
     jmp .done
 
 .focus_dispatch:
     ; Title
-    lea edi, [r12d - 180]
-    lea esi, [r13d - 130]
+    mov edi, r12d
+    mov esi, r13d
     lea rdx, [rel node_dispatch]
     mov ecx, 8
     mov r8d, [rel col_cyan]
     call gfx_text
     ; Draw query_ring content
-    lea edi, [r12d - 180]
-    lea esi, [r13d - 100]
-    mov edx, 12
+    mov edi, r12d
+    lea esi, [r13d + 25]
+    mov edx, 22
     call draw_query_lines
     jmp .done
 
 .focus_accuracy:
     ; Title
-    lea edi, [r12d - 180]
-    lea esi, [r13d - 130]
+    mov edi, r12d
+    mov esi, r13d
     lea rdx, [rel node_accuracy]
     mov ecx, 8
     mov r8d, [rel col_cyan]
     call gfx_text
     ; Draw query_ring content (status response)
-    lea edi, [r12d - 180]
-    lea esi, [r13d - 100]
-    mov edx, 12
+    mov edi, r12d
+    lea esi, [r13d + 25]
+    mov edx, 22
     call draw_query_lines
     jmp .done
 
 .focus_hive:
     ; Title
-    lea edi, [r12d - 180]
-    lea esi, [r13d - 130]
+    mov edi, r12d
+    mov esi, r13d
     lea rdx, [rel lbl_hive]
     mov ecx, 4
     mov r8d, [rel col_yellow]
     call gfx_text
     ; Draw query_ring content (hive response)
-    lea edi, [r12d - 180]
-    lea esi, [r13d - 100]
-    mov edx, 12
+    mov edi, r12d
+    lea esi, [r13d + 25]
+    mov edx, 22
     call draw_query_lines
     jmp .done
 
 .focus_rosetta:
     ; Title
-    lea edi, [r12d - 180]
-    lea esi, [r13d - 130]
+    mov edi, r12d
+    mov esi, r13d
     lea rdx, [rel node_rosetta]
     mov ecx, 7
     mov r8d, [rel col_magenta]
     call gfx_text
     ; Draw query_ring content (geom response)
-    lea edi, [r12d - 180]
-    lea esi, [r13d - 100]
-    mov edx, 12
+    mov edi, r12d
+    lea esi, [r13d + 25]
+    mov edx, 22
     call draw_query_lines
     jmp .done
 
 .focus_myco:
     ; Title
-    lea edi, [r12d - 180]
-    lea esi, [r13d - 130]
+    mov edi, r12d
+    mov esi, r13d
     lea rdx, [rel node_myco]
     mov ecx, 4
     mov r8d, [rel col_green]
     call gfx_text
     ; Draw query_ring content (colony response)
-    lea edi, [r12d - 180]
-    lea esi, [r13d - 100]
-    mov edx, 12
+    mov edi, r12d
+    lea esi, [r13d + 25]
+    mov edx, 22
     call draw_query_lines
     jmp .done
 
 .focus_spore:
     ; Title
-    lea edi, [r12d - 180]
-    lea esi, [r13d - 130]
+    mov edi, r12d
+    mov esi, r13d
     lea rdx, [rel node_spore]
     mov ecx, 5
     mov r8d, [rel col_orange]
     call gfx_text
     ; Draw query_ring content (genes response)
-    lea edi, [r12d - 180]
-    lea esi, [r13d - 100]
-    mov edx, 12
+    mov edi, r12d
+    lea esi, [r13d + 25]
+    mov edx, 22
     call draw_query_lines
     jmp .done
 
 .focus_generic:
     ; Title
-    lea edi, [r12d - 180]
-    lea esi, [r13d - 130]
+    mov edi, r12d
+    mov esi, r13d
     lea rdx, [rel detail_expanded]
     mov ecx, 13
     mov r8d, [rel col_cyan]
     call gfx_text
     ; Draw query_ring content
-    lea edi, [r12d - 180]
-    lea esi, [r13d - 100]
-    mov edx, 12
+    mov edi, r12d
+    lea esi, [r13d + 25]
+    mov edx, 22
     call draw_query_lines
 
 .done:
@@ -3718,6 +3811,103 @@ calc_depth_scale:
     xor edx, edx
     div ecx                     ; eax = (y_rel * depth) / canvas_h
     add eax, 70                 ; base scale 70, max ~130
+    ret
+
+;; calc_uhma_edge — Calculate intersection point of line with UHMA panel edge
+;; edi = outer node center x, esi = outer node center y
+;; r12d = UHMA center x, r13d = UHMA center y (must be set by caller)
+;; UHMA panel is 120x50 (half: 60x25)
+;; Returns: eax = edge x, edx = edge y
+calc_uhma_edge:
+    push rbx
+    push rcx
+
+    ; Calculate direction from center to outer point
+    mov eax, edi
+    sub eax, r12d               ; dx = outer_x - center_x
+    mov ebx, eax                ; save dx
+
+    mov ecx, esi
+    sub ecx, r13d               ; dy = outer_y - center_y
+
+    ; Get absolute values for comparison
+    mov r8d, ebx
+    test r8d, r8d
+    jns .dx_pos
+    neg r8d                     ; |dx|
+.dx_pos:
+    mov r9d, ecx
+    test r9d, r9d
+    jns .dy_pos
+    neg r9d                     ; |dy|
+.dy_pos:
+
+    ; Compare 60*|dy| vs 25*|dx| to determine which edge
+    ; If 60*|dy| < 25*|dx|: hits vertical edge (left/right)
+    ; Else: hits horizontal edge (top/bottom)
+    imul r10d, r9d, 60          ; 60 * |dy|
+    imul r11d, r8d, 25          ; 25 * |dx|
+
+    cmp r10d, r11d
+    jge .horizontal_edge
+
+.vertical_edge:
+    ; Hits left or right edge
+    ; edge_x = center_x + sign(dx)*60
+    ; edge_y = center_y + (dy * 60) / |dx|
+    test r8d, r8d
+    jz .at_center               ; avoid div by zero
+
+    mov eax, r12d
+    test ebx, ebx
+    js .left_edge
+    add eax, 60                 ; right edge
+    jmp .calc_y_vert
+.left_edge:
+    sub eax, 60                 ; left edge
+.calc_y_vert:
+    push rax                    ; save edge_x
+    mov eax, ecx                ; dy
+    imul eax, 60
+    cdq
+    idiv r8d                    ; eax = dy * 60 / |dx|
+    add eax, r13d               ; edge_y = center_y + result
+    mov edx, eax                ; edge_y in edx
+    pop rax                     ; edge_x in eax
+    jmp .done
+
+.horizontal_edge:
+    ; Hits top or bottom edge
+    ; edge_y = center_y + sign(dy)*25
+    ; edge_x = center_x + (dx * 25) / |dy|
+    test r9d, r9d
+    jz .at_center               ; avoid div by zero
+
+    mov edx, r13d
+    test ecx, ecx
+    js .top_edge
+    add edx, 25                 ; bottom edge
+    jmp .calc_x_horiz
+.top_edge:
+    sub edx, 25                 ; top edge
+.calc_x_horiz:
+    push rdx                    ; save edge_y
+    mov eax, ebx                ; dx
+    imul eax, 25
+    cdq
+    idiv r9d                    ; eax = dx * 25 / |dy|
+    add eax, r12d               ; edge_x = center_x + result
+    pop rdx                     ; edge_y in edx
+    jmp .done
+
+.at_center:
+    ; Outer point at center (shouldn't happen)
+    mov eax, r12d
+    mov edx, r13d
+
+.done:
+    pop rcx
+    pop rbx
     ret
 
 ;; ============================================================
