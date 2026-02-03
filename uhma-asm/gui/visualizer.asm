@@ -88,6 +88,23 @@ section .data
     btn_feed:       db "FEED", 0
     btn_stop:       db "STOP", 0
 
+    ; FEED dropdown menu items
+    menu_quick:     db "Quick", 0
+    menu_mastery:   db "Mastery", 0
+    menu_live:      db "Live", 0
+    menu_stop:      db "Stop", 0
+
+    ; Feed commands for dropdown
+    feed_cmd_quick:    db "./feed.sh --corpus corpus/ --cycles 1 --pause 5 &", 0
+    feed_cmd_mastery:  db "./feed.sh --corpus corpus/ --mastery &", 0
+    feed_cmd_live:     db "./feed.sh --corpus corpus/ --mastery --live &", 0
+    feed_cmd_stop:     db "./feed.sh --shutdown gui_stop", 0
+
+    ; Startup countdown message
+    startup_msg:    db "Starting UHMA in ", 0
+    startup_sec:    db "s... [S]erver mode", 0
+    startup_wait:   db "Waiting for server...", 0
+
     ; MCP commands for node clicks
     cmd_status:     db "status", 0
     cmd_intro:      db "intro", 0
@@ -480,6 +497,20 @@ section .bss
     feed_check_ctr: resd 1          ; counter for polling (every 60 frames)
     feed_cmd_buf:   resb 512        ; dynamically built feed.sh command
     feed_cfg_buf:   resb 256        ; parsed config from zenity
+
+    ; Dropdown menu state
+    menu_open:      resd 1          ; 1 if dropdown is visible
+    menu_x:         resd 1          ; menu position x
+    menu_y:         resd 1          ; menu position y
+    menu_hover:     resd 1          ; hovered item (-1 = none)
+    MENU_W          equ 80          ; menu width
+    MENU_ITEM_H     equ 24          ; menu item height
+    MENU_ITEMS      equ 4           ; number of items (Quick/Mastery/Live/Stop)
+
+    ; Startup countdown state
+    startup_mode:   resd 1          ; 0=normal, 1=countdown, 2=waiting for server
+    startup_count:  resd 1          ; countdown seconds remaining
+    startup_frames: resd 1          ; frame counter for 1-second ticks
 
     ; Animation state (TheBrain-style smooth transitions)
     ; States: 0=NONE, 1=EXPANDING, 2=COLLAPSING
@@ -1045,6 +1076,90 @@ handle_click:
     mov r12d, eax           ; x
     mov r13d, edx           ; y
 
+    ; Check if dropdown menu is open
+    mov eax, [rel menu_open]
+    test eax, eax
+    jz .no_menu_check
+
+    ; Check if click is inside menu
+    mov eax, [rel menu_x]
+    cmp r12d, eax
+    jl .click_outside_menu
+    add eax, MENU_W
+    cmp r12d, eax
+    jge .click_outside_menu
+
+    mov eax, [rel menu_y]
+    cmp r13d, eax
+    jl .click_outside_menu
+    mov ebx, eax                    ; save menu_y
+    add eax, MENU_ITEM_H * MENU_ITEMS
+    cmp r13d, eax
+    jge .click_outside_menu
+
+    ; Click inside menu - determine which item
+    mov eax, r13d
+    sub eax, ebx                    ; y - menu_y
+    xor edx, edx
+    mov ecx, MENU_ITEM_H
+    div ecx                         ; eax = item index
+    cmp eax, MENU_ITEMS
+    jge .click_outside_menu
+
+    ; Execute menu item
+    mov dword [rel menu_open], 0    ; close menu
+    cmp eax, 0
+    je .menu_quick
+    cmp eax, 1
+    je .menu_mastery
+    cmp eax, 2
+    je .menu_live
+    cmp eax, 3
+    je .menu_stop
+    jmp .done_click
+
+.menu_quick:
+    lea rdi, [rel feed_cmd_quick]
+    call system
+    mov dword [rel feed_running], 1
+    lea rax, [rel msg_feed_start]
+    mov [rel feedback_msg], rax
+    mov dword [rel feedback_timer], 90
+    jmp .done_click
+
+.menu_mastery:
+    lea rdi, [rel feed_cmd_mastery]
+    call system
+    mov dword [rel feed_running], 1
+    lea rax, [rel msg_feed_start]
+    mov [rel feedback_msg], rax
+    mov dword [rel feedback_timer], 90
+    jmp .done_click
+
+.menu_live:
+    lea rdi, [rel feed_cmd_live]
+    call system
+    mov dword [rel feed_running], 1
+    lea rax, [rel msg_feed_start]
+    mov [rel feedback_msg], rax
+    mov dword [rel feedback_timer], 90
+    jmp .done_click
+
+.menu_stop:
+    lea rdi, [rel feed_cmd_stop]
+    call system
+    mov dword [rel feed_running], 0
+    lea rax, [rel msg_feed_stop]
+    mov [rel feedback_msg], rax
+    mov dword [rel feedback_timer], 90
+    jmp .done_click
+
+.click_outside_menu:
+    ; Close menu on click outside
+    mov dword [rel menu_open], 0
+    jmp .done_click
+
+.no_menu_check:
     ; Check output panels first (click = pause)
     ; Check x bounds (same for all 3 panels)
     cmp r12d, OUT_PANEL_X
@@ -1391,6 +1506,40 @@ handle_motion:
     mov r12d, eax
     mov r13d, edx
 
+    ; Check if menu is open - update menu hover
+    mov eax, [rel menu_open]
+    test eax, eax
+    jz .check_buttons
+
+    ; Check if mouse is inside menu
+    mov dword [rel menu_hover], -1
+    mov eax, [rel menu_x]
+    cmp r12d, eax
+    jl .check_buttons
+    add eax, MENU_W
+    cmp r12d, eax
+    jge .check_buttons
+
+    mov eax, [rel menu_y]
+    cmp r13d, eax
+    jl .check_buttons
+    mov ebx, eax                    ; save menu_y
+    add eax, MENU_ITEM_H * MENU_ITEMS
+    cmp r13d, eax
+    jge .check_buttons
+
+    ; Mouse inside menu - calculate hovered item
+    mov eax, r13d
+    sub eax, ebx                    ; y - menu_y
+    xor edx, edx
+    mov ecx, MENU_ITEM_H
+    div ecx                         ; eax = item index
+    cmp eax, MENU_ITEMS
+    jge .check_buttons
+    mov [rel menu_hover], eax
+    jmp .done
+
+.check_buttons:
     ; Find hovered button
     lea rbx, [rel buttons]
     xor ecx, ecx
@@ -1625,17 +1774,18 @@ do_action:
     jmp .continue
 
 .do_feed:
-    ; Show config dialog and build feed.sh command
-    call show_feed_config
+    ; Toggle dropdown menu
+    mov eax, [rel menu_open]
     test eax, eax
-    jz .continue                    ; user cancelled
-    ; Command built in feed_cmd_buf, execute it
-    lea rdi, [rel feed_cmd_buf]
-    call system
-    mov dword [rel feed_running], 1
-    lea rax, [rel msg_feed_start]
-    mov [rel feedback_msg], rax
-    mov dword [rel feedback_timer], 90
+    jnz .close_menu
+    ; Open menu below FEED button (x=805, y=38)
+    mov dword [rel menu_open], 1
+    mov dword [rel menu_x], 805
+    mov dword [rel menu_y], 38
+    mov dword [rel menu_hover], -1
+    jmp .continue
+.close_menu:
+    mov dword [rel menu_open], 0
     jmp .continue
 
 .do_stop:
@@ -1750,7 +1900,128 @@ draw_frame:
     ; Feedback
     call draw_feedback
 
+    ; Dropdown menu (on top of everything)
+    call draw_menu
+
     add rsp, 8
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; draw_menu — Draw dropdown menu if open
+;; ============================================================
+draw_menu:
+    push rbx
+    push r12
+    push r13
+    sub rsp, 8
+
+    ; Check if menu is open
+    mov eax, [rel menu_open]
+    test eax, eax
+    jz .menu_done
+
+    mov r12d, [rel menu_x]          ; menu x
+    mov r13d, [rel menu_y]          ; menu y
+
+    ; Draw menu background
+    mov edi, r12d
+    mov esi, r13d
+    mov edx, MENU_W
+    mov ecx, MENU_ITEM_H * MENU_ITEMS
+    mov r8d, 0x002a2a3e             ; dark background
+    call gfx_fill_rect
+
+    ; Draw menu border
+    mov edi, r12d
+    mov esi, r13d
+    mov edx, MENU_W
+    mov ecx, MENU_ITEM_H * MENU_ITEMS
+    mov r8d, 0x00505070             ; border color
+    call gfx_rect
+
+    ; Draw menu items
+    xor ebx, ebx                    ; item index
+
+.menu_item_loop:
+    cmp ebx, MENU_ITEMS
+    jge .menu_done
+
+    ; Calculate item y position
+    mov eax, ebx
+    imul eax, MENU_ITEM_H
+    add eax, r13d                   ; item_y = menu_y + index * MENU_ITEM_H
+
+    ; Check if hovered
+    cmp ebx, [rel menu_hover]
+    jne .not_hovered
+    ; Draw hover highlight
+    push rax
+    mov edi, r12d
+    mov esi, eax
+    mov edx, MENU_W
+    mov ecx, MENU_ITEM_H
+    mov r8d, 0x00404060             ; hover color
+    call gfx_fill_rect
+    pop rax
+.not_hovered:
+
+    ; Draw separator before Stop (item 3)
+    cmp ebx, 3
+    jne .no_separator
+    push rax
+    mov edi, r12d
+    add edi, 5
+    mov esi, eax
+    mov edx, r12d
+    add edx, MENU_W - 5
+    mov ecx, eax
+    mov r8d, 0x00505070
+    call gfx_line
+    pop rax
+.no_separator:
+
+    ; Draw item text
+    push rax
+    add eax, 6                      ; text y offset
+    mov esi, eax
+    mov edi, r12d
+    add edi, 10                     ; text x offset
+    mov r8d, 0x00e0e0e0             ; text color
+
+    ; Get label for this item
+    cmp ebx, 0
+    jne .not_quick
+    lea rdx, [rel menu_quick]
+    mov ecx, 5
+    jmp .draw_item_text
+.not_quick:
+    cmp ebx, 1
+    jne .not_mastery
+    lea rdx, [rel menu_mastery]
+    mov ecx, 7
+    jmp .draw_item_text
+.not_mastery:
+    cmp ebx, 2
+    jne .not_live
+    lea rdx, [rel menu_live]
+    mov ecx, 4
+    jmp .draw_item_text
+.not_live:
+    lea rdx, [rel menu_stop]
+    mov ecx, 4
+
+.draw_item_text:
+    call gfx_text
+    pop rax
+
+    inc ebx
+    jmp .menu_item_loop
+
+.menu_done:
+    add rsp, 8
+    pop r13
     pop r12
     pop rbx
     ret

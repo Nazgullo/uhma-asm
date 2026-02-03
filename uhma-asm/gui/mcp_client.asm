@@ -119,6 +119,101 @@ global mcp_evolve
 global mcp_save
 global mcp_load
 global mcp_get_channel_socket
+global mcp_try_connect
+global mcp_spawn_uhma
+
+;; mcp_try_connect — Try to connect to existing UHMA (no spawn)
+;; Returns: eax=1 if connected, 0 if not
+mcp_try_connect:
+    push rbx
+    sub rsp, 8
+
+    ; Clear socket validity flags
+    xor eax, eax
+    mov [rel mcp_sock_valid], eax
+    mov [rel mcp_sock_valid + 4], eax
+    mov [rel mcp_sock_valid + 8], eax
+    mov [rel mcp_sock_valid + 12], eax
+    mov [rel mcp_sock_valid + 16], eax
+    mov [rel mcp_sock_valid + 20], eax
+
+    ; Try to connect all channels
+    call mcp_try_connect_all
+    mov ebx, eax                    ; save connected count
+
+    ; Need at least one channel
+    test ebx, ebx
+    jz .try_not_connected
+
+    mov dword [rel mcp_running], 1
+    mov eax, 1
+    jmp .try_done
+
+.try_not_connected:
+    xor eax, eax
+
+.try_done:
+    add rsp, 8
+    pop rbx
+    ret
+
+;; mcp_spawn_uhma — Spawn UHMA and connect
+;; Returns: eax=1 success, 0 failure
+mcp_spawn_uhma:
+    push rbx
+    push r12
+    sub rsp, 8
+
+    lea rdi, [rel err_connect]
+    xor eax, eax
+    call printf
+
+    call mcp_do_spawn
+    test eax, eax
+    jz .spawn_uhma_fail
+
+    ; Wait for UHMA to start
+    mov edi, 2000000                ; 2s
+    call usleep
+
+    ; Try to connect
+    call mcp_try_connect_all
+    mov r12d, eax
+
+    ; Need at least query channel
+    test r12d, r12d
+    jz .spawn_uhma_fail
+
+    mov dword [rel mcp_running], 1
+    mov dword [rel call_id], 2
+
+    lea rdi, [rel msg_connected]
+    mov esi, r12d
+    xor eax, eax
+    call printf
+
+    ; Enable autonomous mode (batch_mode=0)
+    mov edi, 500000
+    call usleep
+    lea rdi, [rel cmd_batch]
+    xor esi, esi
+    call mcp_call
+
+    lea rdi, [rel msg_autonomous]
+    xor eax, eax
+    call printf
+
+    mov eax, 1
+    jmp .spawn_uhma_done
+
+.spawn_uhma_fail:
+    xor eax, eax
+
+.spawn_uhma_done:
+    add rsp, 8
+    pop r12
+    pop rbx
+    ret
 
 ;; mcp_init — Connect to MCP server via TCP (all channels)
 ;; Returns: eax=1 success (at least query channel connected), 0 failure
@@ -140,7 +235,7 @@ mcp_init:
     mov [rel mcp_sock_valid + 20], eax
 
     ; Try to connect all channels
-    call .try_connect_all
+    call mcp_try_connect_all
     mov r12d, eax           ; save connected count
 
     ; If no channels connected, spawn server
@@ -152,7 +247,7 @@ mcp_init:
     xor eax, eax
     call printf
 
-    call .spawn_server
+    call mcp_do_spawn
     test eax, eax
     jz .spawn_fail
 
@@ -161,7 +256,7 @@ mcp_init:
     call usleep
 
     ; Try to connect again
-    call .try_connect_all
+    call mcp_try_connect_all
     mov r12d, eax
 
 .some_connected:
@@ -218,7 +313,7 @@ mcp_init:
 
 ;; Try to connect all channels
 ;; Returns: eax = number of channels connected
-.try_connect_all:
+mcp_try_connect_all:
     push rbx
     push r12
     push r13
@@ -227,9 +322,9 @@ mcp_init:
     xor r12d, r12d          ; connected count
     xor r13d, r13d          ; channel index
 
-.connect_loop:
+mcp_tca_loop:
     cmp r13d, MCP_NUM_CHANNELS
-    jge .connect_done
+    jge mcp_tca_done
 
     ; Calculate port: base - channel (9999, 9998, 9997, 9996)
     mov eax, MCP_PORT_BASE
@@ -242,7 +337,7 @@ mcp_init:
     xor edx, edx
     call socket
     cmp eax, -1
-    je .next_channel
+    je mcp_tca_next
 
     ; Save socket fd
     lea rcx, [rel mcp_sockets]
@@ -275,17 +370,17 @@ mcp_init:
     lea rcx, [rel mcp_sock_valid]
     mov dword [rcx + r13 * 4], 1
     inc r12d
-    jmp .next_channel
+    jmp mcp_tca_next
 
 .close_failed:
     mov edi, ebx
     call close
 
-.next_channel:
+mcp_tca_next:
     inc r13d
-    jmp .connect_loop
+    jmp mcp_tca_loop
 
-.connect_done:
+mcp_tca_done:
     mov eax, r12d
     add rsp, 8
     pop r13
@@ -295,7 +390,7 @@ mcp_init:
 
 ;; Spawn UHMA directly (creates 6 TCP channels itself)
 ;; Returns: eax=1 success, 0 failure
-.spawn_server:
+mcp_do_spawn:
     push rbx
     sub rsp, 16
 
