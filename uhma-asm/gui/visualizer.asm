@@ -215,6 +215,11 @@ section .data
     zenity_file:    db "zenity --file-selection --title='Select File' 2>/dev/null > /tmp/.uhma_pick", 0
     zenity_dir:     db "zenity --file-selection --directory --title='Select Folder' 2>/dev/null > /tmp/.uhma_pick", 0
     zenity_url:     db "zenity --entry --title='Fetch URL' --text='Enter URL to digest:' 2>/dev/null > /tmp/.uhma_pick", 0
+    zenity_feed:    db "zenity --entry --title='Feed Configuration' "
+                    db "--text='Edit feed.sh command:' "
+                    db "--entry-text='./feed.sh --corpus corpus/ --cycles 1 --pause 5' "
+                    db "2>/dev/null > /tmp/.uhma_feed", 0
+    tmp_feed_path:  db "/tmp/.uhma_feed", 0
     tmp_pick_path:  db "/tmp/.uhma_pick", 0
     read_mode:      db "rb", 0
 
@@ -473,6 +478,8 @@ section .bss
     ; Feed control state
     feed_running:   resd 1          ; 1 if feed.sh is running
     feed_check_ctr: resd 1          ; counter for polling (every 60 frames)
+    feed_cmd_buf:   resb 512        ; dynamically built feed.sh command
+    feed_cfg_buf:   resb 256        ; parsed config from zenity
 
     ; Animation state (TheBrain-style smooth transitions)
     ; States: 0=NONE, 1=EXPANDING, 2=COLLAPSING
@@ -567,6 +574,7 @@ extern closedir
 extern strcpy
 extern strcat
 extern strlen
+extern strcmp
 ; MCP client functions (replaces direct UHMA calls)
 extern mcp_dream
 extern mcp_observe
@@ -1617,8 +1625,12 @@ do_action:
     jmp .continue
 
 .do_feed:
-    ; Start training with feed.sh
-    lea rdi, [rel feed_start_cmd]
+    ; Show config dialog and build feed.sh command
+    call show_feed_config
+    test eax, eax
+    jz .continue                    ; user cancelled
+    ; Command built in feed_cmd_buf, execute it
+    lea rdi, [rel feed_cmd_buf]
     call system
     mov dword [rel feed_running], 1
     lea rax, [rel msg_feed_start]
@@ -4517,6 +4529,77 @@ load_url:
 .web_fetch_tool: db "web_fetch", 0
 .url_arg_pre:    db '"url":"', 0
 .url_arg_post:   db '","digest":true', 0
+
+;; ============================================================
+;; show_feed_config — Show zenity entry dialog, read command directly
+;; Returns: eax = 1 if command built, 0 if cancelled
+;; ============================================================
+show_feed_config:
+    push rbx
+    push r12
+    push r13
+    sub rsp, 16                     ; 3 pushes (odd) -> aligned, sub must be multiple of 16
+
+    ; Show zenity entry dialog
+    lea rdi, [rel zenity_feed]
+    call system
+    mov r13d, eax                   ; save result
+    test r13d, r13d
+    jnz .cancelled                  ; user pressed Cancel (non-zero = error/cancel)
+
+    ; Read command from temp file
+    lea rdi, [rel tmp_feed_path]
+    lea rsi, [rel read_mode]
+    call fopen
+    test rax, rax
+    jz .cancelled
+    mov rbx, rax                    ; file handle
+
+    lea rdi, [rel feed_cmd_buf]
+    mov esi, 500
+    mov rdx, rbx
+    call fgets
+    mov r12, rax                    ; save result
+
+    mov rdi, rbx
+    call fclose
+
+    test r12, r12
+    jz .cancelled                   ; fgets failed
+
+    ; Strip newline if present
+    lea rdi, [rel feed_cmd_buf]
+    call strlen
+    test rax, rax
+    jz .cancelled                   ; empty string
+
+    ; Check last char for newline (reload rdi since it's caller-saved)
+    lea rdi, [rel feed_cmd_buf]
+    dec rax                         ; rax = length - 1 (index of last char)
+    cmp byte [rdi + rax], 10
+    jne .no_strip
+    mov byte [rdi + rax], 0
+.no_strip:
+
+    ; Append " &" for background execution
+    lea rdi, [rel feed_cmd_buf]
+    lea rsi, [rel .background]
+    call strcat
+
+    mov eax, 1
+    jmp .done
+
+.cancelled:
+    xor eax, eax
+
+.done:
+    add rsp, 16
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+.background:        db " &", 0
 
 ;; ============================================================
 ;; vis_is_running
