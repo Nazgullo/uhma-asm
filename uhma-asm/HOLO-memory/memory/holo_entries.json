@@ -1,0 +1,72 @@
+[
+  {
+    "id": "ffdbcc2c519c",
+    "category": "session",
+    "content": "GUI clipboard and polling features implemented:\n- Side panels (FEED/QUERY/DEBUG) copy to clipboard on click via xclip\n- Carousel nodes copy content to clipboard when collapsing\n- Auto-polling every 3 seconds sends status/receipts to populate QUERY/DEBUG panels\n- DREAM button spawns UHMA in live mode (batch OFF)\n- FEED menu spawns UHMA in feed mode (batch ON)\n- Fixed stack alignment crash in start_collapse_anim",
+    "context": "session 2026-02-03 GUI work",
+    "source": "",
+    "tags": [],
+    "metadata": {},
+    "created_at": "2026-02-03T22:36:08.682117",
+    "session_id": "20260203",
+    "outcome": null,
+    "outcome_count": 0,
+    "resonance_count": 0
+  },
+  {
+    "id": "a6683f3108b3",
+    "category": "finding",
+    "content": "GUI clipboard copy uses xclip via system() - writes to /tmp/uhma_clip.txt then pipes to xclip -selection clipboard",
+    "context": "GUI clipboard implementation",
+    "source": "",
+    "tags": [],
+    "metadata": {},
+    "created_at": "2026-02-03T22:36:08.685226",
+    "session_id": "20260203",
+    "outcome": null,
+    "outcome_count": 0,
+    "resonance_count": 0
+  },
+  {
+    "id": "524c527e68fd",
+    "category": "finding",
+    "content": "QUERY and DEBUG TCP channels are request/response only - need explicit polling to populate panels in autonomous mode",
+    "context": "6-channel TCP design",
+    "source": "",
+    "tags": [],
+    "metadata": {},
+    "created_at": "2026-02-03T22:36:08.687124",
+    "session_id": "20260203",
+    "outcome": null,
+    "outcome_count": 0,
+    "resonance_count": 0
+  },
+  {
+    "id": "e9ea80421f56",
+    "category": "warning",
+    "content": "Stack alignment in start_collapse_anim: must align before calling copy_ring_to_clipboard - 2 pushes (even) needs sub rsp,8 to align",
+    "context": "GUI stack alignment",
+    "source": "",
+    "tags": [],
+    "metadata": {},
+    "created_at": "2026-02-03T22:36:08.688985",
+    "session_id": "20260203",
+    "outcome": null,
+    "outcome_count": 0,
+    "resonance_count": 0
+  },
+  {
+    "id": "3762ba818ca4",
+    "category": "success",
+    "content": "poll_channels() sends status to QUERY and receipts 5 to DEBUG every POLL_INTERVAL (180) frames (~3 sec at 60fps)",
+    "context": "GUI auto-polling",
+    "source": "",
+    "tags": [],
+    "metadata": {},
+    "created_at": "2026-02-03T22:36:08.690740",
+    "session_id": "20260203",
+    "outcome": null,
+    "outcome_count": 0,
+    "resonance_count": 0
+  }
+]

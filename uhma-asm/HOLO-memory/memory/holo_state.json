@@ -1,0 +1,14 @@
+{
+  "confidence": 0.5,
+  "confusion": 0.0,
+  "progress": 0.0,
+  "repetition": 0.0,
+  "fatigue": 0.0,
+  "query_count": 0,
+  "hit_count": 0,
+  "miss_count": 0,
+  "success_count": 0,
+  "failure_count": 0,
+  "hit_ratio": 0.0,
+  "success_ratio": 0.0
+}

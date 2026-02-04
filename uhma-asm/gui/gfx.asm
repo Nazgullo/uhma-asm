@@ -94,17 +94,18 @@ gfx_init:
     push r13
     push r14
     push r15
-    sub rsp, 24             ; Local space + alignment (5 pushes = 40, +24 = 64)
+    sub rsp, 24             ; 6 pushes (48 bytes), entry was 16n-8, now 16n-56, sub 24 = 16n-80 (aligned)
+
+    ; Save width/height params BEFORE calling printf (which clobbers them)
+    mov r14d, edi           ; save width
+    mov r15d, esi           ; save height
+    mov [rel fb_width], edi
+    mov [rel fb_height], esi
 
     ; DEBUG
     lea rdi, [rel dbg_gfx_init]
     xor eax, eax
     call printf
-
-    mov [rel fb_width], edi
-    mov [rel fb_height], esi
-    mov r14d, edi           ; save width
-    mov r15d, esi           ; save height
 
     ; Open display
     xor edi, edi

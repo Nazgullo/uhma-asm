@@ -4,8 +4,18 @@
 ; @entry vis_init(rdi=surface_ptr) -> eax=1 on success
 ; @entry vis_update() -> eax=1 to continue, 0 to quit
 ; @entry vis_shutdown()
+; @entry copy_ring_to_clipboard(rdi=ring_buf) -> copies 8KB ring buffer to X clipboard
+; @entry poll_channels() -> sends status/receipts to QUERY/DEBUG channels
 ; @calls gfx.asm:gfx_init, gfx.asm:gfx_fill_rect, gfx.asm:gfx_text
+; @calls mcp_client.asm:mcp_spawn_uhma, mcp_client.asm:mcp_call_ch
 ; @calledby viz_main.asm:main
+;
+; FEATURES:
+;   - DREAM button spawns UHMA in live/autonomous mode (batch OFF)
+;   - FEED menu spawns UHMA in feed mode (batch ON)
+;   - Side panels (FEED/QUERY/DEBUG) click to toggle pause + copy to clipboard
+;   - Carousel nodes expand on click, collapse copies content to clipboard
+;   - Auto-polling every ~3 seconds populates QUERY/DEBUG panels
 ;
 ; GOTCHAS:
 ;   - Stack alignment (x86-64 ABI): ODD pushes → aligned → sub must be multiple of 16
@@ -13,6 +23,7 @@
 ;   - gfx_fill_rect takes 5 args: edi=x, esi=y, edx=w, ecx=h, r8d=color
 ;   - Callee-saved regs (rbx, r12-r15) must be preserved across gfx_* calls
 ;   - ecx is caller-saved: reload h from memory before each gfx call, don't push/pop
+;   - Clipboard copy uses xclip via system() - requires xclip installed
 ;
 ; Layout:
 ;   ┌─────────────────────────────────────────────────────────────────────┐
@@ -99,6 +110,16 @@ section .data
     feed_cmd_mastery:  db "./feed.sh --corpus corpus/ --mastery &", 0
     feed_cmd_live:     db "./feed.sh --corpus corpus/ --mastery --live &", 0
     feed_cmd_stop:     db "./feed.sh --shutdown gui_stop", 0
+
+    ; Clipboard copy (xclip)
+    clip_tmpfile:      db "/tmp/uhma_clip.txt", 0
+    clip_fmode:        db "w", 0
+    clip_xclip:        db "xclip -selection clipboard < /tmp/uhma_clip.txt", 0
+    clip_copied_msg:   db "Copied to clipboard", 0
+
+    ; Polling commands for QUERY/DEBUG channels
+    poll_status_cmd:   db "status", 0
+    poll_receipts_cmd: db "receipts 5", 0
 
     ; Startup countdown message
     startup_msg:    db "Starting UHMA in ", 0
@@ -262,6 +283,10 @@ section .data
     msg_geom_both:  db "Verify: BOTH", 0
     msg_feed_start: db "Training started", 0
     msg_feed_stop:  db "Training stopped", 0
+    msg_spawn_fail: db "Failed to spawn UHMA", 0
+    msg_live_mode:  db "Live mode started", 0
+    dbg_dream:      db "DEBUG: do_dream called", 10, 0
+    dbg_spawning:   db "DEBUG: mcp_running=0, calling spawn", 10, 0
 
     ; MCP command strings
     raw_tool:       db "raw", 0
@@ -489,6 +514,10 @@ section .bss
     debug_view:     resd 1
     debug_paused:   resd 1
 
+    ; Polling state for QUERY/DEBUG channels
+    poll_counter:   resd 1          ; frames since last poll
+    POLL_INTERVAL   equ 180         ; poll every 180 frames (~3 seconds at 60fps)
+
     RING_SIZE       equ 8192
     RING_MASK       equ 8191        ; for wrapping (size - 1)
 
@@ -582,6 +611,7 @@ section .bss
 
 section .text
 
+extern printf
 extern gfx_init
 extern gfx_shutdown
 extern gfx_clear
@@ -599,6 +629,8 @@ extern fopen
 extern fgets
 extern fread
 extern fclose
+extern fwrite
+extern fflush
 extern opendir
 extern readdir
 extern closedir
@@ -615,7 +647,11 @@ extern mcp_save
 extern mcp_load
 extern mcp_get_status
 extern mcp_call
+extern mcp_call_ch
 extern mcp_read_stream
+extern mcp_spawn_uhma
+extern mcp_spawn_uhma_feed
+extern mcp_running
 
 ; Rosetta Stone / Geometric Verification
 ; Verify mode handled via MCP raw commands
@@ -913,6 +949,17 @@ vis_update:
     mov [rel feedback_timer], eax
 .no_dec:
 
+    ; Poll QUERY/DEBUG channels periodically (only if UHMA running)
+    cmp dword [rel mcp_running], 0
+    je .skip_poll
+    inc dword [rel poll_counter]
+    mov eax, [rel poll_counter]
+    cmp eax, POLL_INTERVAL
+    jl .skip_poll
+    mov dword [rel poll_counter], 0
+    call poll_channels
+.skip_poll:
+
     ; Read any available data from UHMA output streams
     call read_streams
 
@@ -1119,6 +1166,13 @@ handle_click:
     jmp .done_click
 
 .menu_quick:
+    ; Spawn UHMA with batch ON if not running
+    cmp dword [rel mcp_running], 0
+    jne .quick_start
+    call mcp_spawn_uhma_feed        ; batch ON for feeding
+    test eax, eax
+    jz .menu_spawn_fail
+.quick_start:
     lea rdi, [rel feed_cmd_quick]
     call system
     mov dword [rel feed_running], 1
@@ -1128,6 +1182,13 @@ handle_click:
     jmp .done_click
 
 .menu_mastery:
+    ; Spawn UHMA with batch ON if not running
+    cmp dword [rel mcp_running], 0
+    jne .mastery_start
+    call mcp_spawn_uhma_feed
+    test eax, eax
+    jz .menu_spawn_fail
+.mastery_start:
     lea rdi, [rel feed_cmd_mastery]
     call system
     mov dword [rel feed_running], 1
@@ -1137,10 +1198,23 @@ handle_click:
     jmp .done_click
 
 .menu_live:
+    ; Spawn UHMA with batch ON if not running
+    cmp dword [rel mcp_running], 0
+    jne .live_start
+    call mcp_spawn_uhma_feed
+    test eax, eax
+    jz .menu_spawn_fail
+.live_start:
     lea rdi, [rel feed_cmd_live]
     call system
     mov dword [rel feed_running], 1
     lea rax, [rel msg_feed_start]
+    mov [rel feedback_msg], rax
+    mov dword [rel feedback_timer], 90
+    jmp .done_click
+
+.menu_spawn_fail:
+    lea rax, [rel msg_spawn_fail]
     mov [rel feedback_msg], rax
     mov dword [rel feedback_timer], 90
     jmp .done_click
@@ -1167,24 +1241,30 @@ handle_click:
     cmp r12d, OUT_PANEL_X + OUT_PANEL_W
     jge .not_output_panel
 
-    ; FEED panel
+    ; FEED panel - toggle pause + copy to clipboard
     cmp r13d, OUT_FEED_Y
     jl .not_output_panel
     cmp r13d, OUT_FEED_Y + OUT_PANEL_H
     jge .check_query_panel
-    mov dword [rel feed_paused], 1
+    xor dword [rel feed_paused], 1      ; toggle pause
+    lea rdi, [rel feed_ring]
+    call copy_ring_to_clipboard
     jmp .done_click
 
 .check_query_panel:
     cmp r13d, OUT_QUERY_Y + OUT_PANEL_H
     jge .check_debug_panel
-    mov dword [rel query_paused], 1
+    xor dword [rel query_paused], 1     ; toggle pause
+    lea rdi, [rel query_ring]
+    call copy_ring_to_clipboard
     jmp .done_click
 
 .check_debug_panel:
     cmp r13d, OUT_DEBUG_Y + OUT_PANEL_H
     jge .not_output_panel
-    mov dword [rel debug_paused], 1
+    xor dword [rel debug_paused], 1     ; toggle pause
+    lea rdi, [rel debug_ring]
+    call copy_ring_to_clipboard
     jmp .done_click
 
 .not_output_panel:
@@ -1628,10 +1708,33 @@ do_action:
     jmp .continue
 
 .do_dream:
+    ; Debug output
+    lea rdi, [rel dbg_dream]
+    xor eax, eax
+    call printf
+
+    ; Check if UHMA running, if not spawn in live mode (batch OFF)
+    cmp dword [rel mcp_running], 0
+    jne .dream_send
+
+    ; Debug: spawning
+    lea rdi, [rel dbg_spawning]
+    xor eax, eax
+    call printf
+
+    call mcp_spawn_uhma             ; spawns with batch OFF (live mode)
+    test eax, eax
+    jz .dream_fail
+.dream_send:
     call mcp_dream
     lea rax, [rel msg_dream]
     mov [rel feedback_msg], rax
     mov dword [rel feedback_timer], 60
+    jmp .continue
+.dream_fail:
+    lea rax, [rel msg_spawn_fail]
+    mov [rel feedback_msg], rax
+    mov dword [rel feedback_timer], 90
     jmp .continue
 
 .do_observe:
@@ -3548,6 +3651,30 @@ draw_query_lines:
     ret
 
 ;; ============================================================
+;; poll_channels — Send periodic queries to QUERY/DEBUG channels
+;; Sends "status" to QUERY (channel 1) and "receipts 5" to DEBUG (channel 2)
+;; ============================================================
+poll_channels:
+    push rbx
+    sub rsp, 8                      ; 1 push (odd) = aligned, need multiple of 16
+
+    ; Send "status" to QUERY channel (channel 1)
+    mov edi, 1                      ; QUERY channel
+    lea rsi, [rel poll_status_cmd]
+    xor edx, edx                    ; no args
+    call mcp_call_ch
+
+    ; Send "receipts 5" to DEBUG channel (channel 2)
+    mov edi, 2                      ; DEBUG channel
+    lea rsi, [rel poll_receipts_cmd]
+    xor edx, edx
+    call mcp_call_ch
+
+    add rsp, 8
+    pop rbx
+    ret
+
+;; ============================================================
 ;; read_streams — Read from all output channels into ring buffers
 ;; Called each frame to capture streaming data from UHMA
 ;; ============================================================
@@ -4270,13 +4397,24 @@ start_expand_anim:
     ret
 
 ;; start_collapse_anim — Start collapsing animation
+;; Also copies expanded panel content to clipboard
 start_collapse_anim:
     push rbx
+    push r12                     ; save r12, also aligns stack (2 pushes = even)
+    sub rsp, 8                   ; align for calls: 2 pushes (16) + 8 = 24, entry was 16n-8, now 16n-32 = aligned
 
     ; Get current focus node (more reliable than anim_node)
     mov edi, [rel focus_node]
     cmp edi, -1
     je .no_collapse              ; safety check
+
+    mov r12d, edi                ; save focus_node in callee-saved register
+
+    ; Copy query_ring to clipboard (contains panel content)
+    lea rdi, [rel query_ring]
+    call copy_ring_to_clipboard
+
+    mov edi, r12d                ; restore focus_node
     mov [rel anim_node], edi
 
     mov dword [rel anim_state], ANIM_COLLAPSING
@@ -4309,6 +4447,8 @@ start_collapse_anim:
     mov [rel anim_dst_h], ecx
 
 .no_collapse:
+    add rsp, 8
+    pop r12
     pop rbx
     ret
 
@@ -4483,51 +4623,29 @@ load_file:
     push r12
     sub rsp, 8
 
-    ; Use zenity to pick file
-    lea rdi, [rel zenity_file]
-    call system
+    ; Check if UHMA running
+    cmp dword [rel mcp_running], 0
+    jne .file_have_uhma
+    call mcp_spawn_uhma_feed        ; spawn with batch ON for feeding
     test eax, eax
-    jnz .error
-
-    ; Read selected path from temp file
-    lea rdi, [rel tmp_pick_path]
-    lea rsi, [rel read_mode]
-    call fopen
-    test rax, rax
     jz .error
-    mov rbx, rax
+.file_have_uhma:
 
+    ; Use path from input_buf (user types path, clicks FILE)
+    mov eax, [rel input_len]
+    test eax, eax
+    jz .error                       ; no path entered
+
+    ; Copy input to file_path_buf and null-terminate
     lea rdi, [rel file_path_buf]
-    mov esi, 511
-    mov rdx, rbx
-    call fgets
-    mov r12, rax
-
-    mov rdi, rbx
-    call fclose
-
-    test r12, r12
-    jz .error
-
-    ; Strip newline
-    lea rdi, [rel file_path_buf]
-    xor ecx, ecx
-.strip:
-    mov al, [rdi + rcx]
-    test al, al
-    jz .stripped
-    cmp al, 10
-    je .do_strip
-    cmp al, 13
-    je .do_strip
-    inc ecx
-    jmp .strip
-.do_strip:
-    mov byte [rdi + rcx], 0
-.stripped:
-
-    cmp byte [rdi], 0
-    je .error
+    lea rsi, [rel input_buf]
+    mov ecx, [rel input_len]
+    cmp ecx, 510
+    jle .copy_ok
+    mov ecx, 510
+.copy_ok:
+    rep movsb
+    mov byte [rdi], 0
 
     ; Build "eat /path" command and send via MCP
     lea rdi, [rel eat_cmd_buf]
@@ -4548,6 +4666,9 @@ load_file:
     lea rsi, [rel eat_cmd_buf]
     call mcp_call
 
+    ; Clear input after use
+    mov dword [rel input_len], 0
+
     lea rax, [rel msg_file_ok]
     mov [rel feedback_msg], rax
     mov dword [rel feedback_timer], 90
@@ -4565,7 +4686,7 @@ load_file:
     ret
 
 ;; ============================================================
-;; load_dir — Directory picker and load all files
+;; load_dir — Load all files from directory (path from input_buf)
 ;; ============================================================
 load_dir:
     push rbx
@@ -4575,49 +4696,32 @@ load_dir:
     push r15
     sub rsp, 528
 
-    lea rdi, [rel zenity_dir]
-    call system
+    ; Check if UHMA running
+    cmp dword [rel mcp_running], 0
+    jne .dir_have_uhma
+    call mcp_spawn_uhma_feed        ; spawn with batch ON for feeding
     test eax, eax
-    jnz .error
-
-    lea rdi, [rel tmp_pick_path]
-    lea rsi, [rel read_mode]
-    call fopen
-    test rax, rax
     jz .error
-    mov rbx, rax
+.dir_have_uhma:
 
+    ; Use path from input_buf (user types path, clicks DIR)
+    mov eax, [rel input_len]
+    test eax, eax
+    jz .error                       ; no path entered
+
+    ; Copy input to file_path_buf and null-terminate
     lea rdi, [rel file_path_buf]
-    mov esi, 511
-    mov rdx, rbx
-    call fgets
-    mov r14, rax
+    lea rsi, [rel input_buf]
+    mov ecx, [rel input_len]
+    cmp ecx, 510
+    jle .copy_ok
+    mov ecx, 510
+.copy_ok:
+    rep movsb
+    mov byte [rdi], 0
 
-    mov rdi, rbx
-    call fclose
-
-    test r14, r14
-    jz .error
-
-    ; Strip newline
-    lea rdi, [rel file_path_buf]
-    xor ecx, ecx
-.strip:
-    mov al, [rdi + rcx]
-    test al, al
-    jz .stripped
-    cmp al, 10
-    je .do_strip
-    cmp al, 13
-    je .do_strip
-    inc ecx
-    jmp .strip
-.do_strip:
-    mov byte [rdi + rcx], 0
-.stripped:
-
-    cmp byte [rdi], 0
-    je .error
+    ; Clear input after use
+    mov dword [rel input_len], 0
 
     lea rdi, [rel file_path_buf]
     call opendir
@@ -4871,6 +4975,50 @@ show_feed_config:
     ret
 
 .background:        db " &", 0
+
+;; ============================================================
+;; copy_ring_to_clipboard
+;; rdi = ring buffer pointer (8192 bytes)
+;; Copies content to /tmp/uhma_clip.txt then to X clipboard via xclip
+;; ============================================================
+copy_ring_to_clipboard:
+    push rbx
+    push r12
+    sub rsp, 8                      ; 2 pushes (even) = unaligned, need 8 mod 16
+
+    mov r12, rdi                    ; save ring buffer pointer
+
+    ; Open temp file for writing
+    lea rdi, [rel clip_tmpfile]
+    lea rsi, [rel clip_fmode]
+    call fopen
+    test rax, rax
+    jz .clip_done                   ; failed to open
+    mov rbx, rax                    ; save FILE*
+
+    ; Write ring buffer content (8192 bytes)
+    ; fwrite(ptr, size, count, stream)
+    mov rdi, r12                    ; buffer
+    mov esi, 1                      ; size = 1
+    mov edx, RING_SIZE              ; count = 8192
+    mov rcx, rbx                    ; stream
+    call fwrite
+
+    ; Flush and close
+    mov rdi, rbx
+    call fflush
+    mov rdi, rbx
+    call fclose
+
+    ; Copy to X clipboard via xclip
+    lea rdi, [rel clip_xclip]
+    call system
+
+.clip_done:
+    add rsp, 8
+    pop r12
+    pop rbx
+    ret
 
 ;; ============================================================
 ;; vis_is_running

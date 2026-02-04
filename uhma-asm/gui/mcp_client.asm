@@ -6,13 +6,21 @@
 ; @entry mcp_call_ch(edi=channel, rsi=tool_name, rdx=args_json) -> rax=response_ptr
 ; @entry mcp_send_text(rdi=text) -> rax=response_ptr
 ; @entry mcp_get_status() -> rax=status_json_ptr
+; @entry mcp_spawn_uhma() -> eax=1 success, spawns UHMA + sends "batch" for live mode
+; @entry mcp_spawn_uhma_feed() -> eax=1 success, spawns UHMA without batch toggle (feed mode)
+; @entry mcp_read_stream(edi=channel, rsi=buf, edx=size) -> eax=bytes_read
+; @global mcp_running -> dword, 1 if UHMA connected
 ; @calledby gui/visualizer.asm
 ;
 ; DUAL MODE OPERATION:
 ;   Mode 1: GUI spawns ./uhma directly (simple, for exploration)
 ;   Mode 2: User starts ./feed.sh first (training mode with consolidation)
 ;   GUI auto-detects: if ports 9999-9994 respond, connects to existing UHMA
-;   If no UHMA running, GUI spawns ./uhma automatically
+;   If no UHMA running, GUI spawns ./uhma via system() call
+;
+; SPAWN MODES:
+;   mcp_spawn_uhma() - spawns UHMA then sends "batch" to toggle OFF (live/autonomous)
+;   mcp_spawn_uhma_feed() - spawns UHMA without batch toggle (stays ON for feeding)
 ;
 ; CHANNEL PAIRS (client perspective - write to input, read from output):
 ;   FEED:  write 9999 (CH0) → read 9998 (CH1) - eat, dream, observe
@@ -29,11 +37,13 @@
 ;   - Response buffer is static, overwritten each call
 ;   - Stack alignment: ODD pushes → sub rsp must be multiple of 16
 ;   - UHMA blocks if output ports not drained - GUI must read responses
+;   - Spawn uses absolute path /home/peter/Desktop/STARWARS/uhma-asm/uhma
 
 section .data
     ; UHMA command (for spawning if not running)
     ; NOTE: GUI should be run from project root: ./gui/uhma-viz
-    mcp_cmd:        db "./uhma", 0
+    mcp_cmd:        db "/home/peter/Desktop/STARWARS/uhma-asm/uhma", 0
+    spawn_cmd:      db "cd /home/peter/Desktop/STARWARS/uhma-asm && ./uhma < /dev/null &", 0
     mcp_arg1:       db 0              ; no args needed
     mcp_arg2:       db 0
     mcp_arg3:       db 0
@@ -55,7 +65,7 @@ section .data
     ; UHMA uses plain text protocol, no JSON-RPC needed
 
     ; Error messages
-    err_connect:    db "GUI: no UHMA found, spawning ./uhma...", 10, 0
+    err_connect:    db "GUI: spawning UHMA...", 10, 0
     err_spawn:      db "GUI: failed to spawn UHMA (try ./feed.sh first)", 10, 0
     err_socket:     db "GUI: socket error", 10, 0
     msg_connected:  db "GUI: connected to UHMA (%d channels)", 10, 0
@@ -92,6 +102,8 @@ extern send
 extern recv
 extern close
 extern fork
+extern _exit
+extern system
 extern execvp
 extern waitpid
 extern kill
@@ -121,6 +133,8 @@ global mcp_load
 global mcp_get_channel_socket
 global mcp_try_connect
 global mcp_spawn_uhma
+global mcp_spawn_uhma_feed
+global mcp_running
 
 ;; mcp_try_connect — Try to connect to existing UHMA (no spawn)
 ;; Returns: eax=1 if connected, 0 if not
@@ -210,6 +224,55 @@ mcp_spawn_uhma:
     xor eax, eax
 
 .spawn_uhma_done:
+    add rsp, 8
+    pop r12
+    pop rbx
+    ret
+
+;; mcp_spawn_uhma_feed — Spawn UHMA for feeding (batch ON, no autonomous mode)
+;; Returns: eax=1 success, 0 failure
+mcp_spawn_uhma_feed:
+    push rbx
+    push r12
+    sub rsp, 8
+
+    lea rdi, [rel err_connect]
+    xor eax, eax
+    call printf
+
+    call mcp_do_spawn
+    test eax, eax
+    jz .spawn_feed_fail
+
+    ; Wait for UHMA to start
+    mov edi, 2000000                ; 2s
+    call usleep
+
+    ; Try to connect
+    call mcp_try_connect_all
+    mov r12d, eax
+
+    ; Need at least query channel
+    test r12d, r12d
+    jz .spawn_feed_fail
+
+    mov dword [rel mcp_running], 1
+    mov dword [rel call_id], 2
+
+    lea rdi, [rel msg_connected]
+    mov esi, r12d
+    xor eax, eax
+    call printf
+
+    ; DO NOT send batch command - stay in batch mode ON for feeding
+
+    mov eax, 1
+    jmp .spawn_feed_done
+
+.spawn_feed_fail:
+    xor eax, eax
+
+.spawn_feed_done:
     add rsp, 8
     pop r12
     pop rbx
@@ -394,36 +457,13 @@ mcp_do_spawn:
     push rbx
     sub rsp, 16
 
-    call fork
-    cmp eax, -1
-    je .spawn_err
-    test eax, eax
-    jz .child
-
-    ; Parent: save PID
-    mov [rel mcp_pid], eax
+    ; Use system() to spawn UHMA in background
+    lea rdi, [rel spawn_cmd]
+    call system
+    ; For background command, always assume success
+    ; The process is started asynchronously
     mov eax, 1
-    jmp .spawn_done
 
-.child:
-    ; Build argv: ./uhma (no extra args - UHMA creates 6 TCP channels itself)
-    lea rax, [rel mcp_cmd]
-    mov [rel mcp_argv], rax
-    mov qword [rel mcp_argv + 8], 0   ; NULL terminate argv
-
-    ; Exec
-    lea rdi, [rel mcp_cmd]
-    lea rsi, [rel mcp_argv]
-    call execvp
-
-    ; If we get here, exec failed
-    mov edi, 1
-    mov eax, 60             ; sys_exit
-    syscall
-
-.spawn_err:
-    xor eax, eax
-.spawn_done:
     add rsp, 16
     pop rbx
     ret
