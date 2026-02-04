@@ -648,6 +648,7 @@ extern mcp_load
 extern mcp_get_status
 extern mcp_call
 extern mcp_call_ch
+extern mcp_send_async
 extern mcp_read_stream
 extern mcp_spawn_uhma
 extern mcp_spawn_uhma_feed
@@ -3658,17 +3659,15 @@ poll_channels:
     push rbx
     sub rsp, 8                      ; 1 push (odd) = aligned, need multiple of 16
 
-    ; Send "status" to QUERY channel (channel 1)
+    ; Send "status" to QUERY channel (fire-and-forget, response via read_streams)
     mov edi, 1                      ; QUERY channel
     lea rsi, [rel poll_status_cmd]
-    xor edx, edx                    ; no args
-    call mcp_call_ch
+    call mcp_send_async
 
-    ; Send "receipts 5" to DEBUG channel (channel 2)
+    ; Send "receipts 5" to DEBUG channel (fire-and-forget)
     mov edi, 2                      ; DEBUG channel
     lea rsi, [rel poll_receipts_cmd]
-    xor edx, edx
-    call mcp_call_ch
+    call mcp_send_async
 
     add rsp, 8
     pop rbx

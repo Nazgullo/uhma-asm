@@ -384,8 +384,8 @@ mcp_try_connect_all:
     push r12
     push r13
     push r14
-    sub rsp, 24             ; 4 pushes (even) + 24 = 56, need 8 more for alignment
-                            ; Also use [rsp..rsp+15] for timeval struct
+    sub rsp, 24             ; 4 pushes (even) + 24 = 56 bytes, aligned
+                            ; Use [rsp..rsp+15] for timeval struct
 
     xor r12d, r12d          ; connected count
     xor r13d, r13d          ; channel index
@@ -397,7 +397,7 @@ mcp_tca_loop:
     ; Calculate port: base - channel (9999, 9998, 9997, 9996)
     mov eax, MCP_PORT_BASE
     sub eax, r13d
-    mov r14d, eax           ; port for this channel (use r14 instead of ebx)
+    mov r14d, eax           ; port for this channel
 
     ; Create socket
     mov edi, AF_INET
@@ -412,14 +412,14 @@ mcp_tca_loop:
     mov [rcx + r13 * 4], eax
     mov ebx, eax            ; save socket fd in ebx
 
-    ; Set 1-second connection timeout (prevents 60s freeze on failed connect)
+    ; Set 1-second connection timeout (prevents 60s freeze)
     mov qword [rsp], 1      ; tv_sec = 1
     mov qword [rsp + 8], 0  ; tv_usec = 0
     mov edi, ebx            ; socket fd
-    mov esi, SOL_SOCKET     ; level
-    mov edx, SO_SNDTIMEO    ; optname
-    lea rcx, [rsp]          ; optval (timeval struct)
-    mov r8d, 16             ; optlen
+    mov esi, SOL_SOCKET
+    mov edx, SO_SNDTIMEO
+    lea rcx, [rsp]          ; timeval struct
+    mov r8d, 16
     call setsockopt
 
     ; Setup sockaddr_in
@@ -434,7 +434,7 @@ mcp_tca_loop:
     mov [rel sock_addr + 2], ax
     mov dword [rel sock_addr + 4], 0x0100007f  ; 127.0.0.1
 
-    ; Connect (now with 1s timeout instead of 60s default)
+    ; Connect (now with 1s timeout)
     mov edi, ebx            ; socket fd
     lea rsi, [rel sock_addr]
     mov edx, 16
@@ -449,7 +449,7 @@ mcp_tca_loop:
     jmp mcp_tca_next
 
 .close_failed:
-    mov edi, ebx            ; socket fd still in ebx
+    mov edi, ebx
     call close
 
 mcp_tca_next:
@@ -662,13 +662,13 @@ mcp_call_ch:
     xor ecx, ecx                ; flags = 0
     call send
 
-    ; Poll OUTPUT socket with 2 second timeout before recv
+    ; Poll OUTPUT socket with short timeout (100ms) to prevent GUI freeze
     mov [rel poll_fd], ebx              ; fd = output socket
     mov word [rel poll_events], 1       ; POLLIN = 1
     mov word [rel poll_revents], 0
     lea rdi, [rel poll_fd]              ; pollfd struct
     mov esi, 1                          ; nfds = 1
-    mov edx, 2000                       ; timeout = 2000ms
+    mov edx, 100                        ; timeout = 100ms (was 2000ms)
     call poll
 
     ; Check if data ready (poll returns > 0 and revents has POLLIN)
@@ -762,6 +762,59 @@ mcp_get_status:
     call mcp_call
     ret
 .status: db "status", 0
+
+;; mcp_send_async — Fire-and-forget send (no wait for response)
+;; edi = logical channel (0=FEED, 1=QUERY, 2=DEBUG)
+;; rsi = command string
+;; Used for periodic polling - response picked up by mcp_read_stream
+global mcp_send_async
+mcp_send_async:
+    push rbx
+    push r12
+    push r13
+    sub rsp, 8
+
+    mov r12d, edi               ; logical channel
+    mov r13, rsi                ; command string
+
+    ; Get input socket index: logical * 2
+    mov eax, r12d
+    shl eax, 1
+    mov ebx, eax
+
+    ; Check socket valid
+    cmp ebx, MCP_NUM_CHANNELS
+    jge .async_done
+    lea rcx, [rel mcp_sock_valid]
+    cmp dword [rcx + rbx * 4], 0
+    je .async_done
+
+    ; Build command with newline
+    lea rdi, [rel req_buf]
+    mov rsi, r13
+    call strcpy
+    lea rdi, [rel req_buf]
+    call strlen
+    lea rdi, [rel req_buf + rax]
+    mov byte [rdi], 10
+    mov byte [rdi + 1], 0
+
+    ; Send (fire and forget)
+    lea rdi, [rel req_buf]
+    call strlen
+    mov rdx, rax
+    lea rcx, [rel mcp_sockets]
+    mov edi, [rcx + rbx * 4]
+    lea rsi, [rel req_buf]
+    xor ecx, ecx
+    call send
+
+.async_done:
+    add rsp, 8
+    pop r13
+    pop r12
+    pop rbx
+    ret
 
 ;; mcp_read_stream — Non-blocking read from output channel
 ;; edi = logical channel (0=FEED, 1=QUERY, 2=DEBUG)
