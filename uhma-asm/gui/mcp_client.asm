@@ -61,6 +61,8 @@ section .data
     MCP_CH_RESERVED  equ 5            ; channel 5 = reserved
     AF_INET          equ 2
     SOCK_STREAM      equ 1
+    SOL_SOCKET       equ 1
+    SO_SNDTIMEO      equ 21        ; send timeout (affects connect on Linux)
 
     ; UHMA uses plain text protocol, no JSON-RPC needed
 
@@ -117,6 +119,7 @@ extern strcpy
 extern strcat
 extern htons
 extern poll
+extern setsockopt
 
 global mcp_init
 global mcp_shutdown
@@ -380,7 +383,9 @@ mcp_try_connect_all:
     push rbx
     push r12
     push r13
-    sub rsp, 8
+    push r14
+    sub rsp, 24             ; 4 pushes (even) + 24 = 56, need 8 more for alignment
+                            ; Also use [rsp..rsp+15] for timeval struct
 
     xor r12d, r12d          ; connected count
     xor r13d, r13d          ; channel index
@@ -392,7 +397,7 @@ mcp_tca_loop:
     ; Calculate port: base - channel (9999, 9998, 9997, 9996)
     mov eax, MCP_PORT_BASE
     sub eax, r13d
-    mov ebx, eax            ; port for this channel
+    mov r14d, eax           ; port for this channel (use r14 instead of ebx)
 
     ; Create socket
     mov edi, AF_INET
@@ -405,7 +410,17 @@ mcp_tca_loop:
     ; Save socket fd
     lea rcx, [rel mcp_sockets]
     mov [rcx + r13 * 4], eax
-    push rax                ; save socket fd
+    mov ebx, eax            ; save socket fd in ebx
+
+    ; Set 1-second connection timeout (prevents 60s freeze on failed connect)
+    mov qword [rsp], 1      ; tv_sec = 1
+    mov qword [rsp + 8], 0  ; tv_usec = 0
+    mov edi, ebx            ; socket fd
+    mov esi, SOL_SOCKET     ; level
+    mov edx, SO_SNDTIMEO    ; optname
+    lea rcx, [rsp]          ; optval (timeval struct)
+    mov r8d, 16             ; optlen
+    call setsockopt
 
     ; Setup sockaddr_in
     lea rdi, [rel sock_addr]
@@ -414,18 +429,16 @@ mcp_tca_loop:
     call memset
 
     mov word [rel sock_addr], AF_INET
-    mov edi, ebx            ; port
+    mov edi, r14d           ; port
     call htons
     mov [rel sock_addr + 2], ax
     mov dword [rel sock_addr + 4], 0x0100007f  ; 127.0.0.1
 
-    ; Connect
-    pop rdi                 ; socket fd
-    push rdi
+    ; Connect (now with 1s timeout instead of 60s default)
+    mov edi, ebx            ; socket fd
     lea rsi, [rel sock_addr]
     mov edx, 16
     call connect
-    pop rbx                 ; socket fd
     test eax, eax
     jnz .close_failed
 
@@ -436,7 +449,7 @@ mcp_tca_loop:
     jmp mcp_tca_next
 
 .close_failed:
-    mov edi, ebx
+    mov edi, ebx            ; socket fd still in ebx
     call close
 
 mcp_tca_next:
@@ -445,7 +458,8 @@ mcp_tca_next:
 
 mcp_tca_done:
     mov eax, r12d
-    add rsp, 8
+    add rsp, 24
+    pop r14
     pop r13
     pop r12
     pop rbx
