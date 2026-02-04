@@ -221,12 +221,58 @@ Create `.mcp.json` in project root:
 
 UHMA auto-spawns when any tool is called.
 
+## GUI (Command & Control Center)
+
+The GUI provides full visual control and monitoring:
+
+```bash
+cd gui && make
+./uhma-viz
+```
+
+### Features
+
+- **Mind Map View**: Central UHMA node with connected subsystems (BRAIN, REGIONS, TOKENS, STATE, etc.)
+- **Carousel Nodes**: Click to expand, click outside to collapse (auto-copies to clipboard)
+- **Side Panels**: FEED (9998), QUERY (9996), DEBUG (9994) - click to pause/copy
+- **Auto-Polling**: QUERY and DEBUG panels refresh every ~3 seconds
+- **Dual Spawn Modes**:
+  - **DREAM button**: Spawns UHMA in live/autonomous mode (batch OFF)
+  - **FEED menu**: Spawns UHMA in feed mode (batch ON)
+
+### Clipboard Copy
+
+- Click any side panel → toggles pause + copies to clipboard
+- Collapse any expanded carousel node → copies content to clipboard
+- Uses `xclip` (install with `apt install xclip`)
+
+### Layout
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ [DREAM] [OBSERVE] [EVOLVE] [STEP] [RUN] [SAVE] [LOAD] ...      │
+├───────────────────────────────────────────┬─────────────────────┤
+│                                           │ FEED (9998)         │
+│     Mind Map / Carousel View              │ [live TCP stream]   │
+│                                           ├─────────────────────┤
+│     Click nodes to expand/inspect         │ QUERY (9996)        │
+│                                           │ [status/why/misses] │
+│                                           ├─────────────────────┤
+│                                           │ DEBUG (9994)        │
+│                                           │ [receipts/trace]    │
+├───────────────────────────────────────────┴─────────────────────┤
+│ INPUT: _______________                        [SEND] [CLEAR]    │
+└─────────────────────────────────────────────────────────────────┘
+```
+
 ## Building from Source
 
 ```bash
 make clean && make    # Full rebuild
 make                  # Incremental
 ./uhma                # Run
+cd gui && make        # Build GUI
+./gui/uhma-viz        # Run GUI
 ```
 
 Debug build:

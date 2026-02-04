@@ -141,6 +141,49 @@ UHMA can self-explore via the GUI or by toggling batch_mode:
 
 ---
 
+## GUI (Command & Control Center)
+
+The GUI provides full visual monitoring and control:
+
+```bash
+cd gui && make
+./uhma-viz
+```
+
+### Startup Flow
+
+1. GUI starts without UHMA
+2. **DREAM button** → spawns UHMA in live mode (batch OFF, autonomous)
+3. **FEED menu** → spawns UHMA in feed mode (batch ON, externally driven)
+
+### Features
+
+| Feature | Description |
+|---------|-------------|
+| Mind Map | Central UHMA node with subsystems (BRAIN, REGIONS, TOKENS, etc.) |
+| Carousel | Click node to expand, click outside to collapse |
+| Side Panels | FEED/QUERY/DEBUG TCP streams |
+| Auto-Polling | Sends status/receipts every ~3 seconds |
+| Clipboard | Click panel or collapse node to copy content |
+
+### Clipboard Copy
+
+All content can be copied to clipboard for analysis:
+
+- **Side panels** (FEED/QUERY/DEBUG): Click to toggle pause + copy
+- **Carousel nodes**: Collapse (click outside) to copy
+- Requires `xclip`: `apt install xclip`
+
+### Panel Content
+
+| Panel | Port | Commands | Content |
+|-------|------|----------|---------|
+| FEED | 9998 | eat, dream, observe | Action output, consolidation |
+| QUERY | 9996 | status, why, intro | System state, diagnostics |
+| DEBUG | 9994 | receipts, trace | Trace entries, debug info |
+
+---
+
 ## Interactive Mode
 
 For testing and debugging, run UHMA directly:
@@ -370,4 +413,32 @@ All pure x86-64 assembly. No Python dependencies.
 
 ---
 
-*Last updated: 2026-02-01*
+## Self-Awareness & Behavior (Observed 2026-02-03)
+
+From a 6-minute observation session:
+
+### Learning
+- Repetitive patterns learned quickly: "one two three" predicted after 1 exposure
+- Each new token creates executable x86 code via EMIT
+- VERIFY ensures safety before any code modification
+
+### Self-Awareness
+| Metric | Value | Meaning |
+|--------|-------|---------|
+| SELF-AWARE | 76-77% | Semantic self-model matches actual code |
+| SELF-SURPRISE | 0.004-0.119 | Spikes when self-modification occurs |
+| Metacog feeling | ANXIOUS | During heavy learning |
+
+### Self-Modification
+- **PRUNE**: Removes low-performing regions (11 in one observe cycle)
+- **FACTOR**: Finds common code patterns, creates shared subroutines
+- **VERIFY**: Abstract interpretation approves all modifications
+
+### Maturity Progression
+- Session started: Stage 0 (Infant)
+- Session ended: Stage 2 (Active)
+- Growth: +61 regions, +109 vocabulary entries
+
+---
+
+*Last updated: 2026-02-03*

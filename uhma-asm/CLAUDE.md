@@ -729,3 +729,37 @@ After training, UHMA can enter autonomous self-exploration mode:
   - **GUI connects to existing**: leaves mode unchanged (respects feed.sh control)
 - Removed codebase.txt (replaced by RAG system with file summaries)
 - GUI is full Command & Control center: all UHMA features accessible interactively
+
+### Session 2026-02-03 GUI Clipboard & Auto-Polling
+- Added clipboard copy for all panels (uses xclip via system())
+- Side panels (FEED/QUERY/DEBUG): click toggles pause + copies to clipboard
+- Carousel nodes: collapse copies expanded content to clipboard
+- Added auto-polling: sends `status` to QUERY and `receipts 5` to DEBUG every ~3 seconds
+- Fixed stack alignment crash in start_collapse_anim (2 pushes + sub rsp,8 needed)
+- Simplified startup flow: no countdown timer, DREAM/FEED buttons spawn UHMA
+
+### Session 2026-02-03 UHMA Observation Session (6 min)
+**Learning Behavior:**
+- Fed "hello world" twice → 3/6 tokens predicted correctly on second pass
+- Fed "one two three" repeated → learned pattern, predicted "two"/"three" correctly
+- Each token creates executable x86 code region via EMIT
+
+**Self-Awareness Metrics:**
+- SELF-AWARE: 76-77% (stable) - semantic self-model matches actual code structure
+- SELF-SURPRISE: spiked to 0.119 during self-modification, returned to 0.028 baseline
+- Knows its own strengths (Region 305) and weaknesses (Region 867)
+
+**Self-Modification:**
+- PRUNE: removed 11 low-performing regions during observe cycle
+- FACTOR: found 14 regions with common suffix, created shared subroutine
+- VERIFY: all modifications approved through abstract interpretation
+
+**Metacognition:**
+- Reported feeling "ANXIOUS" during heavy learning (confidence=-38)
+- State transitions: CONFIDENT → CONFUSED → LEARNING
+- Drive system detected low coherence, triggered alignment
+
+**Maturity Progression:**
+- Started Stage 0 (Infant), advanced to Stage 2 (Active) during session
+- Regions: 23,430 → 23,491 (+61 new code regions)
+- Vocabulary: 42,982 → 43,091 (+109 words)
