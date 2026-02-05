@@ -3,7 +3,7 @@
 ; @entry _start                   ; main entry point
 ; @reads stdin (JSON-RPC from Claude Code)
 ; @writes stdout (JSON-RPC responses)
-; @connects UHMA TCP ports 9997/9996 (query channel)
+; @connects UHMA TCP gateway port 9999
 ;
 ; PROTOCOL:
 ;   Claude Code sends JSON-RPC requests:
@@ -25,8 +25,8 @@
 ;   1. Read line from stdin (Content-Length header or raw JSON)
 ;   2. Parse JSON to extract method, id, name, arguments
 ;   3. Map name to UHMA command
-;   4. Send command to UHMA via TCP (port 9997)
-;   5. Read response from UHMA (port 9996)
+;   4. Send command to UHMA via TCP gateway (port 9999)
+;   5. Read response from UHMA gateway (same socket)
 ;   6. Format as JSON-RPC response
 ;   7. Write to stdout
 ;
@@ -116,9 +116,8 @@ section .data
     cmd_colony:     db "colony", 10, 0
     cmd_misses:     db "misses ", 0
 
-    ; Ports
-    QUERY_IN:       equ 9997
-    QUERY_OUT:      equ 9996
+    ; Gateway port (single connection replaces query pair)
+    GW_PORT:        equ 9999
 
     ; Error messages
     err_uhma:       db "Error: Cannot connect to UHMA", 0
@@ -179,6 +178,12 @@ extern holo_mem_state
 extern holo_mem_recent
 extern holo_mem_summary
 
+; Output buffer capture (from format.asm)
+extern set_output_channel
+extern set_output_buffer
+extern get_output_buffer
+extern reset_output_channel
+
 global _start
 
 ;; ============================================================
@@ -190,8 +195,13 @@ _start:
     mov dword [rel fd_query_in], -1
     mov dword [rel fd_query_out], -1
 
+    ; Redirect output to stderr during init (stdout is for JSON-RPC only)
+    mov edi, 2
+    call set_output_channel
     ; Initialize holographic memory (Claude's exclusive memory)
     call holo_mem_init
+    ; Restore stdout for JSON responses
+    call reset_output_channel
 
     ; Try to connect to UHMA (optional - mem_* commands work without it)
     call connect_uhma
@@ -228,7 +238,7 @@ _start:
     jmp .main_loop
 
 ;; ============================================================
-;; connect_uhma — Connect to UHMA query channel
+;; connect_uhma — Connect to UHMA gateway (single socket)
 ;; Returns: eax = 1 on success, 0 on failure
 ;; ============================================================
 connect_uhma:
@@ -236,18 +246,13 @@ connect_uhma:
     push r12
     sub rsp, 24
 
-    ; Connect to QUERY_IN (9997)
-    mov edi, QUERY_IN
+    ; Connect to gateway port 9999
+    mov edi, GW_PORT
     call connect_port
     test eax, eax
     js .conn_fail
+    ; Same socket for both read and write (gateway is bidirectional)
     mov [rel fd_query_in], eax
-
-    ; Connect to QUERY_OUT (9996)
-    mov edi, QUERY_OUT
-    call connect_port
-    test eax, eax
-    js .conn_fail
     mov [rel fd_query_out], eax
 
     mov eax, 1
@@ -789,15 +794,22 @@ dispatch_request:
     jz .dispatch_unknown
     lea rdi, [rel send_buf]
     call extract_json_string
+    ; Capture output from holo_mem_add
+    call set_output_buffer
     ; Call holo_mem_add(edi=category, rsi=content, rdx=context, ecx=source)
     pop rdi                     ; category
     lea rsi, [rel send_buf]     ; content
     xor edx, edx                ; context = NULL
     xor ecx, ecx                ; source = NULL
     call holo_mem_add
-    ; Format response with entry_id
-    mov [rel req_n], eax        ; reuse req_n for entry_id
+    mov [rel req_n], eax        ; save entry_id
+    call get_output_buffer       ; rax=buf, edx=len
+    call reset_output_channel
+    ; Format response: captured output + "Added #N"
     lea rdi, [rel resp_buf]
+    mov rsi, rax
+    mov ecx, edx
+    rep movsb
     mov byte [rdi], 'A'
     mov byte [rdi+1], 'd'
     mov byte [rdi+2], 'd'
@@ -819,6 +831,8 @@ dispatch_request:
     jz .dispatch_unknown
     lea rdi, [rel send_buf]
     call extract_json_string
+    ; Capture output into buffer
+    call set_output_buffer
     lea rdi, [rel send_buf]
     mov esi, [rel req_n]
     test esi, esi
@@ -826,50 +840,69 @@ dispatch_request:
     mov esi, 10
 .query_limit_ok:
     call holo_mem_query
-    ; Response already printed to stdout by holo_mem_query
-    ; Format empty success response
+    call get_output_buffer       ; rax=buf, edx=len
+    call reset_output_channel
+    ; Copy captured output to resp_buf
     lea rdi, [rel resp_buf]
-    mov byte [rdi], 'Q'
-    mov byte [rdi+1], 'u'
-    mov byte [rdi+2], 'e'
-    mov byte [rdi+3], 'r'
-    mov byte [rdi+4], 'y'
-    mov byte [rdi+5], ' '
-    mov byte [rdi+6], 'O'
-    mov byte [rdi+7], 'K'
-    mov byte [rdi+8], 0
+    mov rsi, rax
+    mov ecx, edx
+    test ecx, ecx
+    jz .query_empty
+    rep movsb
+    mov byte [rdi], 0
+    call send_success_response
+    jmp .dispatch_ret
+.query_empty:
+    mov byte [rdi], 0
+    lea rdi, [rel resp_buf]
+    mov dword [rdi], '(no '
+    mov dword [rdi+4], 'resu'
+    mov dword [rdi+8], 'lts)'
+    mov byte [rdi+12], 0
     call send_success_response
     jmp .dispatch_ret
 
 .do_mem_state:
+    call set_output_buffer
     call holo_mem_state
+    call get_output_buffer       ; rax=buf, edx=len
+    call reset_output_channel
     lea rdi, [rel resp_buf]
-    mov byte [rdi], 'O'
-    mov byte [rdi+1], 'K'
-    mov byte [rdi+2], 0
+    mov rsi, rax
+    mov ecx, edx
+    rep movsb
+    mov byte [rdi], 0
     call send_success_response
     jmp .dispatch_ret
 
 .do_mem_recent:
+    call set_output_buffer
     mov edi, [rel req_n]
     test edi, edi
     jnz .recent_limit_ok
     mov edi, 10
 .recent_limit_ok:
     call holo_mem_recent
+    call get_output_buffer       ; rax=buf, edx=len
+    call reset_output_channel
     lea rdi, [rel resp_buf]
-    mov byte [rdi], 'O'
-    mov byte [rdi+1], 'K'
-    mov byte [rdi+2], 0
+    mov rsi, rax
+    mov ecx, edx
+    rep movsb
+    mov byte [rdi], 0
     call send_success_response
     jmp .dispatch_ret
 
 .do_mem_summary:
+    call set_output_buffer
     call holo_mem_summary
+    call get_output_buffer       ; rax=buf, edx=len
+    call reset_output_channel
     lea rdi, [rel resp_buf]
-    mov byte [rdi], 'O'
-    mov byte [rdi+1], 'K'
-    mov byte [rdi+2], 0
+    mov rsi, rax
+    mov ecx, edx
+    rep movsb
+    mov byte [rdi], 0
     call send_success_response
     jmp .dispatch_ret
 
@@ -931,12 +964,8 @@ drain_output:
 ;; Returns: eax = 1 if OK, 0 if needs reconnect
 ;; ============================================================
 check_connection:
-    ; Simple check - just verify fds are valid (not -1)
-    ; Don't poll - that can give false positives on new connections
+    ; Simple check - verify gateway fd is valid (not -1)
     mov eax, [rel fd_query_in]
-    cmp eax, -1
-    je .conn_bad
-    mov eax, [rel fd_query_out]
     cmp eax, -1
     je .conn_bad
     mov eax, 1
@@ -958,15 +987,8 @@ ensure_connection:
     test eax, eax
     jnz .already_ok
 
-    ; Close old sockets if any
+    ; Close old socket if any (single gateway fd)
     mov edi, [rel fd_query_in]
-    cmp edi, -1
-    je .close_out
-    mov eax, SYS_CLOSE
-    syscall
-
-.close_out:
-    mov edi, [rel fd_query_out]
     cmp edi, -1
     je .reconnect
     mov eax, SYS_CLOSE

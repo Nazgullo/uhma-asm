@@ -32,36 +32,41 @@ The system generates x86-64 code at runtime. Faults (SIGSEGV, SIGILL) are caught
 | Command | Description |
 |---------|-------------|
 | `help` | List commands |
-| `state` | System stats (energy, accuracy, region count) |
+| `status` | System stats (energy, accuracy, region count) |
 | `regions` | List dispatch regions with hit/miss counts |
-| `presence` | Hormonal state (arousal, valence, fatigue) |
-| `drives` | Drive system (accuracy, efficiency, novelty) |
+| `presence` | 30-dim phenomenal state (arousal, valence, continuity...) |
+| `drives` | Drive system levels and thresholds |
+| `intro` | Introspective state (SELF-AWARE %, confused/confident/learning) |
+| `self` | Strengths and weaknesses by context type |
+| `autonomy` | Resonance scores for 10 actions, frontier, curiosity |
+| `compose` | Show composition buffer (generated text) |
 
 ### Actions
 | Command | Description |
 |---------|-------------|
-| `dream` | Run consolidation (replay misses, extract schemas, prune weak regions) |
-| `observe` | Trigger self-observation cycle |
+| `dream` | Run consolidation (replay misses, schemas, prune/promote) |
+| `observe` | Trigger self-observation cycle (builds self-model) |
 | `eat <file>` | Digest a text file (learn from it) |
-| `trace on/off` | Toggle execution tracing |
+| `batch` | Toggle batch mode (disable autonomous workers) |
+| `compact` | Garbage collect condemned regions |
+| `trace` | Toggle execution tracing |
 
 ### Diagnostics
 | Command | Description |
 |---------|-------------|
-| `why` | Explain last MISS - shows context, actual vs predicted, confidence |
-| `misses [n]` | Show last N misses (default 5) with full context |
+| `why` | Explain last MISS - context, actual vs predicted, confidence |
+| `misses [n]` | Show last N misses (default 5) |
 | `receipts [n]` | Show last N event receipts |
-| `listen` | Enable verbose receipt logging |
+| `metacog` | Metacognitive state for last prediction |
+| `causal` | What modifications work in current context |
 
-### Hive
+### Persistence & Collective
 | Command | Description |
 |---------|-------------|
-| `share` | Connect to shared hive mind (other UHMA instances) |
+| `save <name>` | Save surface checkpoint |
+| `load <name>` | Load surface checkpoint |
+| `share` | Connect to shared hive mind |
 | `colony` | Show connected instances |
-
-### Exit
-| Command | Description |
-|---------|-------------|
 | `quit` | Clean exit (syncs surface to disk) |
 
 ## Text Input
@@ -146,11 +151,21 @@ presence.asm    Arousal, valence, fatigue modulators
 genes.asm       Gene pool (patterns from condemned regions)
 surface.asm     Memory management, persistence
 io.asm          File I/O, digest_file
-hive.asm        Multi-instance shared memory
+introspect.asm  Autonomy loop, self-repair, action dispatch
+maturity.asm    Developmental stage gating
+gateway.asm     Single-port TCP gateway (9999)
 
 include/
   constants.inc   All constants, surface layout
   syscalls.inc    Linux syscall numbers
+
+tools/
+  mcp_server.asm  MCP protocol handler for Claude Code
+  feeder.asm      Automated training client
+
+pet/x86/
+  creature.asm    Creature state & behavior simulation
+  render.asm      Procedural creature rendering
 ```
 
 ## Testing Tips
@@ -187,39 +202,38 @@ Common issues:
 
 ## Claude Code Integration (MCP)
 
-UHMA exposes 27 tools via MCP (Model Context Protocol) for full control from Claude Code.
+UHMA exposes tools via MCP (Model Context Protocol) for control from Claude Code. The MCP server is pure x86-64 assembly (`tools/mcp_server`).
 
 ### Setup
 
-Create `.mcp.json` in project root:
+`.mcp.json` in project root (already configured):
 ```json
 {
   "mcpServers": {
     "uhma": {
-      "command": "python3",
-      "env": {"PYTHONUNBUFFERED": "1"},
-      "args": ["/path/to/uhma-asm/tools/rag/server.py"],
+      "command": "/path/to/uhma-asm/tools/mcp_server",
       "cwd": "/path/to/uhma-asm"
     }
   }
 }
 ```
 
-**Important**: Restart Claude Code after creating/modifying `.mcp.json`. Verify with `/mcp` command.
+**Important**: UHMA must be running (port 9999) for UHMA commands. Holographic memory (`mem_*`) works standalone. Restart Claude Code after changes. Verify with `/mcp`.
 
 ### Available MCP Tools
 
 | Category | Tools |
 |----------|-------|
 | Input | `input`, `raw` |
-| Status | `help`, `status`, `self`, `metacog`, `debugger`, `genes`, `subroutines`, `regions`, `presence`, `drives` |
-| Debug | `why`, `misses`, `receipts`, `listen`, `trace` |
+| Status | `status`, `self`, `intro`, `presence`, `drives`, `metacog`, `genes`, `regions`, `hive`, `colony` |
+| Debug | `why`, `misses`, `receipts` |
 | Actions | `dream`, `observe`, `compact`, `reset` |
 | I/O | `save`, `load`, `eat` |
-| Hive | `hive`, `share`, `colony`, `export`, `import_gene` |
-| Other | `geom`, `web_fetch`, `quit` |
+| Memory | `mem_add`, `mem_query`, `mem_state`, `mem_recent`, `mem_summary` |
 
-UHMA auto-spawns when any tool is called.
+### Holographic Memory (Claude's)
+
+Separate 6GB surface for cross-session persistence and 3-layer code RAG. 14 categories (finding, warning, insight, code_high, code_mid, code_low, etc.). Queried by semantic similarity via MPNet embeddings (768→8192 dim projection).
 
 ## GUI (Command & Control Center)
 
@@ -234,7 +248,7 @@ cd gui && make
 
 - **Mind Map View**: Central UHMA node with connected subsystems (BRAIN, REGIONS, TOKENS, STATE, etc.)
 - **Carousel Nodes**: Click to expand, click outside to collapse (auto-copies to clipboard)
-- **Side Panels**: FEED (9998), QUERY (9996), DEBUG (9994) - click to pause/copy
+- **Side Panels**: FEED, QUERY, DEBUG streams via TCP gateway (port 9999) - click to pause/copy
 - **Auto-Polling**: QUERY and DEBUG panels refresh every ~3 seconds
 - **Dual Spawn Modes**:
   - **DREAM button**: Spawns UHMA in live/autonomous mode (batch OFF)
@@ -252,13 +266,13 @@ cd gui && make
 ┌─────────────────────────────────────────────────────────────────┐
 │ [DREAM] [OBSERVE] [EVOLVE] [STEP] [RUN] [SAVE] [LOAD] ...      │
 ├───────────────────────────────────────────┬─────────────────────┤
-│                                           │ FEED (9998)         │
-│     Mind Map / Carousel View              │ [live TCP stream]   │
+│                                           │ FEED                │
+│     Mind Map / Carousel View              │ [eat/dream/observe] │
 │                                           ├─────────────────────┤
-│     Click nodes to expand/inspect         │ QUERY (9996)        │
+│     Click nodes to expand/inspect         │ QUERY               │
 │                                           │ [status/why/misses] │
 │                                           ├─────────────────────┤
-│                                           │ DEBUG (9994)        │
+│                                           │ DEBUG               │
 │                                           │ [receipts/trace]    │
 ├───────────────────────────────────────────┴─────────────────────┤
 │ INPUT: _______________                        [SEND] [CLEAR]    │

@@ -1,99 +1,86 @@
-; mcp_client.asm — GUI client for UHMA 6-channel TCP I/O
+; mcp_client.asm — GUI client for UHMA single-port gateway
 ;
-; @entry mcp_init() -> eax=1 success, 0 failure (connects to all 6 ports)
-; @entry mcp_shutdown() -> closes all sockets
+; @entry mcp_init() -> eax=1 success, 0 failure (connects to gateway port 9999)
+; @entry mcp_shutdown() -> closes socket
 ; @entry mcp_call(rdi=tool_name, rsi=args_json) -> rax=response_ptr
 ; @entry mcp_call_ch(edi=channel, rsi=tool_name, rdx=args_json) -> rax=response_ptr
 ; @entry mcp_send_text(rdi=text) -> rax=response_ptr
 ; @entry mcp_get_status() -> rax=status_json_ptr
 ; @entry mcp_spawn_uhma() -> eax=1 success, spawns UHMA + sends "batch" for live mode
-; @entry mcp_spawn_uhma_feed() -> eax=1 success, spawns UHMA without batch toggle (feed mode)
+; @entry mcp_spawn_uhma_feed() -> eax=1 success, spawns UHMA without batch toggle
 ; @entry mcp_read_stream(edi=channel, rsi=buf, edx=size) -> eax=bytes_read
+; @entry mcp_send_async(edi=channel, rsi=command) -> fire-and-forget
 ; @global mcp_running -> dword, 1 if UHMA connected
 ; @calledby gui/visualizer.asm
 ;
-; DUAL MODE OPERATION:
-;   Mode 1: GUI spawns ./uhma directly (simple, for exploration)
-;   Mode 2: User starts ./feed.sh first (training mode with consolidation)
-;   GUI auto-detects: if ports 9999-9994 respond, connects to existing UHMA
-;   If no UHMA running, GUI spawns ./uhma via system() call
+; GATEWAY PROTOCOL:
+;   Frame: [2B magic 0x5548] [1B subnet] [1B host] [2B seq_id] [2B payload_len] [payload]
+;   Single socket to port 9999, framed messages, multiplexed by seq_id
 ;
-; SPAWN MODES:
-;   mcp_spawn_uhma() - spawns UHMA then sends "batch" to toggle OFF (live/autonomous)
-;   mcp_spawn_uhma_feed() - spawns UHMA without batch toggle (stays ON for feeding)
-;
-; CHANNEL PAIRS (client perspective - write to input, read from output):
-;   FEED:  write 9999 (CH0) → read 9998 (CH1) - eat, dream, observe
-;   QUERY: write 9997 (CH2) → read 9996 (CH3) - status, why, misses
-;   DEBUG: write 9995 (CH4) → read 9994 (CH5) - trace, receipts
-;
-; PROTOCOL:
-;   1. Connect to both ports of a channel pair
-;   2. Send command to input port (even: 0,2,4)
-;   3. Read response from output port (odd: 1,3,5)
-;   Synchronous request/response, no async
+; CHANNEL→SUBNET MAPPING:
+;   MCP_CH_FEED  (0) → SUBNET_CONSOL (4)
+;   MCP_CH_QUERY (1) → SUBNET_REPL   (1)
+;   MCP_CH_DEBUG (2) → SUBNET_SELF   (5)
 ;
 ; GOTCHAS:
 ;   - Response buffer is static, overwritten each call
 ;   - Stack alignment: ODD pushes → sub rsp must be multiple of 16
-;   - UHMA blocks if output ports not drained - GUI must read responses
 ;   - Spawn uses absolute path /home/peter/Desktop/STARWARS/uhma-asm/uhma
 
 section .data
-    ; UHMA command (for spawning if not running)
-    ; NOTE: GUI should be run from project root: ./gui/uhma-viz
-    mcp_cmd:        db "/home/peter/Desktop/STARWARS/uhma-asm/uhma", 0
+    ; UHMA spawn command
     spawn_cmd:      db "cd /home/peter/Desktop/STARWARS/uhma-asm && ./uhma < /dev/null &", 0
-    mcp_arg1:       db 0              ; no args needed
-    mcp_arg2:       db 0
-    mcp_arg3:       db 0
-    mcp_arg4:       db 0
-    mcp_argv:       dq 0, 0, 0, 0, 0, 0  ; filled at runtime
 
-    ; TCP connection params (6-channel)
-    MCP_NUM_CHANNELS equ 6
-    MCP_PORT_BASE    equ 9999         ; channels use 9999-9994
-    MCP_CH_FEED      equ 0            ; channel 0 = feed (async)
-    MCP_CH_QUERY     equ 1            ; channel 1 = query (sync)
-    MCP_CH_TRACE     equ 2            ; channel 2 = trace/receipts
-    MCP_CH_STREAM    equ 3            ; channel 3 = event stream
-    MCP_CH_LLM       equ 4            ; channel 4 = LLM communication
-    MCP_CH_RESERVED  equ 5            ; channel 5 = reserved
+    ; Gateway connection params
+    GW_PORT          equ 9999
+    GW_MAGIC         equ 0x5548
+    GW_HEADER_SIZE   equ 8
+    GW_MAX_PAYLOAD   equ 4096
     AF_INET          equ 2
     SOCK_STREAM      equ 1
     SOL_SOCKET       equ 1
-    SO_SNDTIMEO      equ 21        ; send timeout (affects connect on Linux)
+    SO_SNDTIMEO      equ 21
 
-    ; UHMA uses plain text protocol, no JSON-RPC needed
+    ; Logical channel → subnet mapping
+    MCP_CH_FEED      equ 0
+    MCP_CH_QUERY     equ 1
+    MCP_CH_DEBUG     equ 2
+    SUBNET_REPL      equ 1
+    SUBNET_CONSOL    equ 4
+    SUBNET_SELF      equ 5
 
-    ; Error messages
+    ; Channel to subnet lookup table
+    ch_to_subnet:   db SUBNET_CONSOL    ; CH_FEED  (0) → SUBNET_CONSOL (4)
+                    db SUBNET_REPL      ; CH_QUERY (1) → SUBNET_REPL   (1)
+                    db SUBNET_SELF      ; CH_DEBUG (2) → SUBNET_SELF   (5)
+                    db SUBNET_REPL      ; fallback
+
+    ; Messages
     err_connect:    db "GUI: spawning UHMA...", 10, 0
     err_spawn:      db "GUI: failed to spawn UHMA (try ./feed.sh first)", 10, 0
-    err_socket:     db "GUI: socket error", 10, 0
-    msg_connected:  db "GUI: connected to UHMA (%d channels)", 10, 0
+    msg_connected:  db "GUI: connected to UHMA gateway", 10, 0
     msg_autonomous: db "GUI: enabled autonomous mode (batch_mode=0)", 10, 0
     cmd_batch:      db "batch", 0
 
 section .bss
-    ; TCP sockets (6-channel)
-    mcp_sockets:      resd 6          ; socket FDs for channels 0-5
-    mcp_sock_valid:   resd 6          ; 1 if channel connected, 0 if not
+    ; Single gateway socket
+    mcp_socket:       resd 1            ; gateway socket FD (-1 = not connected)
     mcp_running:      resd 1
     mcp_pid:          resd 1
-    call_id:          resd 1
+    mcp_seq_counter:  resw 1            ; frame sequence ID counter
 
     ; sockaddr_in structure (16 bytes)
     sock_addr:        resb 16
 
     ; Request/response buffers
-    req_buf:        resb 4096
+    req_buf:        resb GW_HEADER_SIZE + GW_MAX_PAYLOAD  ; frame header + payload
     resp_buf:       resb 65536
     status_cache:   resb 8192
 
     ; pollfd struct: { int fd; short events; short revents; }
-    poll_fd:        resd 1          ; fd
-    poll_events:    resw 1          ; events (POLLIN = 1)
-    poll_revents:   resw 1          ; revents
+    poll_fd:        resd 1
+    poll_events:    resw 1
+    poll_revents:   resw 1
 
 section .text
 
@@ -138,27 +125,88 @@ global mcp_try_connect
 global mcp_spawn_uhma
 global mcp_spawn_uhma_feed
 global mcp_running
+global mcp_send_async
+global mcp_read_stream
 
+;; ============================================================
+;; mcp_connect_gateway — Connect single socket to port 9999
+;; Returns: eax=1 connected, 0 failed
+;; ============================================================
+mcp_connect_gateway:
+    push rbx
+    push r12
+    sub rsp, 24                 ; 2 pushes (even) + 24 → 56, need 8 mod 16
+                                ; 2*8=16+24=40... 40 mod 16 = 8. aligned.
+
+    ; Create socket
+    mov edi, AF_INET
+    mov esi, SOCK_STREAM
+    xor edx, edx
+    call socket
+    cmp eax, -1
+    je .gw_connect_fail
+
+    mov ebx, eax                ; save socket fd
+    mov [rel mcp_socket], eax
+
+    ; Set 1-second connection timeout
+    mov qword [rsp], 1          ; tv_sec = 1
+    mov qword [rsp + 8], 0      ; tv_usec = 0
+    mov edi, ebx
+    mov esi, SOL_SOCKET
+    mov edx, SO_SNDTIMEO
+    lea rcx, [rsp]
+    mov r8d, 16
+    call setsockopt
+
+    ; Setup sockaddr_in for 127.0.0.1:9999
+    lea rdi, [rel sock_addr]
+    xor esi, esi
+    mov edx, 16
+    call memset
+
+    mov word [rel sock_addr], AF_INET
+    mov edi, GW_PORT
+    call htons
+    mov [rel sock_addr + 2], ax
+    mov dword [rel sock_addr + 4], 0x0100007f  ; 127.0.0.1
+
+    ; Connect
+    mov edi, ebx
+    lea rsi, [rel sock_addr]
+    mov edx, 16
+    call connect
+    test eax, eax
+    jnz .gw_connect_close
+
+    ; Success
+    mov eax, 1
+    jmp .gw_connect_done
+
+.gw_connect_close:
+    mov edi, ebx
+    call close
+    mov dword [rel mcp_socket], -1
+.gw_connect_fail:
+    xor eax, eax
+
+.gw_connect_done:
+    add rsp, 24
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
 ;; mcp_try_connect — Try to connect to existing UHMA (no spawn)
 ;; Returns: eax=1 if connected, 0 if not
+;; ============================================================
 mcp_try_connect:
     push rbx
-    sub rsp, 8
+    ; 1 push (odd) = aligned
 
-    ; Clear socket validity flags
-    xor eax, eax
-    mov [rel mcp_sock_valid], eax
-    mov [rel mcp_sock_valid + 4], eax
-    mov [rel mcp_sock_valid + 8], eax
-    mov [rel mcp_sock_valid + 12], eax
-    mov [rel mcp_sock_valid + 16], eax
-    mov [rel mcp_sock_valid + 20], eax
+    call mcp_connect_gateway
+    mov ebx, eax
 
-    ; Try to connect all channels
-    call mcp_try_connect_all
-    mov ebx, eax                    ; save connected count
-
-    ; Need at least one channel
     test ebx, ebx
     jz .try_not_connected
 
@@ -170,16 +218,17 @@ mcp_try_connect:
     xor eax, eax
 
 .try_done:
-    add rsp, 8
     pop rbx
     ret
 
-;; mcp_spawn_uhma — Spawn UHMA and connect
+;; ============================================================
+;; mcp_spawn_uhma — Spawn UHMA and connect (autonomous mode)
 ;; Returns: eax=1 success, 0 failure
+;; ============================================================
 mcp_spawn_uhma:
     push rbx
     push r12
-    sub rsp, 8
+    sub rsp, 8                  ; 2 pushes (even) + 8 = aligned
 
     lea rdi, [rel err_connect]
     xor eax, eax
@@ -190,26 +239,22 @@ mcp_spawn_uhma:
     jz .spawn_uhma_fail
 
     ; Wait for UHMA to start
-    mov edi, 2000000                ; 2s
+    mov edi, 2000000            ; 2s
     call usleep
 
     ; Try to connect
-    call mcp_try_connect_all
-    mov r12d, eax
-
-    ; Need at least query channel
-    test r12d, r12d
+    call mcp_connect_gateway
+    test eax, eax
     jz .spawn_uhma_fail
 
     mov dword [rel mcp_running], 1
-    mov dword [rel call_id], 2
+    mov word [rel mcp_seq_counter], 1
 
     lea rdi, [rel msg_connected]
-    mov esi, r12d
     xor eax, eax
     call printf
 
-    ; Enable autonomous mode (batch_mode=0)
+    ; Enable autonomous mode
     mov edi, 500000
     call usleep
     lea rdi, [rel cmd_batch]
@@ -232,8 +277,10 @@ mcp_spawn_uhma:
     pop rbx
     ret
 
-;; mcp_spawn_uhma_feed — Spawn UHMA for feeding (batch ON, no autonomous mode)
+;; ============================================================
+;; mcp_spawn_uhma_feed — Spawn UHMA for feeding (no autonomous)
 ;; Returns: eax=1 success, 0 failure
+;; ============================================================
 mcp_spawn_uhma_feed:
     push rbx
     push r12
@@ -247,27 +294,19 @@ mcp_spawn_uhma_feed:
     test eax, eax
     jz .spawn_feed_fail
 
-    ; Wait for UHMA to start
-    mov edi, 2000000                ; 2s
+    mov edi, 2000000
     call usleep
 
-    ; Try to connect
-    call mcp_try_connect_all
-    mov r12d, eax
-
-    ; Need at least query channel
-    test r12d, r12d
+    call mcp_connect_gateway
+    test eax, eax
     jz .spawn_feed_fail
 
     mov dword [rel mcp_running], 1
-    mov dword [rel call_id], 2
+    mov word [rel mcp_seq_counter], 1
 
     lea rdi, [rel msg_connected]
-    mov esi, r12d
     xor eax, eax
     call printf
-
-    ; DO NOT send batch command - stay in batch mode ON for feeding
 
     mov eax, 1
     jmp .spawn_feed_done
@@ -281,74 +320,54 @@ mcp_spawn_uhma_feed:
     pop rbx
     ret
 
-;; mcp_init — Connect to MCP server via TCP (all channels)
-;; Returns: eax=1 success (at least query channel connected), 0 failure
+;; ============================================================
+;; mcp_init — Connect to UHMA gateway, spawn if needed
+;; Returns: eax=1 success, 0 failure
+;; ============================================================
 mcp_init:
     push rbx
     push r12
-    push r13
-    push r14
-    push r15
-    sub rsp, 8              ; 5 pushes (odd) + 8 = 48, aligned
+    sub rsp, 8
 
-    ; Clear socket validity flags (6 channels)
-    xor eax, eax
-    mov [rel mcp_sock_valid], eax
-    mov [rel mcp_sock_valid + 4], eax
-    mov [rel mcp_sock_valid + 8], eax
-    mov [rel mcp_sock_valid + 12], eax
-    mov [rel mcp_sock_valid + 16], eax
-    mov [rel mcp_sock_valid + 20], eax
+    mov dword [rel mcp_socket], -1
 
-    ; Try to connect all channels
-    call mcp_try_connect_all
-    mov r12d, eax           ; save connected count
+    ; Try to connect
+    call mcp_connect_gateway
+    mov r12d, eax
 
-    ; If no channels connected, spawn server
     test r12d, r12d
-    jnz .some_connected
+    jnz .init_connected
 
-    ; Connection failed - spawn server
+    ; Not running — spawn
     lea rdi, [rel err_connect]
     xor eax, eax
     call printf
 
     call mcp_do_spawn
     test eax, eax
-    jz .spawn_fail
+    jz .init_fail
 
-    ; Wait for server to start
-    mov edi, 2000000        ; 2s for multi-channel startup
+    mov edi, 2000000
     call usleep
 
-    ; Try to connect again
-    call mcp_try_connect_all
-    mov r12d, eax
+    call mcp_connect_gateway
+    test eax, eax
+    jz .init_fail
 
-.some_connected:
-    ; Need at least query channel (channel 1)
-    cmp dword [rel mcp_sock_valid + 4], 0
-    je .spawn_fail
-
-    ; UHMA uses plain text protocol, no JSON-RPC init needed
+.init_connected:
     mov dword [rel mcp_running], 1
-    mov dword [rel call_id], 2
+    mov word [rel mcp_seq_counter], 1
 
     lea rdi, [rel msg_connected]
-    mov esi, r12d           ; channels connected
     xor eax, eax
     call printf
 
-    ; If we spawned UHMA (not connecting to existing), enable autonomous mode
-    ; batch_mode=1 by default (batch), sending "batch" toggles to 0 (autonomous)
+    ; If we spawned UHMA, enable autonomous mode
     cmp dword [rel mcp_pid], 0
-    je .skip_autonomous      ; connected to existing UHMA, respect its mode
+    je .skip_autonomous
 
-    ; Small delay for UHMA to be ready
-    mov edi, 500000          ; 500ms
+    mov edi, 500000
     call usleep
-
-    ; Send "batch" to toggle to autonomous mode
     lea rdi, [rel cmd_batch]
     xor esi, esi
     call mcp_call
@@ -359,148 +378,48 @@ mcp_init:
 
 .skip_autonomous:
     mov eax, 1
-    jmp .done
+    jmp .init_done
 
-.spawn_fail:
+.init_fail:
     lea rdi, [rel err_spawn]
     xor eax, eax
     call printf
     xor eax, eax
-    jmp .done
 
-.done:
+.init_done:
     add rsp, 8
-    pop r15
-    pop r14
-    pop r13
     pop r12
     pop rbx
     ret
 
-;; Try to connect all channels
-;; Returns: eax = number of channels connected
-mcp_try_connect_all:
-    push rbx
-    push r12
-    push r13
-    push r14
-    sub rsp, 24             ; 4 pushes (even) + 24 = 56 bytes, aligned
-                            ; Use [rsp..rsp+15] for timeval struct
-
-    xor r12d, r12d          ; connected count
-    xor r13d, r13d          ; channel index
-
-mcp_tca_loop:
-    cmp r13d, MCP_NUM_CHANNELS
-    jge mcp_tca_done
-
-    ; Calculate port: base - channel (9999, 9998, 9997, 9996)
-    mov eax, MCP_PORT_BASE
-    sub eax, r13d
-    mov r14d, eax           ; port for this channel
-
-    ; Create socket
-    mov edi, AF_INET
-    mov esi, SOCK_STREAM
-    xor edx, edx
-    call socket
-    cmp eax, -1
-    je mcp_tca_next
-
-    ; Save socket fd
-    lea rcx, [rel mcp_sockets]
-    mov [rcx + r13 * 4], eax
-    mov ebx, eax            ; save socket fd in ebx
-
-    ; Set 1-second connection timeout (prevents 60s freeze)
-    mov qword [rsp], 1      ; tv_sec = 1
-    mov qword [rsp + 8], 0  ; tv_usec = 0
-    mov edi, ebx            ; socket fd
-    mov esi, SOL_SOCKET
-    mov edx, SO_SNDTIMEO
-    lea rcx, [rsp]          ; timeval struct
-    mov r8d, 16
-    call setsockopt
-
-    ; Setup sockaddr_in
-    lea rdi, [rel sock_addr]
-    xor esi, esi
-    mov edx, 16
-    call memset
-
-    mov word [rel sock_addr], AF_INET
-    mov edi, r14d           ; port
-    call htons
-    mov [rel sock_addr + 2], ax
-    mov dword [rel sock_addr + 4], 0x0100007f  ; 127.0.0.1
-
-    ; Connect (now with 1s timeout)
-    mov edi, ebx            ; socket fd
-    lea rsi, [rel sock_addr]
-    mov edx, 16
-    call connect
-    test eax, eax
-    jnz .close_failed
-
-    ; Mark channel as valid
-    lea rcx, [rel mcp_sock_valid]
-    mov dword [rcx + r13 * 4], 1
-    inc r12d
-    jmp mcp_tca_next
-
-.close_failed:
-    mov edi, ebx
-    call close
-
-mcp_tca_next:
-    inc r13d
-    jmp mcp_tca_loop
-
-mcp_tca_done:
-    mov eax, r12d
-    add rsp, 24
-    pop r14
-    pop r13
-    pop r12
-    pop rbx
-    ret
-
-;; Spawn UHMA directly (creates 6 TCP channels itself)
-;; Returns: eax=1 success, 0 failure
+;; ============================================================
+;; mcp_do_spawn — Spawn UHMA in background
+;; Returns: eax=1 success
+;; ============================================================
 mcp_do_spawn:
     push rbx
-    sub rsp, 16
+    sub rsp, 16                 ; 1 push (odd) + 16 = aligned
 
-    ; Use system() to spawn UHMA in background
     lea rdi, [rel spawn_cmd]
     call system
-    ; For background command, always assume success
-    ; The process is started asynchronously
     mov eax, 1
 
     add rsp, 16
     pop rbx
     ret
 
-; (JSON-RPC init removed - UHMA uses plain text protocol)
-
-;; mcp_get_channel_socket — Get socket FD for channel
-;; edi = channel number (0-3)
-;; Returns: eax = socket FD, or -1 if invalid
+;; ============================================================
+;; mcp_get_channel_socket — Get gateway socket FD
+;; edi = channel number (ignored, returns gateway socket)
+;; Returns: eax = socket FD, or -1 if not connected
+;; ============================================================
 mcp_get_channel_socket:
-    cmp edi, MCP_NUM_CHANNELS
-    jge .invalid_ch
-    lea rax, [rel mcp_sock_valid]
-    cmp dword [rax + rdi * 4], 0
-    je .invalid_ch
-    lea rax, [rel mcp_sockets]
-    mov eax, [rax + rdi * 4]
-    ret
-.invalid_ch:
-    mov eax, -1
+    mov eax, [rel mcp_socket]
     ret
 
-;; mcp_shutdown — Close all TCP channels, optionally kill server
+;; ============================================================
+;; mcp_shutdown — Close gateway socket, optionally kill UHMA
+;; ============================================================
 mcp_shutdown:
     push rbx
     push r12
@@ -509,38 +428,24 @@ mcp_shutdown:
     cmp dword [rel mcp_running], 0
     je .shut_done
 
-    ; Send quit command on query channel
+    ; Send quit
     lea rdi, [rel .quit_tool]
     xor esi, esi
     call mcp_call
 
-    ; Close all connected sockets
-    xor r12d, r12d
-.close_loop:
-    cmp r12d, MCP_NUM_CHANNELS
-    jge .close_done
-
-    lea rax, [rel mcp_sock_valid]
-    cmp dword [rax + r12 * 4], 0
-    je .next_close
-
-    lea rax, [rel mcp_sockets]
-    mov edi, [rax + r12 * 4]
+    ; Close gateway socket
+    mov edi, [rel mcp_socket]
+    cmp edi, -1
+    je .no_close
     call close
+    mov dword [rel mcp_socket], -1
+.no_close:
 
-    lea rax, [rel mcp_sock_valid]
-    mov dword [rax + r12 * 4], 0
-
-.next_close:
-    inc r12d
-    jmp .close_loop
-
-.close_done:
     ; Kill spawned server if we started one
     mov edi, [rel mcp_pid]
     test edi, edi
     jz .no_kill
-    mov esi, 15             ; SIGTERM
+    mov esi, 15                 ; SIGTERM
     call kill
     mov edi, [rel mcp_pid]
     xor esi, esi
@@ -558,37 +463,35 @@ mcp_shutdown:
 
 .quit_tool: db "quit", 0
 
-;; mcp_call — Call MCP tool via TCP (uses QUERY channel)
-;; rdi = tool name (C string)
-;; rsi = arguments JSON (C string, can be empty or null)
-;; Returns: rax = pointer to response text (in resp_buf)
+;; ============================================================
+;; mcp_call — Call via QUERY channel (SUBNET_REPL)
+;; rdi = tool name, rsi = args (can be NULL)
+;; Returns: rax = pointer to response text
+;; ============================================================
 mcp_call:
-    ; Route to query channel (channel 1)
-    mov rdx, rsi            ; args -> rdx
-    mov rsi, rdi            ; tool -> rsi
-    mov edi, MCP_CH_QUERY   ; channel 1
+    mov rdx, rsi
+    mov rsi, rdi
+    mov edi, MCP_CH_QUERY
     jmp mcp_call_ch
 
-;; mcp_call_feed — Call MCP tool via FEED channel (async)
-;; rdi = tool name (C string)
-;; rsi = arguments JSON (C string, can be empty or null)
+;; ============================================================
+;; mcp_call_feed — Call via FEED channel (SUBNET_CONSOL)
+;; rdi = tool name, rsi = args
 ;; Returns: rax = pointer to response text
+;; ============================================================
 mcp_call_feed:
     mov rdx, rsi
     mov rsi, rdi
-    mov edi, MCP_CH_FEED    ; channel 0
+    mov edi, MCP_CH_FEED
     jmp mcp_call_ch
 
-;; mcp_call_ch — Call MCP tool on specific channel pair
+;; ============================================================
+;; mcp_call_ch — Send framed command on logical channel, wait for response
 ;; edi = logical channel (0=FEED, 1=QUERY, 2=DEBUG)
 ;; rsi = tool name (C string)
-;; rdx = arguments JSON (C string, can be empty or null)
+;; rdx = arguments (C string, can be NULL)
 ;; Returns: rax = pointer to response text (in resp_buf)
-;;
-;; CHANNEL PAIRING: logical_channel maps to socket pair:
-;;   FEED(0):  send socket[0] (9999), recv socket[1] (9998)
-;;   QUERY(1): send socket[2] (9997), recv socket[3] (9996)
-;;   DEBUG(2): send socket[4] (9995), recv socket[5] (9994)
+;; ============================================================
 mcp_call_ch:
     push rbx
     push r12
@@ -596,103 +499,137 @@ mcp_call_ch:
     push r14
     push r15
     push rbp
-    sub rsp, 8              ; 6 pushes (even) + 8 = 56, aligned
+    sub rsp, 8                  ; 6 pushes (even) + 8 = aligned
 
-    mov r14d, edi           ; logical channel (0-2)
-    mov r12, rsi            ; tool name
-    mov r13, rdx            ; args
+    mov r14d, edi               ; logical channel
+    mov r12, rsi                ; tool name
+    mov r13, rdx                ; args
 
-    ; Map logical channel to socket indices
-    ; input_idx = logical_channel * 2
-    ; output_idx = logical_channel * 2 + 1
-    mov eax, r14d
-    shl eax, 1              ; eax = logical * 2 = input socket index
-    mov ebp, eax            ; save input index in ebp
-    inc eax                 ; eax = output socket index
-
-    ; Check both sockets valid
-    lea rcx, [rel mcp_sock_valid]
-    cmp dword [rcx + rbp * 4], 0    ; input socket valid?
+    ; Check connected
+    mov eax, [rel mcp_socket]
+    cmp eax, -1
     je .ch_no_response
-    cmp dword [rcx + rax * 4], 0    ; output socket valid?
-    je .ch_no_response
+    mov ebx, eax                ; ebx = socket fd
 
-    ; Get both socket FDs
-    lea rcx, [rel mcp_sockets]
-    mov r15d, [rcx + rbp * 4]       ; r15 = input socket (for send)
-    mov ebx, [rcx + rax * 4]        ; ebx = output socket (for recv)
-
-    ; Build plain text command: "command args\n"
-    ; UHMA expects plain text, not JSON-RPC
-    lea rdi, [rel req_buf]
-    mov rsi, r12                ; command/tool name
+    ; Build payload in req_buf + GW_HEADER_SIZE (leave room for header)
+    lea rdi, [rel req_buf + GW_HEADER_SIZE]
+    mov rsi, r12                ; command
     call strcpy
 
-    ; Add arguments if provided (space-separated)
+    ; Add args if provided
     test r13, r13
     jz .no_args
     cmp byte [r13], 0
     je .no_args
 
-    ; Add space before args
-    lea rdi, [rel req_buf]
+    lea rdi, [rel req_buf + GW_HEADER_SIZE]
     call strlen
-    lea rdi, [rel req_buf + rax]
+    lea rdi, [rel req_buf + GW_HEADER_SIZE + rax]
     mov byte [rdi], ' '
     mov byte [rdi + 1], 0
 
-    lea rdi, [rel req_buf]
+    lea rdi, [rel req_buf + GW_HEADER_SIZE]
     mov rsi, r13
     call strcat
 
 .no_args:
     ; Add newline
-    lea rdi, [rel req_buf]
+    lea rdi, [rel req_buf + GW_HEADER_SIZE]
     call strlen
-    lea rdi, [rel req_buf + rax]
-    mov byte [rdi], 10          ; newline
+    lea rdi, [rel req_buf + GW_HEADER_SIZE + rax]
+    mov byte [rdi], 10
     mov byte [rdi + 1], 0
+    inc eax                     ; payload_len includes newline
+    mov r15d, eax               ; r15d = payload length
 
-    ; Send request via TCP on INPUT socket
-    lea rdi, [rel req_buf]
-    call strlen
-    mov rdx, rax                ; length
-    mov edi, r15d               ; INPUT socket fd (send here)
+    ; Get subnet for this channel
+    lea rcx, [rel ch_to_subnet]
+    cmp r14d, 3
+    jge .use_default_subnet
+    movzx ebp, byte [rcx + r14] ; ebp = subnet
+    jmp .build_header
+.use_default_subnet:
+    mov ebp, SUBNET_REPL
+.build_header:
+
+    ; Increment seq counter
+    movzx eax, word [rel mcp_seq_counter]
+    inc eax
+    mov [rel mcp_seq_counter], ax
+    mov r14d, eax               ; r14d = seq_id (reuse r14, channel no longer needed)
+
+    ; Build frame header at req_buf
+    lea rcx, [rel req_buf]
+    mov word [rcx], GW_MAGIC        ; magic
+    mov [rcx + 2], bpl              ; subnet
+    mov byte [rcx + 3], 0           ; host
+    mov [rcx + 4], r14w             ; seq_id
+    mov [rcx + 6], r15w             ; payload_len
+
+    ; Send frame (header + payload)
+    mov eax, r15d
+    add eax, GW_HEADER_SIZE         ; total frame size
+    mov edx, eax
+    mov edi, ebx                    ; socket fd
     lea rsi, [rel req_buf]
-    xor ecx, ecx                ; flags = 0
+    xor ecx, ecx                    ; flags = 0
     call send
 
-    ; Poll OUTPUT socket with short timeout (100ms) to prevent GUI freeze
-    mov [rel poll_fd], ebx              ; fd = output socket
-    mov word [rel poll_events], 1       ; POLLIN = 1
+    ; Poll for response (100ms timeout)
+    mov [rel poll_fd], ebx
+    mov word [rel poll_events], 1   ; POLLIN
     mov word [rel poll_revents], 0
-    lea rdi, [rel poll_fd]              ; pollfd struct
-    mov esi, 1                          ; nfds = 1
-    mov edx, 100                        ; timeout = 100ms (was 2000ms)
+    lea rdi, [rel poll_fd]
+    mov esi, 1
+    mov edx, 100                    ; 100ms
     call poll
 
-    ; Check if data ready (poll returns > 0 and revents has POLLIN)
     cmp eax, 0
-    jle .ch_no_response                 ; timeout or error
+    jle .ch_no_response
 
-    ; Read response via TCP from OUTPUT socket
-    mov edi, ebx                ; OUTPUT socket fd (recv here)
+    ; Read response frame
+    mov edi, ebx
     lea rsi, [rel resp_buf]
     mov edx, 65535
     xor ecx, ecx
     call recv
-    mov r14, rax                ; bytes read (use r14, ebx is output socket)
+    mov r15, rax                    ; bytes received
 
-    ; Null terminate response and return it
-    ; UHMA returns plain text, no JSON parsing needed
-    cmp r14, 0
-    jle .ch_no_response
+    cmp r15, GW_HEADER_SIZE
+    jl .ch_no_response
+
+    ; Check if framed response (has magic header)
     lea rax, [rel resp_buf]
-    mov byte [rax + r14], 0
+    movzx ecx, word [rax]
+    cmp cx, GW_MAGIC
+    jne .ch_legacy_response
+
+    ; Parse frame: extract payload after header
+    movzx ecx, word [rax + 6]      ; payload_len from header
+    mov rdx, r15
+    sub rdx, GW_HEADER_SIZE         ; actual payload bytes
+    cmp ecx, edx
+    jle .payload_ok
+    mov ecx, edx                    ; clamp
+.payload_ok:
+    ; Move payload to beginning of resp_buf for caller
+    lea rdi, [rel resp_buf]
+    lea rsi, [rel resp_buf + GW_HEADER_SIZE]
+    mov edx, ecx
+    push rcx
+    call memcpy
+    pop rcx
+    lea rax, [rel resp_buf]
+    mov byte [rax + rcx], 0         ; null terminate
+    jmp .ch_done
+
+.ch_legacy_response:
+    ; Server sent unframed response (legacy compat)
+    lea rax, [rel resp_buf]
+    mov byte [rax + r15], 0         ; null terminate
     jmp .ch_done
 
 .ch_no_response:
-    ; Return empty string on error
     lea rax, [rel resp_buf]
     mov byte [rax], 0
 
@@ -706,56 +643,48 @@ mcp_call_ch:
     pop rbx
     ret
 
+;; ============================================================
 ;; mcp_send_text — Send text input to UHMA
-;; rdi = text to process
-;; Returns: rax = response pointer
+;; rdi = text, Returns: rax = response pointer
+;; ============================================================
 mcp_send_text:
-    ; UHMA processes text directly at REPL - just send as command
-    ; mcp_call sends "command args\n", so text becomes the command
-    xor esi, esi            ; no args
+    xor esi, esi
     jmp mcp_call
 
-;; Convenience wrappers for common commands
-;; Feed operations (async) use channel 0
-;; Query operations (sync) use channel 1
+;; ============================================================
+;; Convenience wrappers
+;; ============================================================
 
 mcp_dream:
-    ; Dream is async - use feed channel
     lea rdi, [rel .dream]
     xor esi, esi
     jmp mcp_call_feed
 .dream: db "dream", 0
 
 mcp_observe:
-    ; Observe is async - use feed channel
     lea rdi, [rel .observe]
     xor esi, esi
     jmp mcp_call_feed
 .observe: db "observe", 0
 
 mcp_evolve:
-    ; Evolve is async - use feed channel
     lea rdi, [rel .evolve]
     xor esi, esi
     jmp mcp_call_feed
 .evolve: db "evolve", 0
 
 mcp_save:
-    ; Save needs response - use query channel
     lea rdi, [rel .save]
     xor esi, esi
     jmp mcp_call
 .save: db "save", 0
 
 mcp_load:
-    ; Load needs response - use query channel
     lea rdi, [rel .load]
     xor esi, esi
     jmp mcp_call
 .load: db "load", 0
 
-;; mcp_get_status — Get UHMA status
-;; Returns: rax = pointer to status text
 mcp_get_status:
     lea rdi, [rel .status]
     xor esi, esi
@@ -763,127 +692,180 @@ mcp_get_status:
     ret
 .status: db "status", 0
 
-;; mcp_send_async — Fire-and-forget send (no wait for response)
+;; ============================================================
+;; mcp_send_async — Fire-and-forget framed send
 ;; edi = logical channel (0=FEED, 1=QUERY, 2=DEBUG)
 ;; rsi = command string
-;; Used for periodic polling - response picked up by mcp_read_stream
-global mcp_send_async
+;; ============================================================
 mcp_send_async:
     push rbx
     push r12
     push r13
-    sub rsp, 8
+    sub rsp, 16                 ; 3 pushes (odd) + 16 = aligned
 
     mov r12d, edi               ; logical channel
     mov r13, rsi                ; command string
 
-    ; Get input socket index: logical * 2
-    mov eax, r12d
-    shl eax, 1
+    ; Check connected
+    mov eax, [rel mcp_socket]
+    cmp eax, -1
+    je .async_done
     mov ebx, eax
 
-    ; Check socket valid
-    cmp ebx, MCP_NUM_CHANNELS
-    jge .async_done
-    lea rcx, [rel mcp_sock_valid]
-    cmp dword [rcx + rbx * 4], 0
-    je .async_done
-
-    ; Build command with newline
-    lea rdi, [rel req_buf]
+    ; Build payload
+    lea rdi, [rel req_buf + GW_HEADER_SIZE]
     mov rsi, r13
     call strcpy
-    lea rdi, [rel req_buf]
+    lea rdi, [rel req_buf + GW_HEADER_SIZE]
     call strlen
-    lea rdi, [rel req_buf + rax]
+    lea rdi, [rel req_buf + GW_HEADER_SIZE + rax]
     mov byte [rdi], 10
     mov byte [rdi + 1], 0
+    inc eax                     ; include newline
+    mov r13d, eax               ; payload len
 
-    ; Send (fire and forget)
-    lea rdi, [rel req_buf]
-    call strlen
-    mov rdx, rax
-    lea rcx, [rel mcp_sockets]
-    mov edi, [rcx + rbx * 4]
+    ; Get subnet
+    lea rcx, [rel ch_to_subnet]
+    cmp r12d, 3
+    jge .async_default
+    movzx r12d, byte [rcx + r12]
+    jmp .async_header
+.async_default:
+    mov r12d, SUBNET_REPL
+.async_header:
+
+    ; Increment seq
+    movzx eax, word [rel mcp_seq_counter]
+    inc eax
+    mov [rel mcp_seq_counter], ax
+
+    ; Build frame header
+    lea rcx, [rel req_buf]
+    mov word [rcx], GW_MAGIC
+    mov [rcx + 2], r12b             ; subnet
+    mov byte [rcx + 3], 0
+    mov [rcx + 4], ax               ; seq_id
+    mov [rcx + 6], r13w             ; payload_len
+
+    ; Send
+    mov eax, r13d
+    add eax, GW_HEADER_SIZE
+    mov edx, eax
+    mov edi, ebx
     lea rsi, [rel req_buf]
     xor ecx, ecx
     call send
 
 .async_done:
-    add rsp, 8
+    add rsp, 16
     pop r13
     pop r12
     pop rbx
     ret
 
-;; mcp_read_stream — Non-blocking read from output channel
-;; edi = logical channel (0=FEED, 1=QUERY, 2=DEBUG)
-;; rsi = buffer to store data
+;; ============================================================
+;; mcp_read_stream — Non-blocking read from gateway
+;; edi = logical channel (0=FEED, 1=QUERY, 2=DEBUG) — currently ignored
+;; rsi = buffer to store payload data
 ;; edx = buffer size
 ;; Returns: eax = bytes read (0 if nothing available)
-global mcp_read_stream
+;; ============================================================
 mcp_read_stream:
     push rbx
     push r12
     push r13
     push r14
-    sub rsp, 24
+    sub rsp, 24                 ; 4 pushes (even) + 24 = 56, need 8 mod 16
+                                ; 4*8=32+24=56, 56 mod 16 = 8. aligned.
 
-    mov r12d, edi               ; logical channel
-    mov r13, rsi                ; buffer
-    mov r14d, edx               ; size
+    mov r12d, edi               ; channel (for future subnet filtering)
+    mov r13, rsi                ; output buffer
+    mov r14d, edx               ; buffer size
 
-    ; Get output socket index: logical * 2 + 1
-    mov eax, r12d
-    shl eax, 1
-    inc eax                     ; output socket index
+    ; Check connected
+    mov eax, [rel mcp_socket]
+    cmp eax, -1
+    je .stream_no_data
     mov ebx, eax
 
-    ; Check socket valid
-    cmp ebx, MCP_NUM_CHANNELS
-    jge .no_data
-    lea rcx, [rel mcp_sock_valid]
-    cmp dword [rcx + rbx * 4], 0
-    je .no_data
-
-    ; Get socket fd
-    lea rcx, [rel mcp_sockets]
-    mov edi, [rcx + rbx * 4]
-
-    ; Poll with 0 timeout (non-blocking check)
-    mov [rsp], edi              ; pollfd.fd
+    ; Poll with 0 timeout (non-blocking)
+    mov [rsp], ebx              ; pollfd.fd
     mov word [rsp + 4], 1       ; POLLIN
     mov word [rsp + 6], 0       ; revents
 
     lea rdi, [rsp]
-    mov esi, 1                  ; nfds
-    xor edx, edx                ; timeout = 0 (non-blocking)
+    mov esi, 1
+    xor edx, edx                ; timeout = 0
     call poll
 
     cmp eax, 0
-    jle .no_data
+    jle .stream_no_data
 
-    ; Check if POLLIN set
     movzx eax, word [rsp + 6]
     test eax, 1                 ; POLLIN
-    jz .no_data
+    jz .stream_no_data
 
-    ; Data available - recv it
-    lea rcx, [rel mcp_sockets]
-    mov edi, [rcx + rbx * 4]
-    mov rsi, r13                ; buffer
-    mov edx, r14d               ; size
-    xor ecx, ecx                ; flags
+    ; Data available — read into resp_buf first (may be framed)
+    mov edi, ebx
+    lea rsi, [rel resp_buf]
+    mov edx, 65535
+    xor ecx, ecx
     call recv
 
     test eax, eax
-    jle .no_data
-    jmp .done
+    jle .stream_no_data
 
-.no_data:
+    mov ebx, eax                ; total bytes received
+
+    ; Check if framed
+    cmp ebx, GW_HEADER_SIZE
+    jl .stream_raw
+
+    lea rcx, [rel resp_buf]
+    movzx edx, word [rcx]
+    cmp dx, GW_MAGIC
+    jne .stream_raw
+
+    ; Framed — extract payload
+    movzx eax, word [rcx + 6]  ; payload_len
+    mov edx, ebx
+    sub edx, GW_HEADER_SIZE
+    cmp eax, edx
+    jle .stream_payload_ok
+    mov eax, edx
+.stream_payload_ok:
+    ; Clamp to caller buffer
+    cmp eax, r14d
+    jle .stream_copy_framed
+    mov eax, r14d
+.stream_copy_framed:
+    push rax
+    mov rdi, r13                ; dst
+    lea rsi, [rel resp_buf + GW_HEADER_SIZE]  ; src
+    mov edx, eax
+    call memcpy
+    pop rax
+    jmp .stream_done
+
+.stream_raw:
+    ; Unframed — copy as-is
+    mov eax, ebx
+    cmp eax, r14d
+    jle .stream_copy_raw
+    mov eax, r14d
+.stream_copy_raw:
+    push rax
+    mov rdi, r13
+    lea rsi, [rel resp_buf]
+    mov edx, eax
+    call memcpy
+    pop rax
+    jmp .stream_done
+
+.stream_no_data:
     xor eax, eax
 
-.done:
+.stream_done:
     add rsp, 24
     pop r14
     pop r13

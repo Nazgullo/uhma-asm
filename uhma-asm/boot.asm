@@ -7,7 +7,7 @@
 ; @calls vsa.asm:vsa_init_random
 ; @calls verify.asm:verify_init
 ; @calls maturity.asm:maturity_init
-; @calls channels.asm:channels_init
+; @calls gateway.asm:gateway_init
 ; @calls repl.asm:repl_run
 ;
 ; STARTUP SEQUENCE:
@@ -17,8 +17,8 @@
 ;   4. vsa_init_random()        - seed random vectors for VSA arena
 ;   5. verify_init()            - assembly brittleness protection
 ;   6. maturity_init()          - developmental gating (Stage 0)
-;   7. channels_init()          - 6-channel TCP listeners (9999-9994)
-;   8. repl_run()               - main loop (stdin + TCP channels)
+;   7. gateway_init()           - single-port TCP gateway (9999)
+;   8. repl_run()               - main loop (stdin + gateway)
 ;
 ; NOTE: Stack aligned to 16 at entry. repl_run never returns.
 ;
@@ -37,7 +37,8 @@ extern vsa_init_random
 extern verify_init
 extern verify_vsa_math
 extern maturity_init
-extern channels_init
+extern gateway_init
+extern init_action_registry
 
 ;; ============================================================
 ;; _start — Entry point
@@ -82,10 +83,13 @@ _start:
     mov rax, 0x3FF0000000000000    ; 1.0 f64
     mov [rbx + STATE_OFFSET + ST_TEMPO_MULT], rax
 
-    ; 8. Initialize multi-channel I/O (6 TCP channels)
-    call channels_init
+    ; 8. Initialize action registry (autonomy loop gates + explore path)
+    call init_action_registry
 
-    ; 9. Enter the interactive REPL (never returns)
+    ; 9. Initialize gateway (single-port TCP on 9999)
+    call gateway_init
+
+    ; 10. Enter the interactive REPL (never returns)
     call repl_run
 
     ; Should not reach here

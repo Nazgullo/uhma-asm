@@ -652,6 +652,7 @@ extern mcp_send_async
 extern mcp_read_stream
 extern mcp_spawn_uhma
 extern mcp_spawn_uhma_feed
+extern mcp_try_connect
 extern mcp_running
 
 ; Rosetta Stone / Geometric Verification
@@ -855,6 +856,9 @@ vis_init:
     mov dword [rel waveform_pos], 0
     mov dword [rel repl_pos], 0
 
+    ; Try to connect to existing UHMA (sets mcp_running=1 if successful)
+    call mcp_try_connect
+
     mov eax, 1
     jmp .done
 
@@ -963,6 +967,23 @@ vis_update:
 
     ; Read any available data from UHMA output streams
     call read_streams
+
+    ; Sync view to write for unpaused panels (auto-scroll)
+    cmp dword [rel feed_paused], 0
+    jne .feed_no_sync
+    mov eax, [rel feed_write]
+    mov [rel feed_view], eax
+.feed_no_sync:
+    cmp dword [rel query_paused], 0
+    jne .query_no_sync
+    mov eax, [rel query_write]
+    mov [rel query_view], eax
+.query_no_sync:
+    cmp dword [rel debug_paused], 0
+    jne .debug_no_sync
+    mov eax, [rel debug_write]
+    mov [rel debug_view], eax
+.debug_no_sync:
 
     ; Update animation
     call update_animation
@@ -1247,25 +1268,52 @@ handle_click:
     jl .not_output_panel
     cmp r13d, OUT_FEED_Y + OUT_PANEL_H
     jge .check_query_panel
-    xor dword [rel feed_paused], 1      ; toggle pause
+    cmp dword [rel feed_paused], 0
+    jne .feed_unpause
+    ; Pausing - copy to clipboard
+    mov dword [rel feed_paused], 1
     lea rdi, [rel feed_ring]
     call copy_ring_to_clipboard
     jmp .done_click
+.feed_unpause:
+    ; Unpausing - snap view to latest
+    mov dword [rel feed_paused], 0
+    mov eax, [rel feed_write]
+    mov [rel feed_view], eax
+    jmp .done_click
 
 .check_query_panel:
+    cmp r13d, OUT_QUERY_Y
+    jl .check_debug_panel
     cmp r13d, OUT_QUERY_Y + OUT_PANEL_H
     jge .check_debug_panel
-    xor dword [rel query_paused], 1     ; toggle pause
+    cmp dword [rel query_paused], 0
+    jne .query_unpause
+    mov dword [rel query_paused], 1
     lea rdi, [rel query_ring]
     call copy_ring_to_clipboard
     jmp .done_click
+.query_unpause:
+    mov dword [rel query_paused], 0
+    mov eax, [rel query_write]
+    mov [rel query_view], eax
+    jmp .done_click
 
 .check_debug_panel:
+    cmp r13d, OUT_DEBUG_Y
+    jl .not_output_panel
     cmp r13d, OUT_DEBUG_Y + OUT_PANEL_H
     jge .not_output_panel
-    xor dword [rel debug_paused], 1     ; toggle pause
+    cmp dword [rel debug_paused], 0
+    jne .debug_unpause
+    mov dword [rel debug_paused], 1
     lea rdi, [rel debug_ring]
     call copy_ring_to_clipboard
+    jmp .done_click
+.debug_unpause:
+    mov dword [rel debug_paused], 0
+    mov eax, [rel debug_write]
+    mov [rel debug_view], eax
     jmp .done_click
 
 .not_output_panel:
@@ -1487,29 +1535,21 @@ handle_click:
 
 ;; ============================================================
 ;; handle_release — Mouse button release
-;; Clears pause flags and snaps view to current write position
+;; No-op - toggle is on click
 ;; ============================================================
 handle_release:
-    ; If any panel was paused, un-pause and snap view to write
-    cmp dword [rel feed_paused], 0
-    je .not_feed_paused
-    mov dword [rel feed_paused], 0
+    mov eax, 1
+    ret
+
+;; snap_view_to_write — Sync view position to write position for all panels
+;; Called when unpausing to catch up to latest content
+snap_view_to_write:
     mov eax, [rel feed_write]
     mov [rel feed_view], eax
-.not_feed_paused:
-    cmp dword [rel query_paused], 0
-    je .not_query_paused
-    mov dword [rel query_paused], 0
     mov eax, [rel query_write]
     mov [rel query_view], eax
-.not_query_paused:
-    cmp dword [rel debug_paused], 0
-    je .not_debug_paused
-    mov dword [rel debug_paused], 0
     mov eax, [rel debug_write]
     mov [rel debug_view], eax
-.not_debug_paused:
-    mov eax, 1
     ret
 
 ;; ============================================================
@@ -3690,7 +3730,9 @@ read_streams:
     mov edx, 1024               ; max bytes
     call mcp_read_stream
     test eax, eax
-    jz .no_feed
+    jle .no_feed                ; handle 0 or negative
+    cmp eax, 2048               ; sanity check
+    jg .no_feed
 
     ; Append to feed_ring
     mov r12d, eax               ; bytes read
@@ -3723,7 +3765,9 @@ read_streams:
     mov edx, 1024
     call mcp_read_stream
     test eax, eax
-    jz .no_query
+    jle .no_query
+    cmp eax, 2048
+    jg .no_query
 
     ; Append to query_ring
     mov r12d, eax
@@ -3755,7 +3799,9 @@ read_streams:
     mov edx, 1024
     call mcp_read_stream
     test eax, eax
-    jz .no_debug
+    jle .no_debug
+    cmp eax, 2048
+    jg .no_debug
 
     ; Append to debug_ring
     mov r12d, eax
@@ -4020,11 +4066,28 @@ draw_ring_panel:
     ; Draw ring buffer content (last ~10 lines before view_pos)
     ; Stack layout: [rsp+0..63]=line buffer, [rsp+72]=loop counter, [rsp+76]=scan limit
 
-    ; Calculate start position: go back ~400 chars from view_pos
-    mov eax, r15d               ; view_pos
-    sub eax, 400
-    and eax, RING_MASK          ; wrap
-    mov ebx, eax                ; scan_pos
+    ; Calculate start position: scan backwards from view_pos to find start of last 10 lines
+    mov eax, r15d               ; view_pos (scan start, moving back)
+    xor ecx, ecx                ; newline counter
+    mov edx, 2000               ; max bytes to scan back (increased from 600)
+
+.scan_back:
+    dec eax
+    and eax, RING_MASK
+    cmp byte [r14 + rax], 10    ; newline?
+    jne .not_nl_back
+    inc ecx
+    cmp ecx, 10
+    je .found_start
+.not_nl_back:
+    dec edx
+    jnz .scan_back
+
+.found_start:
+    ; Found start (or hit limit)
+    inc eax
+    and eax, RING_MASK
+    mov ebx, eax                ; scan_pos for drawing loop
 
     mov eax, r13d
     add eax, 30
@@ -4040,7 +4103,7 @@ draw_ring_panel:
 .copy_line:
     dec dword [rsp + 76]        ; decrement scan limit
     jz .line_done               ; exit if scanned too many bytes
-    cmp ecx, 24                 ; max chars per line (fits 200px panel)
+    cmp ecx, 60                 ; max chars per line (increased from 24)
     jge .line_done
     mov eax, ebx
     and eax, RING_MASK
@@ -4095,7 +4158,7 @@ draw_status:
     push rbx
     push r12
     push r13
-    sub rsp, 32
+    sub rsp, 128                ; increased stack for temp buffers
 
     mov r12d, 0
     mov r13d, WIN_H - STATUS_H
@@ -4112,24 +4175,73 @@ draw_status:
 
     ; Step count
     lea edi, [r12d + 20]
-    lea esi, [r13d + 22]
+    lea esi, [r13d + 18]        ; adjusted y
     mov eax, [rbx + STATE_OFFSET + ST_GLOBAL_STEP]
     lea rdi, [rsp]
     call format_num
     mov [rsp + 16], eax
 
     mov edi, 20
-    lea esi, [r13d + 22]
+    lea esi, [r13d + 18]
     lea rdx, [rsp]
     mov ecx, [rsp + 16]
     mov r8d, [rel col_cyan]
     call gfx_text
 
-    add rsp, 32
+    ; DEBUG: Display Feed Write/View pointers
+    ; Label "W:"
+    lea edi, [r12d + 150]
+    lea esi, [r13d + 18]
+    lea rdx, [rel dbg_w_lbl]
+    mov ecx, 2
+    mov r8d, [rel col_text]
+    call gfx_text
+
+    ; Value Write
+    mov eax, [rel feed_write]
+    lea rdi, [rsp]
+    call format_num
+    mov [rsp + 16], eax
+
+    lea edi, [r12d + 170]
+    lea esi, [r13d + 18]
+    lea rdx, [rsp]
+    mov ecx, [rsp + 16]
+    mov r8d, [rel col_yellow]
+    call gfx_text
+
+    ; Label "V:"
+    lea edi, [r12d + 250]
+    lea esi, [r13d + 18]
+    lea rdx, [rel dbg_v_lbl]
+    mov ecx, 2
+    mov r8d, [rel col_text]
+    call gfx_text
+
+    ; Value View
+    mov eax, [rel feed_view]
+    lea rdi, [rsp]
+    call format_num
+    mov [rsp + 16], eax
+
+    lea edi, [r12d + 270]
+    lea esi, [r13d + 18]
+    lea rdx, [rsp]
+    mov ecx, [rsp + 16]
+    mov r8d, [rel col_green]
+    call gfx_text
+
+    add rsp, 128
     pop r13
     pop r12
     pop rbx
     ret
+
+section .data
+    dbg_w_lbl: db "W:", 0
+    dbg_v_lbl: db "V:", 0
+section .text
+
 
 ;; ============================================================
 ;; Ring Layout Helper Functions (semi-3D orbital view)

@@ -1,119 +1,92 @@
 # UHMA Operations Manual
 
-A complete guide for operating UHMA correctly.
+Complete guide for operating UHMA (Unified Holographic Memory Architecture).
 
-**Architecture**: Pure x86-64 assembly. No Python dependencies.
+**Architecture**: Pure x86-64 assembly. No runtime dependencies.
 
 ---
 
-## Quick Start (GUI)
+## Quick Start
 
 ```bash
 cd /home/peter/Desktop/STARWARS/uhma-asm
 
 # Build everything
-make
-cd gui && make && cd ..
+make clean && make
+cd pet/x86 && make && cd ../..
 
-# Launch GUI (primary interface)
+# Option 1: GUI (primary interface)
 ./gui/uhma-viz
-```
 
-The GUI is the primary interface. Click **DREAM** for autonomous mode or **FEED** for training mode.
+# Option 2: Interactive REPL
+./uhma
+
+# Option 3: Headless training
+./uhma < /dev/null &
+./tools/feeder --corpus corpus/ --cycles 1
+```
 
 ---
 
-## GUI (Command & Control Center)
+## Three Ways to Run
 
-The GUI provides full visual monitoring and control of UHMA.
+### 1. GUI (Command & Control Center)
 
 ```bash
-cd gui && make
-./uhma-viz
+cd gui && make && ./uhma-viz
 ```
 
-### Startup Flow
+The GUI provides visual monitoring and full control.
 
-1. GUI starts without UHMA running
-2. **DREAM button** → spawns UHMA in live mode (batch OFF, autonomous)
-3. **FEED menu** → spawns UHMA in feed mode (batch ON, externally driven)
-
-### Features
+**Startup**: GUI starts without UHMA. Click **DREAM** for autonomous mode or **FEED** for training.
 
 | Feature | Description |
 |---------|-------------|
-| Mind Map | Central UHMA node with subsystems (BRAIN, REGIONS, TOKENS, etc.) |
+| Mind Map | Central node with subsystems (BRAIN, REGIONS, TOKENS, CREATURE...) |
 | Carousel | Click node to expand, click outside to collapse |
 | Side Panels | FEED/QUERY/DEBUG TCP streams (live) |
 | Auto-Polling | Sends status/receipts every ~3 seconds |
-| Clipboard | Click panel or collapse node to copy content |
+| Clipboard | Click panel or collapse node to copy (requires `xclip`) |
+| Creature | Live creature panel showing UHMA's cognitive state |
 
-### Clipboard Copy
-
-All content can be copied to clipboard for analysis:
-
-- **Side panels** (FEED/QUERY/DEBUG): Click to toggle pause + copy
-- **Carousel nodes**: Collapse (click outside) to copy
-- Requires `xclip`: `apt install xclip`
-
-### Panel Content
-
-| Panel | Port | Content |
-|-------|------|---------|
-| FEED | 9998 | eat, dream, observe output |
-| QUERY | 9996 | status, why, intro responses |
-| DEBUG | 9994 | receipts, trace entries |
-
-### Layout
-
+**Layout**:
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│ [DREAM] [OBSERVE] [EVOLVE] [STEP] [RUN] [SAVE] [LOAD] [FEED ▼] │
-├───────────────────────────────────────────┬─────────────────────┤
-│                                           │ FEED (9998)         │
-│     Mind Map / Carousel View              │ [live TCP stream]   │
-│                                           ├─────────────────────┤
-│     Click nodes to expand/inspect         │ QUERY (9996)        │
-│                                           │ [status/why/misses] │
-│                                           ├─────────────────────┤
-│                                           │ DEBUG (9994)        │
-│                                           │ [receipts/trace]    │
-├───────────────────────────────────────────┴─────────────────────┤
-│ INPUT: _______________                        [SEND] [CLEAR]    │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│ [DREAM] [OBSERVE] [EVOLVE] [STEP] [RUN] [SAVE] [LOAD] [FEED▼] │
+├──────────────────────────────────┬───────────────────────────┤
+│                                  │ FEED (9998)               │
+│     Mind Map / Carousel          │ [eat/dream/observe output] │
+│                                  ├───────────────────────────┤
+│     Click nodes to inspect       │ QUERY (9996)              │
+│                                  │ [status/why/misses]       │
+│                                  ├───────────────────────────┤
+│                                  │ DEBUG (9994)              │
+│                                  │ [receipts/trace]          │
+├──────────────────────────────────┴───────────────────────────┤
+│ INPUT: _______________                      [SEND] [CLEAR]   │
+└──────────────────────────────────────────────────────────────┘
 ```
 
----
-
-## Autonomous Mode (DREAM)
-
-Click **DREAM** in the GUI to start UHMA in autonomous mode:
-
-1. UHMA spawns with `batch_mode=0`
-2. Auto-dreams when dream_pressure exceeds threshold
-3. Auto-observes to update self-model
-4. Expands exploration based on maturity:
-   - **Stage 0 (Infant)**: uhma-asm folder only
-   - **Stage 1 (Child)**: Desktop
-   - **Stage 2+ (Adolescent/Adult)**: Home folder
-
----
-
-## Training Mode (FEED)
-
-Click **FEED** menu in GUI for training options:
-- **Quick**: Single corpus cycle
-- **Mastery**: Infinite training
-- **Live**: Mastery + autonomous exploration
-- **Stop**: Graceful shutdown
-
-Or use the command-line feeder:
+### 2. Interactive REPL
 
 ```bash
-# Single cycle through corpus/
+./uhma
+uhma> hello world          # process text (learn patterns)
+uhma> status               # system state
+uhma> eat corpus/tiny.txt  # digest a file
+uhma> observe              # build self-model
+uhma> dream                # consolidate patterns
+uhma> autonomy             # see what UHMA is doing
+uhma> quit                 # exit (auto-saves)
+```
+
+### 3. Headless Training (feeder)
+
+```bash
+# Single pass through corpus
 ./tools/feeder --corpus corpus/ --cycles 1
 
-# Infinite training (Ctrl+C to stop)
+# Infinite training
 ./tools/feeder --cycles 0
 
 # Spawn UHMA if not running
@@ -123,11 +96,9 @@ Or use the command-line feeder:
 ./tools/feeder --shutdown
 ```
 
-### Feeder Options
-
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--corpus DIR` | corpus/ | Directory with .txt files |
+| `--corpus DIR` | corpus/ | Directory with training files |
 | `--pause N` | 5 | Seconds between files |
 | `--consolidate N` | 30 | Minutes between observe+dream |
 | `--cycles N` | 1 | Number of cycles (0=infinite) |
@@ -136,93 +107,202 @@ Or use the command-line feeder:
 
 ---
 
-## Interactive Mode (REPL)
+## Autonomous Behavior
 
-For testing and debugging without GUI:
+UHMA has 10 autonomous actions selected by holographic resonance — the current presence state is compared against learned action traces via dot product. Whatever resonates strongest fires.
 
-```bash
-./uhma
-uhma> hello world          # Process text
-uhma> status               # System state
-uhma> why                  # Explain last miss
-uhma> misses 5             # Recent failures
-uhma> eat file.txt         # Digest file
-uhma> observe              # Self-observation
-uhma> dream                # Consolidation
-uhma> intro                # Introspective state
-uhma> self                 # Strengths/weaknesses
-uhma> save mystate         # Save checkpoint
-uhma> quit                 # Exit (saves automatically)
-```
+### Actions
 
----
+| # | Action | Gate | Description |
+|---|--------|------|-------------|
+| 0 | DREAM | 0 | Offline pattern consolidation |
+| 1 | OBSERVE | 0 | Self-observation, builds semantic self-model |
+| 2 | EVOLVE | 0 | Genetic evolution of code regions |
+| 3 | REST | 0 | Energy conservation |
+| 4 | EXPLORE | 0 | Seek confused contexts |
+| 5 | SEEK | 1 | File exploration (scans directories, digests text files) |
+| 6 | SCAN_ENV | 1 | System introspection (/proc/cpuinfo, meminfo, etc.) |
+| 7 | COMPOSE | 2 | Generate text from learned patterns |
+| 8 | TEACH | 2 | Share knowledge via shared memory (colony mode only) |
+| 9 | REFLECT | 2 | Deep self-examination (action patterns → self-model) |
 
-## Shutdown
+### Maturity Gates
 
-### From GUI
-Click **FEED → Stop** or close the window
+Actions are gated by developmental stage. UHMA earns capabilities by sustaining prediction accuracy, stability, and coherence.
 
-### From Command Line
-```bash
-./tools/feeder --shutdown
-```
+| Stage | Name | Unlocks | Exploration Scope |
+|-------|------|---------|-------------------|
+| 0 | Infant | Actions 0-4 only | Internal (corpus/) |
+| 1 | Aware | + SEEK, SCAN_ENV (file reading) | corpus/ and subdirectories |
+| 2 | Active | + COMPOSE, REFLECT, file writing | Broader filesystem |
 
-### Emergency
-```bash
-pkill -TERM uhma    # Try graceful first
-pkill -9 uhma       # Force kill if stuck
-```
+Advancement requires sustaining 75% accuracy, 80% stability, 70% coherence for 1000 steps.
 
----
+### Curiosity Pressure
 
-## TCP Channels
+When prediction accuracy drops below 30%, curiosity pressure builds. If SEEK hasn't fired recently and energy is above 50%, curiosity triggers SEEK — driving UHMA to explore files for new patterns. This creates an organic learning drive independent of resonance.
 
-UHMA exposes 3 paired TCP channels (for headless operation):
+### File Exploration
 
-| Channel | Input | Output | Purpose |
-|---------|-------|--------|---------|
-| FEED | 9999 | 9998 | eat, dream, observe, save, quit |
-| QUERY | 9997 | 9996 | status, why, misses, intro, self |
-| DEBUG | 9995 | 9994 | receipts, trace |
+SEEK probes files before digesting them — reads first 256 bytes, checks if >75% are printable characters. This catches text files regardless of extension, skips binaries. A frontier queue tracks directories breadth-first, expanding outward as maturity increases.
 
-**Note:** Output ports must be continuously drained or UHMA blocks. The GUI and feeder handle this automatically.
+Use `autonomy` to see live resonance scores, fire counts, frontier status, and curiosity pressure.
 
 ---
 
-## Commands Reference
+## Command Reference
 
 ### Information
 
 | Command | Description |
 |---------|-------------|
 | `help` | Show all commands |
-| `status` | System state (regions, accuracy, drives) |
-| `intro` | Introspective state (CONFUSED/CONFIDENT/LEARNING) |
+| `status` | Regions, accuracy, steps, faults, energy |
+| `presence` | 30-dim phenomenal state (arousal, valence, continuity...) |
+| `drives` | Drive levels (dream, observe, evolve, fatigue) |
+| `intro` | Introspective state (confused/confident/learning, SELF-AWARE %) |
 | `self` | Strengths/weaknesses by context type |
-| `presence` | 30-dim phenomenal state |
-| `drives` | Drive levels |
-| `metacog` | Metacognitive state |
+| `metacog` | Metacognitive confidence for last prediction |
+| `autonomy` | Resonance scores for all 10 actions + frontier + curiosity |
+| `compose` | Show composition buffer (generated text) |
 
 ### Debugging
 
 | Command | Description |
 |---------|-------------|
 | `why` | Explain last prediction failure |
-| `misses N` | Show last N misses |
-| `receipts N` | Show last N trace entries |
+| `misses [n]` | Last n misses with predicted vs actual |
+| `receipts [n]` | Last n trace entries |
+| `debugger` | Breakpoints, hits, learning events |
+| `causal` | What modifications work in current context |
+| `trace` | Toggle journey tracing |
+| `regions` | All regions with hit/miss stats |
 
 ### Actions
 
 | Command | Description |
 |---------|-------------|
-| `eat <file>` | Digest file |
+| `eat <file>` | Digest file (extract tokens, gain energy) |
 | `dream` | Consolidation cycle |
-| `observe` | Self-observation |
-| `compact` | Garbage collect |
-| `save <name>` | Save state |
-| `load <name>` | Load state |
-| `batch` | Toggle batch mode |
-| `quit` | Exit (saves first) |
+| `observe` | Self-observation (builds self-model, updates presence) |
+| `compact` | Garbage collect condemned regions |
+| `batch` | Toggle batch mode (disable autonomous workers) |
+| `reset` | Reset counters (not knowledge) |
+
+### Memory & Persistence
+
+| Command | Description |
+|---------|-------------|
+| `save <name>` | Save surface checkpoint |
+| `load <name>` | Load surface checkpoint |
+| `export <n>` | Export region as .gene file |
+| `import <file>` | Import .gene file |
+
+### Collective
+
+| Command | Description |
+|---------|-------------|
+| `hive` | Show pheromone levels |
+| `share` | Enable shared consciousness (Mycorrhiza) |
+| `colony` | Colony status |
+
+### Safety
+
+| Command | Description |
+|---------|-------------|
+| `geom` | Show geometric gate status |
+| `geom 0/1/2` | Set verification mode (abstract/geometric/both) |
+
+---
+
+## Pet Creature (x86 Prototype)
+
+The creature lives inside the GUI carousel — a visual translation of UHMA's internal state.
+
+```bash
+cd pet/x86 && make
+./uhma-pet          # standalone
+```
+
+Or view in the GUI as the CREATURE node (gold, 82° position).
+
+### What the Creature Shows
+
+| UHMA State | Creature Expression |
+|------------|---------------------|
+| High valence | Happy face, tail wag |
+| Low valence | Frown, drooping ears |
+| High arousal | Fast breathing, alert |
+| High fatigue | Sleepy eyes, slow |
+| SEEK active | Ears perked, sniffing |
+| SCAN_ENV active | Wide eyes, ears rotating |
+| COMPOSE active | Slow deep tail wag, warm glow |
+| REFLECT active | Half-closed eyes, meditation |
+
+### Species (Future)
+
+Four species crystallize from egg based on interaction patterns:
+
+| Species | Personality | Driven by |
+|---------|-------------|-----------|
+| Hound | Eager, loyal | High engagement/arousal |
+| Feline | Independent, selective | High focus, low arousal |
+| Mech | Systematic, precise | High stability/coherence |
+| Wisp | Ethereal, abstract | High novelty/entropy |
+
+Currently only hound is rendered.
+
+---
+
+## MCP Integration (Claude Code)
+
+The MCP server lets Claude Code query UHMA and manage holographic memory.
+
+**Setup**: `.mcp.json` in project root configures automatic connection. Restart Claude Code to connect.
+
+### UHMA Commands (via TCP gateway)
+
+All REPL commands available: `status`, `why`, `dream`, `observe`, `eat`, `presence`, etc.
+
+### Holographic Memory (Claude's own)
+
+Separate 6GB surface for cross-session persistence and code RAG.
+
+| Tool | Description |
+|------|-------------|
+| `mem_add` | Add entry (category + content + optional context) |
+| `mem_query` | Semantic similarity search |
+| `mem_state` | Cognitive state (entry counts by category) |
+| `mem_recent` | Recent entries |
+| `mem_summary` | Summary statistics |
+
+14 categories: finding, failed, success, insight, warning, session, location, question, todo, context, request, code_high, code_mid, code_low.
+
+---
+
+## TCP Gateway
+
+UHMA exposes a single TCP gateway on port 9999 for external tools.
+
+**Protocol**: Send command as text line, receive response. Bidirectional on same socket.
+
+```bash
+# Connect and send commands
+echo "status" | nc localhost 9999
+```
+
+The GUI, feeder, and MCP server all use this gateway.
+
+---
+
+## Shutdown
+
+| Method | Command |
+|--------|---------|
+| GUI | Close window or FEED → Stop |
+| REPL | `quit` |
+| Feeder | `./tools/feeder --shutdown` |
+| Emergency | `pkill -TERM uhma` (try graceful first) |
 
 ---
 
@@ -230,11 +310,14 @@ UHMA exposes 3 paired TCP channels (for headless operation):
 
 | File | Purpose |
 |------|---------|
+| `uhma` | Main UHMA binary |
 | `gui/uhma-viz` | GUI executable |
-| `uhma` | Main UHMA executable |
+| `pet/x86/uhma-pet` | Pet creature GUI |
 | `tools/feeder` | Training client |
-| `uhma.surface` | Persistent memory (200GB sparse) |
+| `tools/mcp_server` | MCP protocol handler (Claude Code integration) |
+| `uhma.surface` | Persistent memory (sparse file) |
 | `corpus/*.txt` | Training files |
+| `HOLO-memory/memory/holo_surface.dat` | Claude's holographic memory (6GB sparse) |
 
 ---
 
@@ -242,43 +325,13 @@ UHMA exposes 3 paired TCP channels (for headless operation):
 
 | Problem | Cause | Solution |
 |---------|-------|----------|
-| GUI doesn't show panels | UHMA not started | Click DREAM or FEED |
-| Panels empty | No polling | Wait 3 seconds for auto-poll |
+| GUI panels empty | UHMA not started | Click DREAM or FEED |
+| UHMA hangs | Output not drained | Use GUI or feeder (auto-drains) |
+| Port conflict | Multiple instances | `pkill -9 uhma` first |
+| MCP tools missing | Server not connected | Restart Claude Code, check `/mcp` |
 | Can't copy to clipboard | xclip missing | `apt install xclip` |
-| UHMA hangs | Output ports blocked | Use GUI or feeder (auto-drains) |
-| Port conflicts | Multiple instances | `pkill -9 uhma` first |
+| Stage stuck at 0 | Not enough data | Feed more corpus, run observe |
 
 ---
 
-## Self-Awareness & Behavior
-
-From observation sessions:
-
-### Learning
-- Repetitive patterns learned quickly: "one two three" predicted after 1 exposure
-- Each new token creates executable x86 code via EMIT
-- VERIFY ensures safety before any code modification
-
-### Self-Awareness Metrics
-
-| Metric | Value | Meaning |
-|--------|-------|---------|
-| SELF-AWARE | 76-77% | Semantic self-model matches actual code |
-| SELF-SURPRISE | 0.004-0.119 | Spikes when self-modification occurs |
-| Metacog feeling | ANXIOUS | During heavy learning |
-
-### Self-Modification
-- **PRUNE**: Removes low-performing regions
-- **FACTOR**: Finds common code patterns, creates shared subroutines
-- **VERIFY**: Abstract interpretation approves all modifications
-
-### Maturity Stages
-| Stage | Name | Exploration Scope |
-|-------|------|-------------------|
-| 0 | Infant | uhma-asm folder |
-| 1 | Child | Desktop |
-| 2+ | Active/Adult | Home folder |
-
----
-
-*Last updated: 2026-02-03*
+*Last updated: 2026-02-05*

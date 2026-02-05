@@ -1,8 +1,8 @@
 ; feeder.asm — TCP training client for UHMA (replaces feed.sh)
 ;
 ; @entry _start                   ; main entry point
-; @calls UHMA TCP ports 9999/9997 (feed/query input)
-; @drains UHMA TCP ports 9998/9996/9994 (output channels)
+; @calls UHMA TCP gateway port 9999 (single connection)
+; @drains gateway responses (single socket)
 ;
 ; COMMAND LINE:
 ;   ./feeder [OPTIONS]
@@ -14,8 +14,8 @@
 ;     --help            Show usage
 ;
 ; PROTOCOL:
-;   1. Connect to UHMA output ports (9998/9996/9994) as persistent drainers
-;   2. Send commands to input ports (9999/9997) and immediately return
+;   1. Connect to UHMA gateway (port 9999, single socket)
+;   2. Send commands and read responses on same socket
 ;   3. Poll drainers to prevent UHMA blocking
 ;   4. Fire and forget - responses handled by drain loop
 ;
@@ -34,17 +34,13 @@ section .data
     default_cons:    equ 30             ; minutes
     default_cycles:  equ 1
 
-    ; UHMA ports
-    FEED_IN:         equ 9999
-    FEED_OUT:        equ 9998
-    QUERY_IN:        equ 9997
-    QUERY_OUT:       equ 9996
-    DEBUG_OUT:       equ 9994
+    ; UHMA gateway port (single connection replaces 5 ports)
+    GW_PORT:         equ 9999
 
     ; Messages
     msg_start:       db "[FEEDER] Starting UHMA training client", 10, 0
     msg_connect:     db "[FEEDER] Connecting to UHMA...", 10, 0
-    msg_connected:   db "[FEEDER] Connected to all ports", 10, 0
+    msg_connected:   db "[FEEDER] Connected to gateway", 10, 0
     msg_conn_fail:   db "[FEEDER] Connection failed, retrying...", 10, 0
     msg_feeding:     db "[FEEDER] Feeding: ", 0
     msg_cycle:       db "[FEEDER] === CYCLE ", 0
@@ -98,12 +94,12 @@ section .bss
     do_spawn:        resd 1             ; spawn UHMA if not running
     uhma_pid:        resd 1             ; PID of spawned UHMA
 
-    ; Socket file descriptors
-    fd_feed_in:      resd 1             ; 9999 - send commands
-    fd_feed_out:     resd 1             ; 9998 - drain output
-    fd_query_in:     resd 1             ; 9997 - send queries
-    fd_query_out:    resd 1             ; 9996 - drain output
-    fd_debug_out:    resd 1             ; 9994 - drain output
+    ; Socket file descriptors (all point to same gateway socket)
+    fd_feed_in:      resd 1             ; gateway socket (send commands)
+    fd_feed_out:     resd 1             ; gateway socket (drain output)
+    fd_query_in:     resd 1             ; gateway socket (send queries)
+    fd_query_out:    resd 1             ; gateway socket (drain output)
+    fd_debug_out:    resd 1             ; gateway socket (drain output)
 
     ; Directory scanning
     dir_fd:          resd 1
@@ -380,7 +376,7 @@ _start:
     jmp exit
 
 ;; ============================================================
-;; connect_all — Connect to all UHMA ports
+;; connect_all — Connect to UHMA gateway (single socket)
 ;; Returns: eax=1 success, 0 failure
 ;; ============================================================
 connect_all:
@@ -389,39 +385,17 @@ connect_all:
     push r13
     sub rsp, 8
 
-    ; Connect to FEED_IN (9999)
-    mov edi, FEED_IN
+    ; Connect to gateway port 9999
+    mov edi, GW_PORT
     call connect_port
     test eax, eax
     js .conn_fail
+
+    ; All fd slots point to the same gateway socket
     mov [rel fd_feed_in], eax
-
-    ; Connect to FEED_OUT (9998)
-    mov edi, FEED_OUT
-    call connect_port
-    test eax, eax
-    js .conn_fail
     mov [rel fd_feed_out], eax
-
-    ; Connect to QUERY_IN (9997)
-    mov edi, QUERY_IN
-    call connect_port
-    test eax, eax
-    js .conn_fail
     mov [rel fd_query_in], eax
-
-    ; Connect to QUERY_OUT (9996)
-    mov edi, QUERY_OUT
-    call connect_port
-    test eax, eax
-    js .conn_fail
     mov [rel fd_query_out], eax
-
-    ; Connect to DEBUG_OUT (9994)
-    mov edi, DEBUG_OUT
-    call connect_port
-    test eax, eax
-    js .conn_fail
     mov [rel fd_debug_out], eax
 
     mov eax, 1

@@ -30,9 +30,10 @@ Context injection and MCP control interface for Claude Code.
 │  - VSA similarity search (1024-dim f64 vectors)             │
 │  - Category traces for resonance queries                    │
 ├─────────────────────────────────────────────────────────────┤
-│  UHMA Surface (8GB memory-mapped)                           │
+│  Standalone Surface (6GB mmap, holo_surface.dat)            │
 │  - 4096 entries × 2KB = 8MB entry storage                   │
 │  - 14 category traces × 8KB = 112KB trace storage           │
+│  - MPNet embeddings for semantic similarity (768→8192 dim)  │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -42,7 +43,7 @@ Context injection and MCP control interface for Claude Code.
 |------|----------|---------|
 | `mcp_server` | `../mcp_server` | MCP JSON-RPC server for Claude Code |
 | `feeder` | `../feeder` | Training client for UHMA |
-| `holo_mem.asm` | `../../holo_mem.asm` | Holographic memory (integrated in UHMA) |
+| `holo_mem.asm` | `../../holo_mem.asm` | Holographic memory (linked with MCP server, separate from UHMA) |
 
 ### MCP Server Setup
 
@@ -59,7 +60,7 @@ Create `.mcp.json` in project root:
 }
 ```
 
-**Important**: UHMA must be running before MCP server starts (connects to TCP ports 9997/9996).
+**Important**: UHMA must be running for UHMA commands (connects to TCP gateway port 9999). Holographic memory (`mem_*`) works standalone without UHMA.
 
 Restart Claude Code after changes. Verify with `/mcp`.
 
@@ -126,4 +127,4 @@ Original Python implementations moved to `archives/`:
 
 ---
 
-*Last updated: 2026-02-01*
+*Last updated: 2026-02-05*

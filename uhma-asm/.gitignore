@@ -59,8 +59,27 @@ cornell_movie_dialogs_corpus.zip
 HOLO-memory.zip
 UHMAmcp.zip
 
+# Generated binaries
+tools/feeder
+tools/mcp_server
+gui/uhma-viz
+pet/x86/uhma-pet
+pet/x86/creature-standalone
+
+# Test files
+test_*.asm
+
+# Large artifacts (session logs, PostScript, etc.)
+session_observation
+gui/time
+
+# Holographic memory surface (6GB sparse)
+HOLO-memory/memory/holo_surface.dat
+
+# Weights (large, downloadable)
+embed/weights/
+weights/
+
 # OS
 .DS_Store
-.DS_Store
 codebase.txt
-embed/weights/

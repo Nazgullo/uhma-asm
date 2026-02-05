@@ -93,6 +93,8 @@ CS_MOOD         equ 84
 CS_WAG_SPEED    equ 88
 CS_WANDER_TMR   equ 92
 CS_BOUNCE_PHASE equ 96
+CS_COGNITIVE_LOAD equ 100
+CS_PATTERN_TYPE equ 104
 
 ;; ============================================================
 ;; render_creature_panel — Draw creature inside panel bounds
@@ -176,6 +178,55 @@ render_creature_panel:
     call gfx_fill_rect
 .not_sleeping_bg:
 
+    ; === Compute cognitive body color ===
+    ; Cognitive load shifts body color: high load → warmer (more red/amber)
+    ; low load → cooler (base color with slight blue tint)
+    mov eax, [rbx + CS_COGNITIVE_LOAD]
+    mov r8d, [rbx + CS_BODY_COLOR]
+
+    cmp eax, 700
+    jl .cog_not_hot
+    ; High cognitive load: shift toward amber/gold (add red, reduce blue)
+    mov ecx, r8d
+    shr ecx, 16
+    and ecx, 0xFF           ; red channel
+    add ecx, 20
+    cmp ecx, 255
+    jle .r_ok
+    mov ecx, 255
+.r_ok:
+    and r8d, 0x0000FFFF
+    shl ecx, 16
+    or r8d, ecx
+    ; Reduce blue channel
+    mov ecx, r8d
+    and ecx, 0xFF           ; blue channel
+    sub ecx, 15
+    jns .b_ok
+    xor ecx, ecx
+.b_ok:
+    and r8d, 0x00FFFF00
+    or r8d, ecx
+    jmp .cog_color_done
+
+.cog_not_hot:
+    cmp eax, 300
+    jg .cog_color_done
+    ; Low cognitive load: slight blue tint (calm processing)
+    mov ecx, r8d
+    and ecx, 0xFF           ; blue channel
+    add ecx, 15
+    cmp ecx, 255
+    jle .b2_ok
+    mov ecx, 255
+.b2_ok:
+    and r8d, 0x00FFFF00
+    or r8d, ecx
+
+.cog_color_done:
+    ; r8d = adjusted body color, save for reuse
+    mov [rbp - 32], r8d     ; store cognitive-adjusted body color
+
     ; === BODY (main oval approximation) ===
     ; Body: 80x44 rect centered at (cx, cy), with breath expand
     mov edi, r12d
@@ -187,7 +238,7 @@ render_creature_panel:
     lea edx, [edx + r14d*2]
     mov ecx, 44
     add ecx, r14d
-    mov r8d, [rbx + CS_BODY_COLOR]
+    mov r8d, [rbp - 32]     ; use cognitive-adjusted color
     call gfx_fill_rect
 
     ; Body highlight (lighter stripe on top)
@@ -208,8 +259,22 @@ render_creature_panel:
     sub esi, 52
     mov edx, 36
     mov ecx, 30
-    mov r8d, [rbx + CS_BODY_COLOR]
+    mov r8d, [rbp - 32]     ; cognitive-adjusted color
     call gfx_fill_rect
+
+    ; === Self-referential glow ===
+    ; When UHMA is processing its own code, subtle highlight around head
+    cmp dword [rbx + CS_PATTERN_TYPE], 3  ; self-referential
+    jne .no_glow
+    mov edi, r12d
+    sub edi, 20
+    mov esi, r13d
+    sub esi, 54
+    mov edx, 40
+    mov ecx, 34
+    mov r8d, 0x00FFD700     ; gold glow outline
+    call gfx_rect
+.no_glow:
 
     ; === EARS ===
     ; Ear position: 0=flat, 500=neutral, 1000=perked
@@ -230,7 +295,7 @@ render_creature_panel:
     sub esi, r15d
     mov edx, 8
     mov ecx, r15d
-    mov r8d, [rbx + CS_BODY_COLOR]
+    mov r8d, [rbp - 32]     ; cognitive-adjusted color
     call gfx_fill_rect
 
     ; Right ear
@@ -241,7 +306,7 @@ render_creature_panel:
     sub esi, r15d
     mov edx, 8
     mov ecx, r15d
-    mov r8d, [rbx + CS_BODY_COLOR]
+    mov r8d, [rbp - 32]     ; cognitive-adjusted color
     call gfx_fill_rect
 
     ; Ear tips (darker)
@@ -389,7 +454,7 @@ render_creature_panel:
     add esi, 22
     mov edx, 10
     mov ecx, 18
-    mov r8d, [rbx + CS_BODY_COLOR]
+    mov r8d, [rbp - 32]     ; cognitive-adjusted color
     call gfx_fill_rect
 
     ; Front right
@@ -399,7 +464,7 @@ render_creature_panel:
     add esi, 22
     mov edx, 10
     mov ecx, 18
-    mov r8d, [rbx + CS_BODY_COLOR]
+    mov r8d, [rbp - 32]
     call gfx_fill_rect
 
     ; Back left
@@ -409,7 +474,7 @@ render_creature_panel:
     add esi, 22
     mov edx, 10
     mov ecx, 18
-    mov r8d, [rbx + CS_BODY_COLOR]
+    mov r8d, [rbp - 32]
     call gfx_fill_rect
 
     ; Back right
@@ -419,7 +484,7 @@ render_creature_panel:
     add esi, 22
     mov edx, 10
     mov ecx, 18
-    mov r8d, [rbx + CS_BODY_COLOR]
+    mov r8d, [rbp - 32]
     call gfx_fill_rect
 
     ; Paws (darker tips)
@@ -518,7 +583,7 @@ render_creature_panel:
     add edx, 55
     add edx, r15d       ; x1 = tip with wag
     mov ecx, r14d       ; y1 = tip_y
-    mov r8d, [rbx + CS_BODY_COLOR]
+    mov r8d, [rbp - 32]     ; cognitive-adjusted color
     call gfx_line
 
     ; Tail tuft (small rect at tip)
@@ -537,7 +602,7 @@ render_creature_panel:
     add esi, eax
     mov edx, 8
     mov ecx, 6
-    mov r8d, [rbx + CS_BODY_COLOR]
+    mov r8d, [rbp - 32]     ; cognitive-adjusted color
     call gfx_fill_rect
 
     ; === SLEEP INDICATORS ===

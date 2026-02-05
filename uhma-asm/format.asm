@@ -1,11 +1,13 @@
-; format.asm — Output formatting with channel routing
+; format.asm — Output formatting with channel routing + buffer capture
 ;
 ; @entry set_output_channel(edi=fd) -> routes output to socket fd
 ; @entry reset_output_channel() -> resets output to stdout (fd=1)
-; @entry print_str(rdi=ptr, rsi=len) -> writes to output_fd
-; @entry print_cstr(rdi=ptr) -> writes null-terminated string to output_fd
-; @entry print_u64(rdi=val) -> prints decimal to output_fd
-; @entry print_i64(rdi=val) -> prints signed decimal to output_fd
+; @entry set_output_buffer() -> routes output to internal 64KB buffer
+; @entry get_output_buffer() -> rax=buf_ptr, edx=length
+; @entry print_str(rdi=ptr, rsi=len) -> writes to output_fd or buffer
+; @entry print_cstr(rdi=ptr) -> writes null-terminated string
+; @entry print_u64(rdi=val) -> prints decimal
+; @entry print_i64(rdi=val) -> prints signed decimal
 ; @entry print_hex64(rdi=val) -> prints 0x-prefixed 16-digit hex
 ; @entry print_hex32(edi=val) -> prints 8-digit hex (no prefix)
 ; @entry print_f32(xmm0=val) -> prints float with 3 decimals
@@ -16,21 +18,26 @@
 ;
 ; OUTPUT ROUTING:
 ;   output_fd variable (default=1) controls where all print functions write
+;   output_fd = -1: buffer capture mode (accumulates in output_buffer)
 ;   set_output_channel(fd) changes target, reset_output_channel() restores stdout
-;   Used by repl.asm to route TCP channel responses to paired output socket
+;   set_output_buffer() enables capture, get_output_buffer() retrieves result
+;   Used by gateway.asm to capture command responses before framing
 ;
 ; GOTCHAS:
 ;   - All print functions use output_fd, not hardcoded STDOUT
 ;   - Caller must call reset_output_channel() after TCP response
+;   - Buffer mode: output_fd=-1, all writes go to output_buffer
 ;
 %include "syscalls.inc"
 %include "constants.inc"
 
 section .bss
     fmt_buf: resb 128                ; scratch buffer for formatting
+    output_buffer: resb 65536        ; 64KB response accumulation buffer
 
 section .data
-    output_fd: dd 1                  ; current output fd (1=stdout, or channel socket)
+    output_fd: dd 1                  ; current output fd (1=stdout, or channel socket, -1=buffer)
+    output_buf_pos: dd 0             ; current write position in output_buffer
 
 section .text
 
@@ -52,17 +59,75 @@ reset_output_channel:
     ret
 
 ;; ============================================================
+;; set_output_buffer — Enable buffer capture mode
+;; All print_str calls accumulate in output_buffer instead of writing
+;; ============================================================
+global set_output_buffer
+set_output_buffer:
+    mov dword [rel output_fd], -1
+    mov dword [rel output_buf_pos], 0
+    ret
+
+;; ============================================================
+;; get_output_buffer — Get captured buffer contents
+;; Returns: rax=buffer ptr, edx=length
+;; ============================================================
+global get_output_buffer
+get_output_buffer:
+    lea rax, [rel output_buffer]
+    mov edx, [rel output_buf_pos]
+    ret
+
+;; ============================================================
 ;; print_str(str, len)
 ;; rdi=str ptr, rsi=len
 ;; Writes to output_fd (stdout or channel socket)
 ;; ============================================================
 global print_str
 print_str:
+    mov edx, [rel output_fd]
+    cmp edx, -1
+    je .buffer_mode
+    ; Normal write to fd
     mov rdx, rsi
     mov rsi, rdi
     mov edi, [rel output_fd]
     mov rax, SYS_WRITE
     syscall
+    ret
+.buffer_mode:
+    ; Accumulate into output_buffer
+    ; rdi=src, rsi=len
+    push rcx
+    mov ecx, [rel output_buf_pos]
+    lea rdx, [rcx + rsi]
+    cmp edx, 65536              ; don't overflow buffer
+    jg .buffer_truncate
+    mov rdx, rsi                ; bytes to copy
+    jmp .buffer_copy
+.buffer_truncate:
+    mov edx, 65536
+    sub edx, ecx               ; remaining space
+    test edx, edx
+    jle .buffer_done
+.buffer_copy:
+    ; memcpy: output_buffer+pos <- rdi, edx bytes
+    push rdi
+    push rsi
+    lea rax, [rel output_buffer]
+    add rax, rcx                ; dest = output_buffer + pos
+    mov ecx, edx               ; count
+    mov rsi, rdi                ; src
+    mov rdi, rax                ; dest
+    rep movsb
+    pop rsi
+    pop rdi
+    ; Update position
+    mov ecx, [rel output_buf_pos]
+    add ecx, edx
+    mov [rel output_buf_pos], ecx
+.buffer_done:
+    pop rcx
     ret
 
 ;; ============================================================
@@ -72,21 +137,16 @@ print_str:
 ;; ============================================================
 global print_cstr
 print_cstr:
-    push rdi
     ; find length
-    xor rcx, rcx
+    xor rsi, rsi
 .scan:
-    cmp byte [rdi + rcx], 0
+    cmp byte [rdi + rsi], 0
     je .found
-    inc rcx
+    inc rsi
     jmp .scan
 .found:
-    mov rdx, rcx              ; len
-    pop rsi                   ; buf
-    mov edi, [rel output_fd]
-    mov rax, SYS_WRITE
-    syscall
-    ret
+    ; rdi=str, rsi=len — tail-call print_str
+    jmp print_str
 
 ;; ============================================================
 ;; print_u64(val)
@@ -118,12 +178,9 @@ print_u64:
 .print:
     ; rdi points to start of digits
     lea rsi, [rel fmt_buf + 64]
-    sub rsi, rdi               ; len
-    mov rdx, rsi
-    mov rsi, rdi
-    mov edi, [rel output_fd]
-    mov rax, SYS_WRITE
-    syscall
+    sub rsi, rdi               ; len = end - start
+    ; rdi=str, rsi=len — call print_str (handles fd or buffer)
+    call print_str
     pop rbp
     pop rbx
     ret
@@ -238,8 +295,15 @@ print_hex32:
 global print_f32
 print_f32:
     sub rsp, 16
-    ; Check negative
+    
+    ; Check for NaN/Inf
     movd eax, xmm0
+    mov ecx, eax
+    and ecx, 0x7F800000        ; mask exponent
+    cmp ecx, 0x7F800000
+    je .nan_inf
+
+    ; Check negative
     test eax, eax
     jns .pos
     push rax
@@ -292,6 +356,28 @@ print_f32:
     add rsp, 16
     ret
 
+.nan_inf:
+    ; Check if NaN (mantissa != 0)
+    mov ecx, eax
+    and ecx, 0x007FFFFF
+    jnz .is_nan
+    ; Is Inf
+    lea rdi, [rel inf_str]
+    call print_cstr
+    add rsp, 16
+    ret
+.is_nan:
+    lea rdi, [rel nan_str]
+    call print_cstr
+    add rsp, 16
+    ret
+
+section .data
+    nan_str: db "NaN", 0
+    inf_str: db "Inf", 0
+section .text
+
+
 ;; ============================================================
 ;; print_f64(val)
 ;; xmm0=f64 value, prints fixed point (4 decimals)
@@ -301,8 +387,15 @@ print_f64:
     sub rsp, 24
     movsd [rsp], xmm0           ; save original value
 
-    ; Check for negative
+    ; Check for NaN/Inf
     movq rax, xmm0
+    mov rcx, rax
+    shr rcx, 52
+    and ecx, 0x7FF             ; mask exponent
+    cmp ecx, 0x7FF
+    je .f64_nan_inf
+
+    ; Check for negative
     test rax, rax
     jns .f64_pos
     push rax
@@ -328,6 +421,27 @@ print_f64:
     call print_str
 
     ; Fractional part (4 digits)
+    jmp .f64_frac_continue
+
+.f64_nan_inf:
+    ; Check if NaN (mantissa != 0)
+    mov rcx, rax
+    mov rdx, 0x000FFFFFFFFFFFFF
+    and rcx, rdx
+    jnz .f64_is_nan
+    ; Is Inf
+    lea rdi, [rel inf_str]
+    call print_cstr
+    add rsp, 24
+    ret
+.f64_is_nan:
+    lea rdi, [rel nan_str]
+    call print_cstr
+    add rsp, 24
+    ret
+
+.f64_frac_continue:
+
     movsd xmm0, [rsp]           ; reload value
     ; Make sure it's positive (in case original was negative)
     movq rax, xmm0
