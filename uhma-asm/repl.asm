@@ -1,13 +1,15 @@
 ; repl.asm — Interactive command loop with autonomous idle processing
 ;
 ; @entry repl_run() -> never returns (exits via quit/EOF)
+; @entry repl_show_autonomy() -> display autonomy loop state (10 actions, frontier, curiosity)
+; @entry repl_show_compose() -> display composition buffer contents
 ; @calls introspect.asm:tick_workers (on poll timeout - autonomous behavior)
 ; @calls dispatch.asm:process_input
 ; @calls io.asm:digest_file
 ; @calls dreams.asm:dream_cycle
 ; @calls observe.asm:observe_cycle
 ; @calls surface.asm:surface_freeze
-; @calls channels.asm:channels_poll, channels_read, get_channel_fd
+; @calls gateway.asm:gateway_poll, gateway_read, gateway_respond
 ; @calledby boot.asm:_start
 ;
 ; AUTONOMOUS LOOP:
@@ -18,7 +20,7 @@
 ;
 ; I/O SOURCES:
 ;   stdin (-1)     - interactive terminal (skipped if stdin_active=0)
-;   TCP channels   - 6-channel paired I/O (FEED/QUERY/DEBUG)
+;   TCP gateway    - single-port framed I/O (port 9999)
 ;
 ; GOTCHAS:
 ;   - Commands are plain words, NOT :prefixed
@@ -62,6 +64,8 @@ section .data
                     db "  export <n>    Export region n as .gene file (spore)", 10
                     db "  import <file> Import .gene file (infect with culture)", 10
                     db "  reset         Reset counters (not knowledge)", 10
+                    db "  autonomy      Show autonomy loop resonance scores", 10
+                    db "  compose       Show last composition (generated text)", 10
                     db "  trace         Toggle debug tracing on/off", 10
                     db "  quit          Exit", 10
                     db "  <text>        Process as token sequence", 10, 0
@@ -90,6 +94,55 @@ section .data
     hive_evolve:    db "  Evolve pheromone:  ", 0
     hive_fatigue:   db "  Fatigue:           ", 0
     hive_thresh:    db "  Activation threshold: 0.5", 10, 0
+    auto_hdr:       db "--- Autonomy Loop (Resonance Scores) ---", 10, 0
+    auto_status:    db "  Status: ", 0
+    auto_active:    db "RESONANCE ACTIVE", 10, 0
+    auto_cold:      db "COLD START (pressure fallback)", 10, 0
+    auto_last:      db "  Last action: ", 0
+    auto_count:     db "  Selections: ", 0
+    auto_gated:     db " [GATED]", 0
+    auto_disabled:  db " [OFF]", 0
+    auto_fires:     db " fires=", 0
+    auto_gate_lbl:  db " gate=", 0
+    auto_explore_lbl: db "  Explore path: ", 0
+    auto_files_seen:  db "  Files seen: ", 0
+    auto_frontier:    db "  Frontier: ", 0
+    auto_frontier_entries: db " entries", 10, 0
+    auto_curiosity_lbl: db "  Curiosity pressure: ", 0
+    auto_prefix:    db "  ", 0
+    auto_colon:     db ": ", 0
+
+    ; Compose display strings
+    compose_hdr:    db "--- Composition Buffer ---", 10, 0
+    compose_empty:  db "  (empty — no composition yet)", 10, 0
+    compose_len_lbl: db "  Length: ", 0
+    compose_tokens: db " tokens", 10, 0
+    compose_conf_lbl: db "  Avg confidence: ", 0
+    compose_text_lbl: db "  Text: ", 0
+
+    ; Action name strings for display (padded to 10 chars for alignment)
+    align 8
+    auto_action_names:
+        dq auto_name_dream
+        dq auto_name_observe
+        dq auto_name_evolve
+        dq auto_name_rest
+        dq auto_name_explore
+        dq auto_name_seek
+        dq auto_name_scan_env
+        dq auto_name_compose
+        dq auto_name_teach
+        dq auto_name_reflect
+    auto_name_dream:    db "DREAM   ", 0
+    auto_name_observe:  db "OBSERVE ", 0
+    auto_name_evolve:   db "EVOLVE  ", 0
+    auto_name_rest:     db "REST    ", 0
+    auto_name_explore:  db "EXPLORE ", 0
+    auto_name_seek:     db "SEEK    ", 0
+    auto_name_scan_env: db "SCAN_ENV", 0
+    auto_name_compose:  db "COMPOSE ", 0
+    auto_name_teach:    db "TEACH   ", 0
+    auto_name_reflect:  db "REFLECT ", 0
     colony_hdr:     db "--- Mycorrhiza Colony ---", 10, 0
     colony_mode:    db "  Mode: ", 0
     colony_solo:    db "SOLO (isolated)", 10, 0
@@ -118,9 +171,9 @@ section .bss
     input_buf:      resb INPUT_BUF_SIZE
     buf_pos:        resq 1            ; current read position in buffer
     buf_end:        resq 1            ; end of valid data in buffer
-    current_channel: resd 1           ; -1=stdin, 0-5=TCP channel
 
 section .data
+    current_channel: dd -1            ; -1=stdin, -2=timeout, >=0=gateway client_id
 global stdin_active
     stdin_active:   dd 1              ; 0 if stdin hit EOF
     batch_msg:      db "[BATCH] Mode: ", 0
@@ -156,6 +209,9 @@ extern persist_load
 extern drives_show
 extern tick_workers            ; from introspect.asm - autonomous idle processing
 extern batch_mode              ; from introspect.asm - when set, skip autonomous workers
+extern encode_presence_vec     ; from introspect.asm - encode presence into autonomy vec
+extern get_maturity_level      ; from maturity.asm - current stage (0-2)
+extern holo_cosim_f64          ; from vsa.asm - cosine similarity
 extern presence_show
 extern vocab_count
 extern holo_dot_f64
@@ -184,11 +240,11 @@ extern receipt_show_misses    ; from receipt.asm - show last N misses
 extern intro_report           ; from receipt.asm - introspective state report
 extern self_show_context_types ; from receipt.asm - trace-based context strengths
 extern causal_report          ; from receipt.asm - causal model report
-extern channels_poll          ; from channels.asm - poll all channels + stdin
-extern channels_read          ; from channels.asm - read from TCP channel
-extern channels_respond       ; from channels.asm - write to paired output channel
-extern get_channel_fd         ; from channels.asm - get socket fd for channel
-extern set_output_channel     ; from format.asm - route output to channel
+extern gateway_poll           ; from gateway.asm - poll gateway + stdin
+extern gateway_read           ; from gateway.asm - read frame from client
+extern gateway_respond        ; from gateway.asm - send framed response to client
+extern set_output_buffer      ; from format.asm - enable buffer capture mode
+extern get_output_buffer      ; from format.asm - get captured buffer (rax=ptr, edx=len)
 extern reset_output_channel   ; from format.asm - reset to stdout
 
 ;; ============================================================
@@ -216,11 +272,25 @@ repl_run:
     cmp rax, rcx
     jl .have_data
 
-    ; Poll all channels (stdin + 6 TCP) for data
-    call channels_poll
+    ; Flush pending gateway response if we were in buffer mode
+    ; (previous command was from TCP client — send captured output back)
+    cmp dword [rel current_channel], -1
+    jle .no_flush                 ; stdin or timeout, nothing to flush
+    call get_output_buffer        ; rax=buf, edx=len
+    test edx, edx
+    jz .no_flush
+    mov edi, [rel current_channel]
+    mov rsi, rax
+    ; edx already has length
+    call gateway_respond
+.no_flush:
+    call reset_output_channel
+
+    ; Poll gateway (stdin + single TCP port) for data
+    call gateway_poll
     mov [rel current_channel], eax
 
-    ; Check result: -2=timeout, -1=stdin, 0-5=TCP channel
+    ; Check result: -2=timeout, -1=stdin, >=0=client_id
     cmp eax, -2
     jne .not_timeout
     ; Timeout - do autonomous work (dream/observe/self-ingest based on pressure)
@@ -229,7 +299,7 @@ repl_run:
 .not_timeout:
 
     cmp eax, -1
-    jne .read_tcp_channel
+    jne .read_tcp_client
 
     ; Check if stdin is still active
     cmp dword [rel stdin_active], 0
@@ -247,32 +317,27 @@ repl_run:
     mov rsi, INPUT_BUF_SIZE - 1
     call read_stdin
 
-    ; Check EOF on stdin - if channels active, don't quit, just loop
+    ; Check EOF on stdin - if gateway active, don't quit, just loop
     test rax, rax
     jg .set_buffer
-    ; EOF on stdin - mark dead and keep running for channel I/O
+    ; EOF on stdin - mark dead and keep running for gateway I/O
     mov dword [rel stdin_active], 0
     jmp .loop
 
-.read_tcp_channel:
-    ; Read from TCP channel (eax = input channel 0,2,4)
+.read_tcp_client:
+    ; Read from gateway client (eax = client_id 0-7)
     mov edi, [rel current_channel]
     lea rsi, [rel input_buf]
     mov edx, INPUT_BUF_SIZE - 1
-    call channels_read
+    call gateway_read
     mov r12d, eax                 ; save bytes read
 
     ; Check for disconnect/error
     test eax, eax
-    jle .loop                     ; channel closed, poll again
+    jle .loop                     ; client gone, poll again
 
-    ; Route output to paired output channel (input+1)
-    ; Get socket fd from channels and pass to set_output_channel
-    mov edi, [rel current_channel]
-    inc edi                       ; output channel = input + 1
-    call get_channel_fd           ; eax = socket fd for channel edi
-    mov edi, eax
-    call set_output_channel
+    ; Route output to buffer (will be sent back via gateway_respond at top of loop)
+    call set_output_buffer
 
     mov eax, r12d                 ; restore bytes read for .set_buffer
     jmp .set_buffer
@@ -468,6 +533,31 @@ repl_run:
     je .cmd_hive
     jmp .not_hive
 .not_hive:
+
+    ; "autonomy" (show autonomy loop resonance scores)
+    cmp dword [rbx], 'auto'
+    jne .not_autonomy
+    cmp dword [rbx + 4], 'nomy'
+    jne .not_autonomy
+    movzx eax, byte [rbx + 8]
+    test eax, eax
+    jz .cmd_autonomy
+    cmp eax, 10
+    je .cmd_autonomy
+    jmp .not_autonomy
+.not_autonomy:
+
+    ; "compose" (show composition buffer)
+    cmp dword [rbx], 'comp'
+    jne .not_compose
+    cmp dword [rbx + 4], 'ose'
+    jne .not_compose
+    movzx eax, byte [rbx + 7]
+    test eax, eax
+    jz .cmd_compose
+    cmp eax, 10
+    je .cmd_compose
+.not_compose:
 
     ; "geom" (show geometric gate status)
     cmp dword [rbx], 'geom'
@@ -824,6 +914,16 @@ repl_run:
     mov byte [rsi], 0
 .eat_stripped:
     call digest_file
+    jmp .loop
+
+.cmd_autonomy:
+    ; Show autonomy loop resonance scores
+    call repl_show_autonomy
+    jmp .loop
+
+.cmd_compose:
+    ; Show composition buffer contents
+    call repl_show_compose
     jmp .loop
 
 .cmd_hive:
@@ -1333,6 +1433,258 @@ repl_show_status:
     call print_f32
     call print_newline
 
+    pop rbx
+    ret
+
+;; ============================================================
+;; repl_show_autonomy — Show autonomy loop resonance scores
+;; ============================================================
+repl_show_autonomy:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 16                   ; 5 pushes (odd) → aligned, sub must be mult of 16
+                                  ; [rsp+0] = maturity_level (u32), [rsp+8] = pad
+
+    mov rbx, SURFACE_BASE
+    lea r12, [rbx + STATE_OFFSET]
+
+    lea rdi, [rel auto_hdr]
+    call print_cstr
+
+    ; Get maturity level once
+    call get_maturity_level
+    mov [rsp], eax
+
+    ; Encode current presence for cosim queries
+    call encode_presence_vec
+
+    ; Loop over all 10 actions
+    xor r13d, r13d                ; action index
+
+.auto_action_loop:
+    cmp r13d, ACTION_COUNT
+    jge .auto_after_loop
+
+    ; Print "  NAME: "
+    lea rdi, [rel auto_prefix]
+    call print_cstr
+    lea rax, [rel auto_action_names]
+    mov rdi, [rax + r13 * 8]
+    call print_cstr
+    lea rdi, [rel auto_colon]
+    call print_cstr
+
+    ; Check if action is enabled and not gated
+    imul r14d, r13d, ACTION_REG_ENTRY_SIZE
+    mov eax, [r12 + ST_ACTION_REGISTRY + r14 + ACTION_REG_FLAGS]
+    test eax, eax
+    jz .auto_show_disabled
+
+    mov eax, [r12 + ST_ACTION_REGISTRY + r14 + ACTION_REG_GATE]
+    cmp eax, [rsp]                ; gate > maturity?
+    jg .auto_show_gated
+
+    ; Action is available — compute and show cosim score
+    imul r15d, r13d, HOLO_VEC_BYTES
+    lea rdi, [r12 + ST_AUTONOMY_VEC]
+    lea rsi, [r12 + ST_ACTION_TRACES]
+    add rsi, r15
+    call holo_cosim_f64
+    cvtsd2ss xmm0, xmm0
+    call print_f32
+
+    ; Show fire count
+    lea rdi, [rel auto_fires]
+    call print_cstr
+    mov edi, [r12 + ST_ACTION_REGISTRY + r14 + ACTION_REG_FIRES]
+    call print_u64
+    call print_newline
+    jmp .auto_next_action
+
+.auto_show_gated:
+    lea rdi, [rel auto_gated]
+    call print_cstr
+    lea rdi, [rel auto_gate_lbl]
+    call print_cstr
+    mov edi, [r12 + ST_ACTION_REGISTRY + r14 + ACTION_REG_GATE]
+    call print_u64
+    call print_newline
+    jmp .auto_next_action
+
+.auto_show_disabled:
+    lea rdi, [rel auto_disabled]
+    call print_cstr
+    call print_newline
+
+.auto_next_action:
+    inc r13d
+    jmp .auto_action_loop
+
+.auto_after_loop:
+    ; Status: active or cold start
+    lea rdi, [rel auto_status]
+    call print_cstr
+    cmp dword [r12 + ST_AUTONOMY_ACTIVE], 0
+    je .auto_is_cold
+    lea rdi, [rel auto_active]
+    jmp .auto_print_status
+.auto_is_cold:
+    lea rdi, [rel auto_cold]
+.auto_print_status:
+    call print_cstr
+
+    ; Selection count
+    lea rdi, [rel auto_count]
+    call print_cstr
+    mov edi, [r12 + ST_AUTONOMY_COLD_COUNT]
+    call print_u64
+    call print_newline
+
+    ; Show explore path
+    lea rdi, [rel auto_explore_lbl]
+    call print_cstr
+    lea rdi, [r12 + ST_EXPLORE_PATH]
+    call print_cstr
+    call print_newline
+
+    ; Show files seen count
+    lea rdi, [rel auto_files_seen]
+    call print_cstr
+    mov edi, [r12 + ST_FILES_SEEN_COUNT]
+    call print_u64
+    call print_newline
+
+    ; Show frontier status (entries = write_pos - read_pos, approximate)
+    lea rdi, [rel auto_frontier]
+    call print_cstr
+    mov eax, [r12 + ST_FRONTIER_WRITE_POS]
+    sub eax, [r12 + ST_FRONTIER_READ_POS]
+    ; Rough entry count: count null terminators would be expensive, just show byte delta
+    mov edi, eax
+    call print_u64
+    lea rdi, [rel auto_frontier_entries]
+    call print_cstr
+
+    ; Show curiosity pressure
+    lea rdi, [rel auto_curiosity_lbl]
+    call print_cstr
+    movsd xmm0, [r12 + ST_CURIOSITY_PRESSURE]
+    cvtsd2ss xmm0, xmm0
+    call print_f32
+    call print_newline
+
+    add rsp, 16
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; repl_show_compose — Show composition buffer contents
+;; ============================================================
+repl_show_compose:
+    push rbx
+    push r12
+    sub rsp, 8                        ; 2 pushes (even) → not aligned, sub 8
+
+    mov rbx, SURFACE_BASE
+    lea r12, [rbx + STATE_OFFSET]
+
+    lea rdi, [rel compose_hdr]
+    call print_cstr
+
+    ; Check if composition buffer has content
+    mov eax, [r12 + ST_COMPOSITION_LEN]
+    test eax, eax
+    jz .compose_is_empty
+
+    ; Show length
+    lea rdi, [rel compose_len_lbl]
+    call print_cstr
+    mov edi, [r12 + ST_COMPOSITION_LEN]
+    call print_u64
+    lea rdi, [rel compose_tokens]
+    call print_cstr
+
+    ; Show avg confidence
+    lea rdi, [rel compose_conf_lbl]
+    call print_cstr
+    movss xmm0, [r12 + ST_COMPOSITION_CONF]
+    call print_f32
+    call print_newline
+
+    ; Print composition text (tokens stored as u32 array)
+    lea rdi, [rel compose_text_lbl]
+    call print_cstr
+
+    mov ecx, [r12 + ST_COMPOSITION_LEN]
+    lea rbx, [r12 + ST_COMPOSITION_BUF]
+    xor edx, edx
+.compose_print_loop:
+    cmp edx, ecx
+    jge .compose_print_done
+    mov edi, [rbx + rdx * 4]         ; token as u32
+    cmp edi, 127
+    jg .compose_skip_token            ; skip non-ASCII
+    cmp edi, 32
+    jl .compose_print_space           ; control chars → space
+    ; Print single char
+    push rcx
+    push rdx
+    sub rsp, 8                        ; align: 2 pushes + sub 8
+    mov [rsp], edi                    ; store char on stack
+    mov eax, SYS_WRITE
+    mov edi, 1                        ; stdout
+    lea rsi, [rsp]
+    mov edx, 1
+    syscall
+    add rsp, 8
+    pop rdx
+    pop rcx
+    jmp .compose_next_token
+.compose_print_space:
+    push rcx
+    push rdx
+    mov edi, ' '
+    sub rsp, 8
+    mov [rsp], edi
+    mov eax, SYS_WRITE
+    mov edi, 1
+    lea rsi, [rsp]
+    mov edx, 1
+    syscall
+    add rsp, 8
+    pop rdx
+    pop rcx
+    jmp .compose_next_token
+.compose_skip_token:
+    push rcx
+    push rdx
+    mov edi, [rbx + rdx * 4]
+    call print_u64                    ; print token ID for non-ASCII
+    lea rdi, [rel auto_colon]         ; ": " separator
+    call print_cstr
+    pop rdx
+    pop rcx
+.compose_next_token:
+    inc edx
+    jmp .compose_print_loop
+.compose_print_done:
+    call print_newline
+    jmp .compose_done
+
+.compose_is_empty:
+    lea rdi, [rel compose_empty]
+    call print_cstr
+
+.compose_done:
+    add rsp, 8
+    pop r12
     pop rbx
     ret
 

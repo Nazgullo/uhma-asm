@@ -5,16 +5,21 @@
 ; @entry creature_feed() -> user feeds creature
 ; @entry creature_poke() -> user pokes creature
 ; @entry creature_dream() -> trigger dream cycle
+; @entry creature_set_activity(edi=action_id) -> set current UHMA action for visual expression
+; @entry creature_sync_uhma(rdi=text) -> parse UHMA presence response, update state
 ; @global creature_state -> base of CreatureState struct
 ;
 ; All state values are integers 0-1000 unless noted.
 ; Phase 2 DONE: creature_sync_uhma() wires real UHMA presence → creature state.
-; Simulated values used as fallback when UHMA not connected.
+; Phase 3: Activity expression — creature visually reflects UHMA's current action
+;   SEEK=sniffing (ears perked, rapid bounce), SCAN=radar ears, COMPOSE=creative wag,
+;   REFLECT=meditation (half-closed eyes). Fades after 5 seconds (300 frames).
 ;
 ; GOTCHAS:
 ;   - All values 0-1000 (not float). Rendering scales as needed.
 ;   - creature_state is global BSS, accessed by render.asm
 ;   - Frame counter wraps at 2^32 (~828 days at 60fps, fine)
+;   - CS_ACTIVITY_FADE counts up from 0; effects stop at 300 frames
 
 ;; ======== CreatureState struct offsets ========
 CS_SPECIES      equ 0       ; byte: 0=egg, 1=hound, 2=feline, 3=mech, 4=wisp
@@ -45,7 +50,11 @@ CS_MOOD         equ 84      ; dword: 0=panic,1=anxious,2=neutral,3=content,4=hap
 CS_WAG_SPEED    equ 88      ; dword: tail wag speed (derived from valence)
 CS_WANDER_TMR   equ 92      ; dword: frames until picking new wander target
 CS_BOUNCE_PHASE equ 96      ; dword: bounce animation phase
-CS_SIZE         equ 100
+CS_COGNITIVE_LOAD equ 100   ; dword: 0-1000, how "busy" UHMA's processing is (from entropy)
+CS_PATTERN_TYPE equ 104     ; dword: 0=idle, 1=repetitive, 2=novel, 3=self-referential
+CS_ACTIVITY     equ 108     ; dword: last UHMA action (ACTION_* id, 0-9)
+CS_ACTIVITY_FADE equ 112    ; dword: frames since last action change (fades visual effect)
+CS_SIZE         equ 116
 
 section .bss
 global creature_state
@@ -67,6 +76,9 @@ section .data
     PRES_DISSONANCE     equ 21
     PRES_SURPRISE       equ 25
     PRES_FAMILIARITY    equ 26
+    PRES_ENTROPY        equ 16
+    PRES_DEPTH          equ 18
+    PRES_RESONANCE      equ 20
     PRES_META_AWARE     equ 29
     PRES_COUNT          equ 30
 
@@ -131,6 +143,10 @@ creature_init:
     mov dword [rbx + CS_MOOD], 3            ; content
     mov dword [rbx + CS_WAG_SPEED], 6
     mov dword [rbx + CS_WANDER_TMR], 120
+    mov dword [rbx + CS_COGNITIVE_LOAD], 0
+    mov dword [rbx + CS_PATTERN_TYPE], 0
+    mov dword [rbx + CS_ACTIVITY], 0
+    mov dword [rbx + CS_ACTIVITY_FADE], 301    ; start idle
 
     add rsp, 16
     pop rbx
@@ -154,8 +170,14 @@ creature_update:
     inc dword [rbx + CS_FRAME]
 
     ;; ---- Breathing animation ----
+    ; Breathing rate modulated by cognitive load:
+    ; high load → faster breathing (4-5), low load → slower (2-3)
+    mov eax, [rbx + CS_COGNITIVE_LOAD]
+    shr eax, 8              ; 0-3
+    add eax, 2              ; base speed 2-5
+    mov ecx, eax            ; breath speed
     mov eax, [rbx + CS_BREATH_PHASE]
-    add eax, 3              ; ~2 second cycle at 60fps
+    add eax, ecx
     cmp eax, 3600
     jl .breath_ok
     xor eax, eax
@@ -543,6 +565,73 @@ creature_update:
 .is_neutral:
     mov dword [rbx + CS_MOOD], 2
 
+    ;; ---- Activity expression (modulates animation from UHMA action) ----
+    inc dword [rbx + CS_ACTIVITY_FADE]
+
+    cmp dword [rbx + CS_ACTIVITY_FADE], 300  ; 5 seconds at 60fps
+    jg .activity_idle
+
+    mov eax, [rbx + CS_ACTIVITY]
+
+    cmp eax, 5                  ; ACTION_SEEK
+    je .activity_seek
+    cmp eax, 6                  ; ACTION_SCAN_ENV
+    je .activity_scan
+    cmp eax, 7                  ; ACTION_COMPOSE
+    je .activity_compose
+    cmp eax, 9                  ; ACTION_REFLECT
+    je .activity_reflect
+    jmp .activity_done
+
+.activity_seek:
+    ; Sniffing: ears perked forward, small rapid bounce
+    mov dword [rbx + CS_EAR_POS], 950
+    mov eax, [rbx + CS_FRAME]
+    and eax, 0xF
+    cmp eax, 8
+    jl .activity_done
+    add dword [rbx + CS_BOUNCE_PHASE], 30
+    jmp .activity_done
+
+.activity_scan:
+    ; Radar: ears oscillate, eyes wide
+    mov dword [rbx + CS_EYE_OPEN], 950
+    mov eax, [rbx + CS_FRAME]
+    and eax, 0x7F               ; period = 128 frames (~2 sec)
+    cmp eax, 64
+    jl .scan_ear_up
+    sub eax, 128
+    neg eax
+.scan_ear_up:
+    shl eax, 3                  ; scale to 0-512
+    add eax, 400                ; center at 400-912
+    mov [rbx + CS_EAR_POS], eax
+    jmp .activity_done
+
+.activity_compose:
+    ; Creative wag: slower, deeper
+    mov dword [rbx + CS_WAG_SPEED], 3
+    ; Warm body color shift (slight red boost)
+    mov eax, [rbx + CS_BODY_COLOR]
+    or eax, 0x100000
+    mov [rbx + CS_BODY_COLOR], eax
+    jmp .activity_done
+
+.activity_reflect:
+    ; Meditation: half-closed eyes, still
+    mov eax, [rbx + CS_EYE_OPEN]
+    cmp eax, 400
+    jle .activity_done
+    sub eax, 20
+    mov [rbx + CS_EYE_OPEN], eax
+    jmp .activity_done
+
+.activity_idle:
+    ; Prevent overflow
+    mov dword [rbx + CS_ACTIVITY_FADE], 301
+
+.activity_done:
+
 .mood_done:
     add rsp, 32
     pop r15
@@ -649,6 +738,17 @@ creature_dream:
     ; Lower arousal
     mov dword [rax + CS_AROUSAL], 100
 
+    ret
+
+;; ============================================================
+;; creature_set_activity — Set current UHMA action for visual expression
+;; edi = action ID (0-9), resets fade timer
+;; ============================================================
+global creature_set_activity
+creature_set_activity:
+    lea rax, [rel creature_state]
+    mov [rax + CS_ACTIVITY], edi
+    mov dword [rax + CS_ACTIVITY_FADE], 0    ; reset fade
     ret
 
 ;; ============================================================
@@ -922,6 +1022,45 @@ creature_sync_uhma:
     sar eax, 3
     add ecx, eax
     mov [rbx + CS_TAIL_POS], ecx
+
+    ; COGNITIVE_LOAD ← presence[16] (entropy = processing chaos)
+    mov eax, [r13 + PRES_ENTROPY * 4]
+    mov ecx, [rbx + CS_COGNITIVE_LOAD]
+    sub eax, ecx
+    sar eax, 2
+    add ecx, eax
+    ; Clamp 0-1000
+    test ecx, ecx
+    jns .cog_pos
+    xor ecx, ecx
+.cog_pos:
+    cmp ecx, 1000
+    jle .cog_ok
+    mov ecx, 1000
+.cog_ok:
+    mov [rbx + CS_COGNITIVE_LOAD], ecx
+
+    ; PATTERN_TYPE from resonance (dim 20) and depth (dim 18)
+    ; high resonance (>500) = repetitive, low resonance + high depth = self-referential
+    ; low resonance + low depth = novel, otherwise idle
+    mov eax, [r13 + PRES_RESONANCE * 4]
+    cmp eax, 500
+    jg .pat_repetitive
+    mov ecx, [r13 + PRES_DEPTH * 4]
+    cmp ecx, 600
+    jg .pat_selfref
+    cmp eax, 200
+    jl .pat_novel
+    mov dword [rbx + CS_PATTERN_TYPE], 0       ; idle
+    jmp .sync_done
+.pat_repetitive:
+    mov dword [rbx + CS_PATTERN_TYPE], 1
+    jmp .sync_done
+.pat_selfref:
+    mov dword [rbx + CS_PATTERN_TYPE], 3
+    jmp .sync_done
+.pat_novel:
+    mov dword [rbx + CS_PATTERN_TYPE], 2
 
 .sync_done:
     add rsp, 136

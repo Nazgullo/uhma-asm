@@ -9,7 +9,7 @@
 ; @entry get_maturity_level() -> eax                ; current stage (0-2)
 ; @entry get_mastery_metrics() -> rax               ; ptr to metrics struct
 ;
-; @calls fire_hook
+; @calls fire_hook, introspect.asm:on_maturity_advance
 ; @calledby io.asm:gate_fd_*, repl.asm:status, dispatch.asm:periodic
 ;
 ; GOTCHAS:
@@ -59,6 +59,7 @@ extern print_u64
 extern print_hex32
 extern print_newline
 extern fire_hook
+extern on_maturity_advance
 
 ;; ============================================================
 ;; maturity_init()
@@ -239,6 +240,10 @@ maturity_check_advance:
     mov rdi, [rax + r12 * 8]
     call print_cstr
     call print_newline
+
+    ; Seed action traces for the new stage
+    mov edi, r12d
+    call on_maturity_advance
 
     ; Fire advancement hook (reuse promote hook for stage advancement)
     mov edi, HOOK_ON_PROMOTE

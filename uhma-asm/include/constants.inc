@@ -931,7 +931,9 @@
 %define EVENT_SELF          15    ; self-model violation (introspective surprise)
 %define EVENT_CC_TOKEN      16    ; token from Claude Code (external consciousness)
 %define EVENT_CC_UNIT       17    ; semantic unit from Claude Code (8-token chunk)
-%define EVENT_TYPE_COUNT    18    ; total event types
+%define EVENT_NET_IN        18    ; network frame received via gateway
+%define EVENT_NET_OUT       19    ; network frame sent via gateway
+%define EVENT_TYPE_COUNT    20    ; total event types
 
 ; Self-awareness state fields
 %define ST_IS_SELF_REF      (ST_RECEIPT_END)              ; u32 flag: current token is self-referential
@@ -960,6 +962,7 @@
 %define LISTENER_PRINT      0x0002  ; print to stdout (debug)
 %define LISTENER_HOOK       0x0004  ; fire hook handlers
 %define LISTENER_GUI        0x0008  ; notify GUI visualizer
+%define LISTENER_ROUTE      0x0010  ; route via receipt bus (Phase 2)
 
 ; Last-miss state - minimal record for "why" command (everything else is holographic)
 %define ST_LAST_MISS        (ST_CURRENT_TOKEN + 4)        ; last miss record
@@ -1167,6 +1170,80 @@
 %define ST_CC_END           (ST_CC_UNIT_COUNT + 8)
 %define ST_CC_INPUT_MODE    ST_CC_END                         ; u8 flag: 1=emit CC receipts during input
 %define ST_CC_SECTION_END   (ST_CC_INPUT_MODE + 8)            ; padded to 8 bytes
+
+;; ============================================================
+;; AUTONOMY LOOP STATE
+;; Holographic resonance-based action selection.
+;; Presence field + struct_ctx encoded as single vector,
+;; compared against action traces to select behavior.
+;; ============================================================
+
+; Current state encoding: 8192-dim f64 vector from presence + struct_ctx
+%define ST_AUTONOMY_VEC       ST_CC_SECTION_END
+%define ST_AUTONOMY_VEC_SIZE  HOLO_VEC_BYTES                 ; 65536 bytes
+
+; Action traces: each accumulates holographic state where action helped
+%define ST_ACTION_TRACES      (ST_AUTONOMY_VEC + ST_AUTONOMY_VEC_SIZE)
+%define ACTION_DREAM    0
+%define ACTION_OBSERVE  1
+%define ACTION_EVOLVE   2
+%define ACTION_REST     3
+%define ACTION_EXPLORE  4
+%define ACTION_SEEK     5
+%define ACTION_SCAN_ENV 6
+%define ACTION_COMPOSE  7
+%define ACTION_TEACH    8
+%define ACTION_REFLECT  9
+%define ACTION_COUNT    10
+%define ST_ACTION_TRACE_SIZE  (ACTION_COUNT * HOLO_VEC_BYTES) ; 655360 bytes (640KB)
+
+; Snapshot of presence before action execution (30 × f32 = 120 bytes, pad to 128)
+%define ST_AUTONOMY_SNAP      (ST_ACTION_TRACES + ST_ACTION_TRACE_SIZE)
+%define ST_AUTONOMY_SNAP_SIZE 128
+
+; Metadata
+%define ST_AUTONOMY_LAST_ACTION (ST_AUTONOMY_SNAP + ST_AUTONOMY_SNAP_SIZE) ; u32 last selected action
+%define ST_AUTONOMY_ACTIVE      (ST_AUTONOMY_LAST_ACTION + 4)             ; u32 1=resonance active
+%define ST_AUTONOMY_COLD_COUNT  (ST_AUTONOMY_ACTIVE + 4)                  ; u32 resonance selection count
+%define ST_AUTONOMY_END         (ST_AUTONOMY_COLD_COUNT + 8)              ; padded
+
+; Action registry: per-action metadata (gate level, fire count, flags)
+%define ST_ACTION_REGISTRY      ST_AUTONOMY_END
+%define ACTION_REG_GATE         0     ; u32: minimum maturity stage to fire
+%define ACTION_REG_FIRES        4     ; u32: times this action has fired
+%define ACTION_REG_FLAGS        8     ; u32: bit 0 = enabled
+%define ACTION_REG_PAD          12    ; u32: reserved
+%define ACTION_REG_ENTRY_SIZE   16
+%define ACTION_REG_SIZE         (ACTION_COUNT * ACTION_REG_ENTRY_SIZE)  ; 160 bytes
+
+; Explore state (for ACTION_SEEK dynamic file discovery)
+%define ST_EXPLORE_PATH         (ST_ACTION_REGISTRY + ACTION_REG_SIZE)
+%define ST_EXPLORE_PATH_SIZE    256   ; max path length
+%define ST_SEEK_CTX_HASH        (ST_EXPLORE_PATH + ST_EXPLORE_PATH_SIZE)
+%define ST_SEEK_CONFUSION       (ST_SEEK_CTX_HASH + 4)    ; f32: lowest confidence found
+%define ST_SCAN_ENV_INDEX       (ST_SEEK_CONFUSION + 4)    ; u32: which /proc file next (0-3)
+%define ST_FILES_SEEN_COUNT     (ST_SCAN_ENV_INDEX + 4)    ; u32: files digested from current dir
+; Curiosity pressure (drives SEEK/SCAN_ENV when confused)
+%define ST_CURIOSITY_PRESSURE   (ST_FILES_SEEN_COUNT + 8)   ; f64
+%define ST_SEEK_LAST_TICK       (ST_CURIOSITY_PRESSURE + 8) ; u64: total_steps when SEEK last fired
+%define ST_CURIOSITY_COOLDOWN   200                          ; minimum ticks between SEEK fires
+
+; Explore frontier (breadth-first directory queue)
+%define ST_EXPLORE_FRONTIER     (ST_SEEK_LAST_TICK + 8)
+%define ST_EXPLORE_FRONTIER_SIZE 4096   ; null-separated path strings
+%define ST_FRONTIER_WRITE_POS   (ST_EXPLORE_FRONTIER + ST_EXPLORE_FRONTIER_SIZE)  ; u32
+%define ST_FRONTIER_READ_POS    (ST_FRONTIER_WRITE_POS + 4)                       ; u32
+
+; Composition buffer (ACTION_COMPOSE output)
+%define ST_COMPOSITION_BUF      (ST_FRONTIER_READ_POS + 8)  ; padded to 8
+%define ST_COMPOSITION_SIZE     4096
+%define ST_COMPOSITION_LEN      (ST_COMPOSITION_BUF + ST_COMPOSITION_SIZE)  ; u32
+%define ST_COMPOSITION_CONF     (ST_COMPOSITION_LEN + 4)    ; f32: avg confidence of composition
+
+; Last action resonance score (for creature GUI sync)
+%define ST_LAST_ACTION_SCORE    (ST_COMPOSITION_CONF + 4)   ; f32
+
+%define ST_DISCOVERY_END        (ST_LAST_ACTION_SCORE + 8)  ; padded
 
 ; Fidelity for CC events (high persistence - Claude patterns should last)
 %define FIDELITY_CC         0x3FEE666666666666                ; 0.95 - very persistent
@@ -1522,5 +1599,39 @@
 %define INPUT_BUF_SIZE      4096
 %define OUTPUT_BUF_SIZE     4096
 %define MAX_WORD_LEN        128
+
+;; ============================================================
+;; Gateway Networking (replaces 6-channel TCP)
+;; Single port, framed messages, multiplexed responses
+;; ============================================================
+
+; Gateway frame header: [2B magic] [1B subnet] [1B host] [2B seq_id] [2B payload_len]
+%define GW_MAGIC            0x5548    ; "UH" (little-endian: 0x48, 0x55)
+%define GW_HEADER_SIZE      8         ; fixed header size
+%define GW_MAX_PAYLOAD      4096      ; max payload per frame
+%define GW_MAX_CLIENTS      8         ; max simultaneous connections
+%define GW_PORT             9999      ; single gateway port
+
+; Subnet addressing (routing hints in Phase 1, mandatory in Phase 2)
+%define SUBNET_EXTERNAL     0         ; external clients (informational only)
+%define SUBNET_REPL         1         ; command dispatch (status, help, etc.)
+%define SUBNET_PREDICT      2         ; prediction engine
+%define SUBNET_LEARN        3         ; learning subsystem
+%define SUBNET_CONSOL       4         ; consolidation (dream, observe, eat)
+%define SUBNET_SELF         5         ; self-model (introspect, presence, receipts)
+%define SUBNET_IO           6         ; file I/O
+
+; Client table entry layout (8 bytes per client)
+%define GW_CLIENT_FD        0         ; i32 socket fd (-1 = empty)
+%define GW_CLIENT_SEQ       4         ; u16 pending request seq_id
+%define GW_CLIENT_SUBNET    6         ; u8 last subnet
+%define GW_CLIENT_FLAGS     7         ; u8 flags (bit 0 = legacy/unframed)
+%define GW_CLIENT_SIZE      8         ; bytes per entry
+
+; Client flags
+%define GW_FLAG_LEGACY      0x01      ; client uses unframed plain text
+
+; Response buffer (format.asm buffer capture mode)
+%define GW_RESPONSE_BUF_SIZE 65536    ; 64KB response accumulation buffer
 
 %endif
