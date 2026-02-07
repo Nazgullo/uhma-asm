@@ -1091,6 +1091,22 @@ keycode_to_char:
     mov al, ' '
     ret
 .not_space:
+    ; Common punctuation for paths/URLs
+    cmp edi, 20                 ; '-'
+    jne .not_dash
+    mov al, '-'
+    ret
+.not_dash:
+    cmp edi, 60                 ; '.'
+    jne .not_dot
+    mov al, '.'
+    ret
+.not_dot:
+    cmp edi, 61                 ; '/'
+    jne .not_slash
+    mov al, '/'
+    ret
+.not_slash:
     ; Numbers 10-19 -> 1-9,0
     cmp edi, 10
     jl .try_qrow
