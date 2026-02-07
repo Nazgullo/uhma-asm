@@ -1,4 +1,4 @@
-; boot.asm — System startup: surface, handlers, channels, REPL
+; boot.asm — System startup: surface, handlers, gateway, REPL
 ;
 ; @entry _start -> ELF entry point, never returns
 ; @calls surface.asm:surface_init

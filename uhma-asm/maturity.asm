@@ -322,6 +322,8 @@ gate_syscall:
     je .allow
     cmp r12d, SYS_GETDENTS
     je .allow
+    cmp r12d, SYS_GETDENTS64
+    je .allow
     cmp r12d, SYS_LSEEK
     je .allow
 

@@ -7,6 +7,7 @@
 ; @entry holo_mem_state() -> void  ; prints cognitive state
 ; @entry holo_mem_outcome(edi=entry_id, esi=worked) -> void  ; record outcome
 ; @entry holo_mem_summary() -> void  ; prints summary stats
+; @entry holo_mem_rag_refresh() -> void  ; rebuild code RAG from repo files
 ;
 ; STANDALONE: Uses own 6GB mmap file, NOT UHMA's surface.
 ; @calledby tools/mcp_server.asm (mem_* commands)
@@ -57,7 +58,7 @@
 ;
 %include "syscalls.inc"
 
-; Standalone 6GB surface (same file as Python version)
+; Standalone 6GB surface (assembly-only)
 %define HOLO_SURFACE_SIZE     0x180000000   ; 6GB
 %define HOLO_VEC_DIM          1024
 %define HOLO_VEC_BYTES        8192          ; 1024 * 8
@@ -68,6 +69,12 @@
 %define HOLO_MEM_MAX_ENTRIES  4096          ; 8MB total
 %define HOLO_MEM_TRACE_OFFSET 0x10A00000    ; Category traces (14 * 8KB = 112KB)
 %define HOLO_MEM_STATE_OFFSET 0x10A20000    ; State counters
+
+; Dir scan constants (local)
+%define SYS_GETDENTS64    217
+%define O_DIRECTORY       0x10000
+%define DT_REG            8
+%define DT_DIR            4
 
 ; Entry field offsets
 %define HME_ID          0           ; u64
@@ -102,6 +109,12 @@
 %define CAT_CODE_MID    12      ; Function-level (signatures, entry points)
 %define CAT_CODE_LOW    13      ; Implementation (gotchas, patterns)
 %define CAT_COUNT       14
+%define CAT_DELETED     0xFFFFFFFF
+
+; RAG refresh constants
+%define RAG_READ_MAX    4096
+%define RAG_DIR_BUF     16384
+%define RAG_CONTENT_MAX 480
 
 ; State offsets
 %define HMS_ENTRY_COUNT 0           ; u32 total entries
@@ -152,6 +165,26 @@ section .data
     cat_code_mid:   db "code_mid", 0
     cat_code_low:   db "code_low", 0
 
+    ; RAG refresh messages/strings
+    rag_refresh_msg: db "[HOLO_MEM] RAG refresh started", 10, 0
+    rag_done_msg:    db "[HOLO_MEM] RAG refreshed. Files: ", 0
+    rag_entries_msg: db " entries: ", 0
+    rag_source:      db "rag_refresh", 0
+    rag_file_prefix: db "FILE ", 0
+    rag_sep:         db " - ", 0
+    rag_nl:          db 10, 0
+
+    ; Directories to scan (relative to repo root)
+    rag_dirs:
+        dq rag_dir_root, rag_dir_include, rag_dir_tools, rag_dir_gui
+        dq rag_dir_embed, rag_dir_petx86, 0
+    rag_dir_root:    db ".", 0
+    rag_dir_include: db "include", 0
+    rag_dir_tools:   db "tools", 0
+    rag_dir_gui:     db "gui", 0
+    rag_dir_embed:   db "embed", 0
+    rag_dir_petx86:  db "pet/x86", 0
+
 section .bss
     ; Surface base (mmap'd)
     hm_surface_base: resq 1
@@ -167,6 +200,17 @@ section .bss
 
     ; Results buffer for sorting
     hm_results:     resb 256 * 16   ; 256 entries * (entry_id:u64 + similarity:f64)
+
+    ; Quiet mode (suppress per-entry prints during bulk ops)
+    hm_quiet:       resd 1
+
+    ; RAG refresh scratch
+    rag_file_count: resd 1
+    rag_entry_count: resd 1
+    rag_dir_buf:    resb RAG_DIR_BUF
+    rag_path_buf:   resb 512
+    rag_file_buf:   resb RAG_READ_MAX + 1
+    rag_text_buf:   resb 1024
 
 section .text
 
@@ -287,13 +331,35 @@ holo_mem_add:
     mov [rsp], rax          ; save entry_id
     inc qword [rbx + HOLO_MEM_STATE_OFFSET + HMS_NEXT_ID]
 
-    ; Calculate entry offset
+    ; Find reusable deleted slot (category == CAT_DELETED)
     mov ecx, [rbx + HOLO_MEM_STATE_OFFSET + HMS_ENTRY_COUNT]
+    xor r10d, r10d
+    mov r11d, -1
+.find_deleted:
+    cmp r10d, ecx
+    jge .no_deleted
+    imul rax, r10, HOLO_MEM_ENTRY_SIZE
+    lea rdi, [rbx + HOLO_MEM_OFFSET + rax]
+    cmp dword [rdi + HME_CATEGORY], CAT_DELETED
+    jne .next_deleted
+    mov r11d, r10d
+    jmp .have_index
+.next_deleted:
+    inc r10d
+    jmp .find_deleted
+.no_deleted:
+    mov r11d, -1
+.have_index:
+
+    cmp r11d, -1
+    jne .use_index
     cmp ecx, HOLO_MEM_MAX_ENTRIES
     jge .add_full
-
-    ; Entry address = HOLO_MEM_OFFSET + entry_count * HOLO_MEM_ENTRY_SIZE
-    imul rax, rcx, HOLO_MEM_ENTRY_SIZE
+    mov r11d, ecx
+    inc dword [rbx + HOLO_MEM_STATE_OFFSET + HMS_ENTRY_COUNT]
+.use_index:
+    ; Entry address = HOLO_MEM_OFFSET + index * HOLO_MEM_ENTRY_SIZE
+    imul rax, r11, HOLO_MEM_ENTRY_SIZE
     lea rdi, [rbx + HOLO_MEM_OFFSET]
     add rdi, rax            ; entry ptr
     mov [rsp + 8], rdi      ; save entry ptr
@@ -371,9 +437,6 @@ holo_mem_add:
     lea rsi, [rel hm_entry_vec]
     call holo_superpose_f64
 
-    ; Increment entry count
-    inc dword [rbx + HOLO_MEM_STATE_OFFSET + HMS_ENTRY_COUNT]
-
     ; Update last add timestamp
     sub rsp, 16
     lea rdi, [rsp]
@@ -384,12 +447,15 @@ holo_mem_add:
     add rsp, 16
     mov [rbx + HOLO_MEM_STATE_OFFSET + HMS_LAST_ADD], rax
 
-    ; Print confirmation
+    ; Print confirmation (unless quiet)
+    cmp dword [rel hm_quiet], 0
+    jne .skip_print
     lea rdi, [rel hm_add_msg]
     call print_cstr
     mov rdi, [rsp]
     call print_u64
     call print_newline
+.skip_print:
 
     mov eax, [rsp]          ; return entry_id
     jmp .add_ret
@@ -590,6 +656,11 @@ holo_mem_query:
     lea rdi, [rbx + HOLO_MEM_OFFSET]
     add rdi, rax
     mov [rsp + 8], rdi      ; save entry ptr
+
+    ; Skip deleted entries
+    mov eax, [rdi + HME_CATEGORY]
+    cmp eax, CAT_DELETED
+    je .next_entry
 
     ; Reconstruct entry vector from compressed storage
     push rdi
@@ -814,8 +885,12 @@ hm_find_entry_by_id:
     imul rax, rcx, HOLO_MEM_ENTRY_SIZE
     lea rax, [rbx + HOLO_MEM_OFFSET + rax]
     cmp [rax + HME_ID], r12
-    je .found
+    jne .find_next
+    cmp dword [rax + HME_CATEGORY], CAT_DELETED
+    je .find_next
+    jmp .found
 
+.find_next:
     inc ecx
     jmp .find_loop
 
@@ -874,6 +949,8 @@ holo_mem_recent:
     imul rax, rcx, HOLO_MEM_ENTRY_SIZE
     lea rdi, [rbx + HOLO_MEM_OFFSET + rax]
     push rcx
+    cmp dword [rdi + HME_CATEGORY], CAT_DELETED
+    je .recent_skip
 
     ; Print: [category] content
     push rdi
@@ -904,6 +981,14 @@ holo_mem_recent:
     call print_cstr
     call print_newline
 
+    jmp .recent_next
+
+.recent_skip:
+    pop rcx
+    inc ecx
+    jmp .recent_loop
+
+.recent_next:
     pop rcx
     inc ecx
     jmp .recent_loop
@@ -947,6 +1032,8 @@ holo_mem_state:
     jge .print_findings
     imul rax, rcx, HOLO_MEM_ENTRY_SIZE
     lea rax, [rbx + HOLO_MEM_OFFSET + rax]
+    cmp dword [rax + HME_CATEGORY], CAT_DELETED
+    je .next_finding
     cmp dword [rax + HME_CATEGORY], CAT_FINDING
     jne .next_finding
     inc r12d
@@ -969,6 +1056,8 @@ holo_mem_state:
     jge .print_warnings
     imul rax, rcx, HOLO_MEM_ENTRY_SIZE
     lea rax, [rbx + HOLO_MEM_OFFSET + rax]
+    cmp dword [rax + HME_CATEGORY], CAT_DELETED
+    je .next_warning
     cmp dword [rax + HME_CATEGORY], CAT_WARNING
     jne .next_warning
     inc r12d
@@ -991,6 +1080,8 @@ holo_mem_state:
     jge .print_success
     imul rax, rcx, HOLO_MEM_ENTRY_SIZE
     lea rax, [rbx + HOLO_MEM_OFFSET + rax]
+    cmp dword [rax + HME_CATEGORY], CAT_DELETED
+    je .next_success
     cmp dword [rax + HME_CATEGORY], CAT_SUCCESS
     jne .next_success
     inc r12d
@@ -1013,6 +1104,8 @@ holo_mem_state:
     jge .print_failed
     imul rax, rcx, HOLO_MEM_ENTRY_SIZE
     lea rax, [rbx + HOLO_MEM_OFFSET + rax]
+    cmp dword [rax + HME_CATEGORY], CAT_DELETED
+    je .next_failed
     cmp dword [rax + HME_CATEGORY], CAT_FAILED
     jne .next_failed
     inc r12d
@@ -1035,6 +1128,8 @@ holo_mem_state:
     jge .print_insights
     imul rax, rcx, HOLO_MEM_ENTRY_SIZE
     lea rax, [rbx + HOLO_MEM_OFFSET + rax]
+    cmp dword [rax + HME_CATEGORY], CAT_DELETED
+    je .next_insight
     cmp dword [rax + HME_CATEGORY], CAT_INSIGHT
     jne .next_insight
     inc r12d
@@ -1128,6 +1223,7 @@ holo_mem_outcome:
 global holo_mem_summary
 holo_mem_summary:
     push rbx
+    push r12
     sub rsp, 8
 
     mov rbx, [rel hm_surface_base]
@@ -1135,14 +1231,596 @@ holo_mem_summary:
     lea rdi, [rel hm_summary_msg]
     call print_cstr
 
+    ; Count active (non-deleted) entries
+    xor r12d, r12d
+    mov ecx, [rbx + HOLO_MEM_STATE_OFFSET + HMS_ENTRY_COUNT]
+    xor edx, edx
+.summary_count:
+    cmp edx, ecx
+    jge .summary_count_done
+    imul rax, rdx, HOLO_MEM_ENTRY_SIZE
+    lea rax, [rbx + HOLO_MEM_OFFSET + rax]
+    cmp dword [rax + HME_CATEGORY], CAT_DELETED
+    je .summary_next
+    inc r12d
+.summary_next:
+    inc edx
+    jmp .summary_count
+.summary_count_done:
+
     lea rdi, [rel hm_entries_lbl]
     call print_cstr
-    mov edi, [rbx + HOLO_MEM_STATE_OFFSET + HMS_ENTRY_COUNT]
+    mov rdi, r12
     call print_u64
     call print_newline
 
     add rsp, 8
+    pop r12
     pop rbx
+    ret
+
+;; ============================================================
+;; holo_mem_rag_refresh — Rebuild code RAG entries
+;; ============================================================
+global holo_mem_rag_refresh
+holo_mem_rag_refresh:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 8
+
+    mov rbx, [rel hm_surface_base]
+    test rbx, rbx
+    jz .rag_ret
+
+    mov dword [rel rag_file_count], 0
+    mov dword [rel rag_entry_count], 0
+
+    lea rdi, [rel rag_refresh_msg]
+    call print_cstr
+
+    mov dword [rel hm_quiet], 1
+
+    call rag_clear_code_entries
+    call rag_clear_code_traces
+
+    lea r12, [rel rag_dirs]
+.rag_dir_loop:
+    mov rdi, [r12]
+    test rdi, rdi
+    jz .rag_done
+    call rag_scan_dir
+    add r12, 8
+    jmp .rag_dir_loop
+
+.rag_done:
+    mov dword [rel hm_quiet], 0
+    lea rdi, [rel rag_done_msg]
+    call print_cstr
+    mov edi, [rel rag_file_count]
+    call print_u64
+    lea rdi, [rel rag_entries_msg]
+    call print_cstr
+    mov edi, [rel rag_entry_count]
+    call print_u64
+    call print_newline
+
+.rag_ret:
+    add rsp, 8
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+; ------------------------------------------------------------
+; rag_clear_code_entries — Mark code RAG entries as deleted
+; ------------------------------------------------------------
+rag_clear_code_entries:
+    push rbx
+    push r12
+    push r13
+    mov rbx, [rel hm_surface_base]
+    mov r12d, [rbx + HOLO_MEM_STATE_OFFSET + HMS_ENTRY_COUNT]
+    xor r13d, r13d
+.rag_clear_loop:
+    cmp r13d, r12d
+    jge .rag_clear_done
+    imul rax, r13, HOLO_MEM_ENTRY_SIZE
+    lea rdi, [rbx + HOLO_MEM_OFFSET + rax]
+    mov eax, [rdi + HME_CATEGORY]
+    cmp eax, CAT_CODE_HIGH
+    jb .rag_clear_next
+    cmp eax, CAT_CODE_LOW
+    ja .rag_clear_next
+    mov dword [rdi + HME_CATEGORY], CAT_DELETED
+    mov qword [rdi + HME_ID], 0
+    mov byte [rdi + HME_CONTENT], 0
+    mov byte [rdi + HME_CONTEXT], 0
+    mov byte [rdi + HME_SOURCE], 0
+.rag_clear_next:
+    inc r13d
+    jmp .rag_clear_loop
+.rag_clear_done:
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+; ------------------------------------------------------------
+; rag_clear_code_traces — Zero code category traces
+; ------------------------------------------------------------
+rag_clear_code_traces:
+    push rbx
+    push r12
+    mov rbx, [rel hm_surface_base]
+    mov r12d, CAT_CODE_HIGH
+.rag_trace_loop:
+    cmp r12d, CAT_CODE_LOW + 1
+    jge .rag_trace_done
+    imul rax, r12, HOLO_VEC_BYTES
+    lea rdi, [rbx + HOLO_MEM_TRACE_OFFSET + rax]
+    mov ecx, HOLO_VEC_BYTES / 8
+    xor rax, rax
+    rep stosq
+    inc r12d
+    jmp .rag_trace_loop
+.rag_trace_done:
+    pop r12
+    pop rbx
+    ret
+
+; ------------------------------------------------------------
+; rag_scan_dir — Scan directory for .asm/.inc files
+; rdi = dir path
+; ------------------------------------------------------------
+rag_scan_dir:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+
+    mov r15, rdi                     ; base path
+
+    mov eax, SYS_OPEN
+    mov rdi, r15
+    mov esi, O_RDONLY | O_DIRECTORY
+    xor edx, edx
+    syscall
+    test eax, eax
+    js .rag_scan_ret
+    mov r12d, eax                    ; fd
+
+.rag_read_dir:
+    mov eax, SYS_GETDENTS64
+    mov edi, r12d
+    lea rsi, [rel rag_dir_buf]
+    mov edx, RAG_DIR_BUF
+    syscall
+    test eax, eax
+    jle .rag_close_dir
+
+    mov r13d, eax                    ; bytes read
+    xor r14d, r14d                   ; offset
+
+.rag_entry_loop:
+    cmp r14d, r13d
+    jge .rag_read_dir
+
+    lea rbx, [rel rag_dir_buf]
+    add rbx, r14
+    movzx r9d, word [rbx + 16]       ; d_reclen
+    lea rdi, [rbx + 19]              ; d_name
+
+    ; Skip . and ..
+    cmp byte [rdi], '.'
+    jne .rag_check_file
+    cmp byte [rdi + 1], 0
+    je .rag_next_entry
+    cmp byte [rdi + 1], '.'
+    jne .rag_check_file
+    cmp byte [rdi + 2], 0
+    je .rag_next_entry
+
+.rag_check_file:
+    ; Skip directories
+    cmp byte [rbx + 18], DT_DIR
+    je .rag_next_entry
+
+    ; Filter extensions
+    call rag_is_code_file
+    test eax, eax
+    jz .rag_next_entry
+
+    ; Build full path and process
+    mov rsi, r15                     ; base path
+    mov rdx, rdi                     ; name
+    call rag_build_path
+    lea rdi, [rel rag_path_buf]
+    call rag_process_file
+
+.rag_next_entry:
+    add r14d, r9d
+    jmp .rag_entry_loop
+
+.rag_close_dir:
+    mov eax, SYS_CLOSE
+    mov edi, r12d
+    syscall
+
+.rag_scan_ret:
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+; ------------------------------------------------------------
+; rag_process_file — Read file and add RAG entries
+; rdi = full path
+; ------------------------------------------------------------
+rag_process_file:
+    push rbx
+    push r12
+    push r13
+
+    mov r12, rdi                     ; path
+    mov eax, SYS_OPEN
+    mov rdi, r12
+    mov esi, O_RDONLY
+    xor edx, edx
+    syscall
+    test eax, eax
+    js .rag_proc_done
+    mov ebx, eax
+
+    mov eax, SYS_READ
+    mov edi, ebx
+    lea rsi, [rel rag_file_buf]
+    mov edx, RAG_READ_MAX
+    syscall
+    test eax, eax
+    jle .rag_proc_close
+    mov r13d, eax
+
+    lea rdi, [rel rag_file_buf]
+    add rdi, r13
+    mov byte [rdi], 0
+
+    inc dword [rel rag_file_count]
+
+    mov rdi, r12
+    call rag_add_low
+    mov rdi, r12
+    call rag_add_mid
+    mov rdi, r12
+    call rag_add_high
+
+.rag_proc_close:
+    mov eax, SYS_CLOSE
+    mov edi, ebx
+    syscall
+
+.rag_proc_done:
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+; ------------------------------------------------------------
+; rag_add_low — Coarse summary (first line)
+; rdi = path
+; ------------------------------------------------------------
+rag_add_low:
+    push rbx
+    push r12
+
+    mov r12, rdi
+    lea rdi, [rel rag_text_buf]
+    mov ecx, RAG_CONTENT_MAX
+
+    lea rsi, [rel rag_file_prefix]
+    call rag_append_cstr
+    mov rsi, r12
+    call rag_append_cstr
+    lea rsi, [rel rag_sep]
+    call rag_append_cstr
+
+    lea rsi, [rel rag_file_buf]
+
+    ; Skip leading ';' and whitespace
+    cmp byte [rsi], ';'
+    jne .rag_low_ws
+    inc rsi
+    cmp byte [rsi], ' '
+    jne .rag_low_ws
+    inc rsi
+.rag_low_ws:
+    cmp byte [rsi], ' '
+    je .rag_low_ws_adv
+    cmp byte [rsi], 9
+    je .rag_low_ws_adv
+    jmp .rag_low_copy
+.rag_low_ws_adv:
+    inc rsi
+    jmp .rag_low_ws
+
+.rag_low_copy:
+    test ecx, ecx
+    jz .rag_low_done
+    mov al, [rsi]
+    test al, al
+    jz .rag_low_done
+    cmp al, 10
+    je .rag_low_done
+    mov [rdi], al
+    inc rdi
+    dec ecx
+    inc rsi
+    jmp .rag_low_copy
+
+.rag_low_done:
+    mov byte [rdi], 0
+    mov edi, CAT_CODE_LOW
+    lea rsi, [rel rag_text_buf]
+    mov rdx, r12
+    lea rcx, [rel rag_source]
+    call holo_mem_add
+    test eax, eax
+    jz .rag_low_ret
+    inc dword [rel rag_entry_count]
+
+.rag_low_ret:
+    pop r12
+    pop rbx
+    ret
+
+; ------------------------------------------------------------
+; rag_add_mid — Function-level entries (@entry/@calls)
+; rdi = path
+; ------------------------------------------------------------
+rag_add_mid:
+    push rbx
+    push r12
+    push r13
+
+    mov r12, rdi
+    lea rdi, [rel rag_text_buf]
+    mov ecx, RAG_CONTENT_MAX
+
+    lea rsi, [rel rag_file_prefix]
+    call rag_append_cstr
+    mov rsi, r12
+    call rag_append_cstr
+    mov al, 10
+    call rag_append_char
+    mov r13, rdi                     ; mark after prefix
+
+    lea rbx, [rel rag_file_buf]
+
+.rag_mid_line:
+    mov al, [rbx]
+    test al, al
+    jz .rag_mid_done
+    cmp al, ';'
+    jne .rag_mid_skip
+    cmp byte [rbx + 1], ' '
+    jne .rag_mid_skip
+    cmp byte [rbx + 2], '@'
+    jne .rag_mid_skip
+
+    lea rsi, [rbx + 2]
+.rag_mid_copy:
+    test ecx, ecx
+    jz .rag_mid_done
+    mov al, [rsi]
+    test al, al
+    jz .rag_mid_done
+    cmp al, 10
+    je .rag_mid_line_end
+    mov [rdi], al
+    inc rdi
+    dec ecx
+    inc rsi
+    jmp .rag_mid_copy
+.rag_mid_line_end:
+    mov al, 10
+    call rag_append_char
+
+.rag_mid_skip:
+    ; Advance to next line
+.rag_mid_advance:
+    mov al, [rbx]
+    test al, al
+    jz .rag_mid_done
+    cmp al, 10
+    je .rag_mid_next
+    inc rbx
+    jmp .rag_mid_advance
+.rag_mid_next:
+    inc rbx
+    jmp .rag_mid_line
+
+.rag_mid_done:
+    cmp rdi, r13
+    je .rag_mid_ret
+    mov byte [rdi], 0
+    mov edi, CAT_CODE_MID
+    lea rsi, [rel rag_text_buf]
+    mov rdx, r12
+    lea rcx, [rel rag_source]
+    call holo_mem_add
+    test eax, eax
+    jz .rag_mid_ret
+    inc dword [rel rag_entry_count]
+
+.rag_mid_ret:
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+; ------------------------------------------------------------
+; rag_add_high — Raw code snippet (first bytes)
+; rdi = path
+; ------------------------------------------------------------
+rag_add_high:
+    push rbx
+    push r12
+
+    mov r12, rdi
+    lea rdi, [rel rag_text_buf]
+    mov ecx, RAG_CONTENT_MAX
+
+    lea rsi, [rel rag_file_prefix]
+    call rag_append_cstr
+    mov rsi, r12
+    call rag_append_cstr
+    mov al, 10
+    call rag_append_char
+
+    lea rsi, [rel rag_file_buf]
+.rag_high_copy:
+    test ecx, ecx
+    jz .rag_high_done
+    mov al, [rsi]
+    test al, al
+    jz .rag_high_done
+    mov [rdi], al
+    inc rdi
+    dec ecx
+    inc rsi
+    jmp .rag_high_copy
+
+.rag_high_done:
+    mov byte [rdi], 0
+    mov edi, CAT_CODE_HIGH
+    lea rsi, [rel rag_text_buf]
+    mov rdx, r12
+    lea rcx, [rel rag_source]
+    call holo_mem_add
+    test eax, eax
+    jz .rag_high_ret
+    inc dword [rel rag_entry_count]
+
+.rag_high_ret:
+    pop r12
+    pop rbx
+    ret
+
+; ------------------------------------------------------------
+; rag_build_path — Build full path into rag_path_buf
+; rsi = base path, rdx = name
+; ------------------------------------------------------------
+rag_build_path:
+    push rbx
+    lea rdi, [rel rag_path_buf]
+    mov ecx, 511
+
+    ; If base == ".", just copy name
+    mov al, [rsi]
+    cmp al, '.'
+    jne .rag_path_base
+    cmp byte [rsi + 1], 0
+    jne .rag_path_base
+    mov rsi, rdx
+    call rag_append_cstr
+    jmp .rag_path_done
+
+.rag_path_base:
+    call rag_append_cstr          ; base
+    mov al, '/'
+    call rag_append_char
+    mov rsi, rdx
+    call rag_append_cstr
+
+.rag_path_done:
+    mov byte [rdi], 0
+    pop rbx
+    ret
+
+; ------------------------------------------------------------
+; rag_is_code_file — Check .asm/.inc extension
+; rdi = filename
+; Returns eax = 1 if match, 0 otherwise
+; ------------------------------------------------------------
+rag_is_code_file:
+    push rbx
+    mov rbx, rdi
+    xor ecx, ecx
+.rag_len:
+    mov al, [rbx + rcx]
+    test al, al
+    jz .rag_check_ext
+    inc ecx
+    jmp .rag_len
+
+.rag_check_ext:
+    cmp ecx, 4
+    jl .rag_not_code
+    lea rsi, [rbx + rcx - 4]
+    cmp byte [rsi], '.'
+    jne .rag_not_code
+    cmp byte [rsi + 1], 'a'
+    jne .rag_check_inc
+    cmp byte [rsi + 2], 's'
+    jne .rag_check_inc
+    cmp byte [rsi + 3], 'm'
+    jne .rag_check_inc
+    mov eax, 1
+    jmp .rag_code_ret
+.rag_check_inc:
+    cmp byte [rsi + 1], 'i'
+    jne .rag_not_code
+    cmp byte [rsi + 2], 'n'
+    jne .rag_not_code
+    cmp byte [rsi + 3], 'c'
+    jne .rag_not_code
+    mov eax, 1
+    jmp .rag_code_ret
+.rag_not_code:
+    xor eax, eax
+.rag_code_ret:
+    pop rbx
+    ret
+
+; ------------------------------------------------------------
+; rag_append_cstr — Append C-string with limit
+; rdi=dst, rsi=src, ecx=remaining
+; returns updated rdi/ecx
+; ------------------------------------------------------------
+rag_append_cstr:
+    test ecx, ecx
+    jz .rag_app_done
+.rag_app_loop:
+    mov al, [rsi]
+    test al, al
+    jz .rag_app_done
+    mov [rdi], al
+    inc rdi
+    inc rsi
+    dec ecx
+    jz .rag_app_done
+    jmp .rag_app_loop
+.rag_app_done:
+    ret
+
+; ------------------------------------------------------------
+; rag_append_char — Append single char in AL
+; rdi=dst, ecx=remaining
+; ------------------------------------------------------------
+rag_append_char:
+    test ecx, ecx
+    jz .rag_appc_done
+    mov [rdi], al
+    inc rdi
+    dec ecx
+.rag_appc_done:
     ret
 
 ;; ============================================================

@@ -51,6 +51,7 @@ Layout:
 | `mem_state` | Cognitive state (entry counts) |
 | `mem_recent` | Recent entries |
 | `mem_summary` | Summary statistics |
+| `mem_rag_refresh` | Rebuild code RAG entries |
 
 ### Architecture
 
@@ -60,13 +61,9 @@ This is Claude's memory, NOT UHMA's. UHMA has its own surface and cognition. The
 Claude Code ←→ JSON-RPC ←→ MCP Server (tools/mcp_server)
                               ├── holo_mem.asm (memory)
                               ├── embed/*.asm (MPNet embeddings)
-                              └── TCP gateway → UHMA (port 9999)
+                              └── framed TCP gateway → UHMA (port 9999)
 ```
-
-### Previous Implementation
-
-The original Python version (`holo_memory.py`) using sentence-transformers has been archived to `archives/`. The assembly version provides the same functionality without Python dependencies.
 
 ---
 
-*Last updated: 2026-02-05*
+*Last updated: 2026-02-06*

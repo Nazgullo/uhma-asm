@@ -113,3 +113,8 @@
 %define ST_INSTANCE_ID      (ST_EVOLVE_PRESSURE + 8)
 %define ST_COLONY_SIZE      (ST_INSTANCE_ID + 8)
 %define ST_SHARED_MODE      (ST_COLONY_SIZE + 4)
+
+; Gateway subnets (shared with main constants.inc)
+%define SUBNET_REPL         1
+%define SUBNET_CONSOL       4
+%define SUBNET_SELF         5

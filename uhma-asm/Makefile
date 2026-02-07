@@ -25,6 +25,7 @@ FEEDER_SRCS = tools/feeder.asm
 
 MCP_TARGET = tools/mcp_server
 MCP_SRCS = tools/mcp_server.asm
+STREAM_STUB = stream_stub.o
 
 OBJS = $(SRCS:.asm=.o)
 
@@ -48,7 +49,7 @@ $(HUB_TARGET): hub.o
 $(FEEDER_TARGET): tools/feeder.o
 	$(LD) $(LDFLAGS) -o $@ $^
 
-$(MCP_TARGET): tools/mcp_server.o holo_mem.o format.o $(EMBED_OBJS)
+$(MCP_TARGET): tools/mcp_server.o holo_mem.o format.o $(EMBED_OBJS) $(STREAM_STUB)
 	$(LD) $(LDFLAGS) -o $@ $^
 
 # GUI linked with gcc (required for X11/libc)
@@ -60,7 +61,7 @@ gui: $(GUI_TARGET)
 gui/%.o: gui/%.asm include/constants.inc
 	$(NASM) $(NASMFLAGS) -o $@ $<
 
-tools/%.o: tools/%.asm include/syscalls.inc
+tools/%.o: tools/%.asm include/syscalls.inc include/constants.inc
 	$(NASM) $(NASMFLAGS) -o $@ $<
 
 embed/%.o: embed/%.asm include/syscalls.inc

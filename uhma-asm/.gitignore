@@ -11,13 +11,6 @@ __pycache__/
 *.pyc
 .venv/
 
-# Memory state (session-specific)
-tools/rag/memory/*.json
-tools/rag/memory/*.npz
-tools/rag/memory/*.dat
-tools/rag/memory/.bootstrapped
-tools/rag/memory/.session_active
-
 # Debug logs
 *_debug.log
 *.log
@@ -33,7 +26,7 @@ cycle_*
 live_*
 shutdown_*
 
-# Old training scripts (superseded by feed.sh)
+# Old training scripts (superseded by tools/feeder)
 feed_clean.py
 feed_pty.py
 mastery.py

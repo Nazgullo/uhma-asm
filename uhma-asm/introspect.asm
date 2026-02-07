@@ -1212,14 +1212,18 @@ section .data
     self_aware_threshold: dq 0.3  ; below this, trigger self-observation
     self_ingest_done: dq 0        ; flag: have we ingested own code this session?
     startup_consolidation_done: dq 0  ; flag: have we dreamed on startup?
+    traces_verified:  dq 0        ; flag: have we checked action trace integrity?
 
     ; Autonomy loop constants
     cold_start_thresh:  dq 0.1    ; minimum cosim score to trust resonance
+    outcome_baseline:   dq 0.1    ; minimum outcome so traces get seeded (prevents delta_valence ≈ 0 → empty traces)
     outcome_valence_w:  dq 1.0    ; weight for valence delta in outcome
     half_f64:           dq 0.5    ; for fatigue reduction
 
     ; Autonomy loop messages
     autonomy_resonance_msg: db "[AUTONOMY] Resonance selected: ", 0
+    trace_reseed_msg:       db "[AUTONOMY] Action traces empty — reseeding all 10 from presence", 10, 0
+    trace_reseed_done_msg:  db "[AUTONOMY] Traces reseeded, resonance can now bootstrap", 10, 0
     autonomy_fallback_msg:  db "[AUTONOMY] Cold start — pressure fallback", 10, 0
     autonomy_outcome_msg:   db "[AUTONOMY] Outcome recorded: ", 0
     autonomy_action_dream:  db "DREAM", 0
@@ -1504,6 +1508,63 @@ encode_presence_vec:
     ret
 
 ;; ============================================================
+;; ensure_action_traces_seeded — Seed action traces if empty
+;; Uses current presence encoding (f64 8192-dim vectors only).
+;; ============================================================
+global ensure_action_traces_seeded
+ensure_action_traces_seeded:
+    push rbx
+    push r12
+    push r13
+    push r14
+    sub rsp, 8                    ; 4 pushes (even) + 8 = aligned
+
+    cmp qword [rel traces_verified], 0
+    jne .seed_ret
+
+    mov rbx, SURFACE_BASE
+    lea r12, [rbx + STATE_OFFSET]
+
+    ; Check magnitude of first trace
+    lea rdi, [r12 + ST_ACTION_TRACES]
+    call holo_magnitude_f64       ; xmm0 = magnitude
+    xorpd xmm1, xmm1
+    ucomisd xmm0, xmm1
+    jne .mark_verified            ; nonzero → traces exist
+
+    lea rdi, [rel trace_reseed_msg]
+    call print_cstr
+    call encode_presence_vec      ; fills ST_AUTONOMY_VEC
+
+    xor r13d, r13d                ; action index
+.seed_loop:
+    cmp r13d, ACTION_COUNT
+    jge .seed_done
+    push r13
+    imul eax, r13d, HOLO_VEC_BYTES
+    lea rdi, [r12 + ST_ACTION_TRACES]
+    add rdi, rax
+    lea rsi, [r12 + ST_AUTONOMY_VEC]
+    call holo_superpose_f64
+    pop r13
+    inc r13d
+    jmp .seed_loop
+.seed_done:
+    lea rdi, [rel trace_reseed_done_msg]
+    call print_cstr
+
+.mark_verified:
+    mov qword [rel traces_verified], 1
+
+.seed_ret:
+    add rsp, 8
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
 ;; resonance_select() -> eax = ACTION_* id, xmm0 = best score
 ;; Queries all action traces against current autonomy_vec.
 ;; Calls encode_presence_vec first to update the state encoding.
@@ -1743,7 +1804,7 @@ action_seek:
     mov r13d, eax                 ; r13d = dir_fd
 
     ; === 3. SYS_GETDENTS64 ===
-    mov eax, SYS_GETDENTS
+    mov eax, SYS_GETDENTS64
     mov edi, r13d
     lea rsi, [rsp]                ; getdents buffer on stack
     mov edx, 4096
@@ -2032,6 +2093,9 @@ tick_regulators:
 
     mov rbx, SURFACE_BASE
     xor r12d, r12d            ; actions triggered
+
+    ; Ensure action traces are seeded before resonance selection
+    call ensure_action_traces_seeded
 
     ; === BOOTSTRAP CHECK ===
     ; If self-awareness is low and we haven't bootstrapped, trigger observe
@@ -2895,7 +2959,7 @@ advance_explore_path:
     mov r13d, eax                 ; dir_fd
 
     ; Read directory entries
-    mov eax, SYS_GETDENTS
+    mov eax, SYS_GETDENTS64
     mov edi, r13d
     lea rsi, [rsp]
     mov edx, 4096

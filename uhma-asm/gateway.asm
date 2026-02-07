@@ -1,25 +1,25 @@
-; gateway.asm — Single-port framed TCP gateway (replaces channels.asm)
+; gateway.asm — Single-port framed TCP gateway
 ;
 ; @entry gateway_init() -> eax=1 success, 0 failure
 ; @entry gateway_poll() -> eax=client_id (0-7), -1 stdin, -2 timeout
 ; @entry gateway_read(edi=client_id, rsi=buf, edx=maxlen) -> eax=payload bytes
 ; @entry gateway_respond(edi=client_id, rsi=buf, edx=len) -> sends framed response
+; @entry gateway_stream_set(edi=client_id, esi=subnet) -> set live stream target
+; @entry gateway_stream_send(rsi=buf, edx=len) -> send framed stream payload
 ; @entry gateway_shutdown() -> closes all sockets
-; @entry gateway_client_is_legacy(edi=client_id) -> eax=1 legacy, 0 framed
 ; @calls format.asm:print_cstr, print_u64
 ; @calls signal.asm:set_sigpipe_mode
 ; @calledby boot.asm:_start, repl.asm:repl_run
 ;
 ; PROTOCOL:
 ;   Frame: [2B magic 0x5548] [1B subnet] [1B host] [2B seq_id] [2B payload_len] [payload]
-;   Legacy: first 2 bytes != 0x5548 → treat as plain text on SUBNET_REPL
-;   Responses use matching seq_id so client can demux
+;   Responses use matching seq_id so client can demux by subnet + seq_id
 ;
 ; GOTCHAS:
 ;   - gateway_init() sets SIGPIPE to ignore mode
-;   - Legacy compat: unframed text detected by missing magic header
 ;   - Max 8 simultaneous clients
 ;   - gateway_read returns payload only (header already parsed)
+;   - gateway_respond clamps to GW_MAX_PAYLOAD (full logs are in stream)
 
 %include "syscalls.inc"
 %include "constants.inc"
@@ -57,6 +57,11 @@ section .bss
     gw_last_subnet: resb 1
     gw_last_client: resd 1
 
+    ; Live stream target (run-log feed)
+    gw_stream_client: resd 1       ; -1 = disabled
+    gw_stream_subnet: resb 1
+    gw_stream_seq:    resw 1
+
     gw_ready:       resd 1
 
 section .text
@@ -70,8 +75,12 @@ global gateway_init
 global gateway_poll
 global gateway_read
 global gateway_respond
+global gateway_stream_set
+global gateway_stream_clear
+global gateway_stream_send
+global gw_stream_client
+global gw_stream_subnet
 global gateway_shutdown
-global gateway_client_is_legacy
 
 ;; ============================================================
 ;; gateway_init — Create single listening socket on port 9999
@@ -94,6 +103,9 @@ gateway_init:
     jmp .init_clients
 .clients_done:
     mov dword [rel gw_client_count], 0
+    mov dword [rel gw_stream_client], -1
+    mov byte [rel gw_stream_subnet], SUBNET_CONSOL
+    mov word [rel gw_stream_seq], 0
 
     ; socket(AF_INET, SOCK_STREAM, 0)
     mov eax, SYS_SOCKET
@@ -232,7 +244,7 @@ gateway_poll:
     test ax, POLLIN
     jnz .do_accept
 
-    ; Check clients for hangup first
+    ; Check clients for hangup first (only if no data ready)
     xor r12d, r12d
 .check_hangup:
     cmp r12d, GW_MAX_CLIENTS
@@ -240,6 +252,8 @@ gateway_poll:
 
     lea rcx, [rbx + 16 + r12 * 8]
     movzx eax, word [rcx + 6]
+    test ax, POLLIN
+    jnz .next_hangup
     test ax, POLLHUP | POLLERR
     jz .next_hangup
 
@@ -384,6 +398,13 @@ gw_close_client:
     ; Mark slot empty
     mov dword [rbx + rax + GW_CLIENT_FD], -1
 
+    ; If this was the live stream target, clear it
+    cmp dword [rel gw_stream_client], r12d
+    jne .close_count
+    mov dword [rel gw_stream_client], -1
+    mov word [rel gw_stream_seq], 0
+
+.close_count:
     dec dword [rel gw_client_count]
 
     ; Print disconnect
@@ -428,87 +449,76 @@ gateway_read:
     cmp edi, -1
     je .read_err
 
-    ; Read into frame buffer
-    mov eax, SYS_READ
+    ; === STRICT FRAMED READ ===
+    ; Read full header (blocking, handles partial reads)
     lea rsi, [rel gw_frame_buf]
-    mov edx, GW_HEADER_SIZE + GW_MAX_PAYLOAD
-    syscall
+    mov edx, GW_HEADER_SIZE
+    call gw_read_exact
+    cmp eax, GW_HEADER_SIZE
+    jne .read_disconnect
 
-    test eax, eax
-    jle .read_disconnect
-
-    mov ecx, eax                      ; ecx = total bytes read
-
-    ; Check for magic header (2 bytes)
-    cmp ecx, 2
-    jl .legacy_read                   ; too short for header check
+    ; Validate magic header (accept swapped endian for tolerance)
     lea rdx, [rel gw_frame_buf]
+    xor r9d, r9d                    ; swap flag = 0
     movzx eax, word [rdx]
     cmp ax, GW_MAGIC
-    jne .legacy_read
-
-    ; === FRAMED READ ===
-    cmp ecx, GW_HEADER_SIZE
-    jl .read_err                      ; incomplete header
+    je .magic_ok
+    xchg al, ah
+    cmp ax, GW_MAGIC
+    jne .read_protocol_err
+    mov r9d, 1                      ; accept swapped header
+.magic_ok:
 
     ; Parse header
     movzx eax, byte [rdx + 2]        ; subnet
     mov byte [rel gw_last_subnet], al
+    mov byte [rel gw_stream_subnet], al
     mov byte [rbx + r13 + GW_CLIENT_SUBNET], al
 
     movzx eax, word [rdx + 4]        ; seq_id
+    test r9d, r9d
+    jz .seq_ok
+    xchg al, ah
+.seq_ok:
     mov word [rel gw_last_seq], ax
     mov [rbx + r13 + GW_CLIENT_SEQ], ax
 
-    mov byte [rbx + r13 + GW_CLIENT_FLAGS], 0  ; framed
-
-    movzx eax, word [rdx + 6]        ; payload_len from header
-    ; Clamp to actual data available
-    mov esi, ecx
-    sub esi, GW_HEADER_SIZE           ; actual payload bytes received
-    cmp eax, esi
-    jle .payload_len_ok
-    mov eax, esi
-.payload_len_ok:
-    ; Clamp to caller's buffer size
-    cmp eax, r15d
-    jle .payload_fits
-    mov eax, r15d
-.payload_fits:
+    movzx eax, word [rdx + 6]        ; payload_len
+    test r9d, r9d
+    jz .len_ok
+    xchg al, ah
+.len_ok:
     test eax, eax
     jle .read_err
+    cmp eax, GW_MAX_PAYLOAD
+    jg .read_protocol_err
+    mov [rsp], eax                   ; save payload_len on stack (r11 clobbered by syscall)
 
-    ; Copy payload to caller's buffer
-    mov ecx, eax                      ; bytes to copy
-    push rax                          ; save payload len
-    lea rsi, [rel gw_frame_buf + GW_HEADER_SIZE]  ; src = after header
-    mov rdi, r14                      ; dst = caller's buf
+    ; Read full payload
+    mov edi, [rbx + r13 + GW_CLIENT_FD]
+    lea rsi, [rel gw_frame_buf + GW_HEADER_SIZE]
+    mov edx, eax
+    call gw_read_exact
+    cmp eax, [rsp]
+    jne .read_disconnect
+
+    ; Copy payload to caller's buffer (truncate if needed)
+    mov ecx, [rsp]
+    cmp ecx, r15d
+    jle .payload_copy
+    mov ecx, r15d
+.payload_copy:
+    push rcx
+    lea rsi, [rel gw_frame_buf + GW_HEADER_SIZE]  ; src = payload
+    mov rdi, r14                                  ; dst = caller's buf
     rep movsb
-    pop rax                           ; return payload len
+    pop rax                                       ; return byte count in rax
     jmp .read_ret
 
-.legacy_read:
-    ; === LEGACY MODE: raw text, no frame header ===
-    mov byte [rbx + r13 + GW_CLIENT_FLAGS], GW_FLAG_LEGACY
-    mov byte [rbx + r13 + GW_CLIENT_SUBNET], SUBNET_REPL
-    mov word [rbx + r13 + GW_CLIENT_SEQ], 0
-    mov word [rel gw_last_seq], 0
-    mov byte [rel gw_last_subnet], SUBNET_REPL
-
-    ; Copy raw data to caller's buffer
-    ; ecx = bytes read
-    mov eax, ecx
-    cmp eax, r15d
-    jle .legacy_fits
-    mov eax, r15d
-.legacy_fits:
-    push rax                          ; save count
-    mov ecx, eax
-    lea rsi, [rel gw_frame_buf]       ; src = raw data
-    mov rdi, r14                      ; dst = caller's buf
-    rep movsb
-    pop rax                           ; return byte count
-    jmp .read_ret
+.read_protocol_err:
+    ; Invalid frame — close client to keep stream sane
+    call gw_close_client
+    jmp .read_err
 
 .read_disconnect:
     call gw_close_client
@@ -526,10 +536,56 @@ gateway_read:
     ret
 
 ;; ============================================================
+;; gw_read_exact — Read exactly edx bytes from socket
+;; edi=fd, rsi=buf, edx=len
+;; Returns: eax = bytes read (len) or <=0 on error/EOF
+;; ============================================================
+gw_read_exact:
+    push rbx
+    push r12
+    push r13
+    push r14
+    sub rsp, 8                        ; 4 pushes (even) + 8 = aligned
+
+    mov ebx, edi                      ; fd
+    mov r12, rsi                      ; base buffer
+    mov r14d, edx                     ; remaining (callee-saved, safe across syscall)
+    xor r13d, r13d                    ; total read (callee-saved, safe across syscall)
+
+.rex_loop:
+    test r14d, r14d
+    jz .rex_done
+    mov eax, SYS_READ
+    mov edi, ebx
+    lea rsi, [r12 + r13]
+    mov edx, r14d
+    syscall
+    test eax, eax
+    jle .rex_err
+    add r13d, eax
+    sub r14d, eax
+    jmp .rex_loop
+
+.rex_done:
+    mov eax, r13d
+    jmp .rex_ret
+
+.rex_err:
+    ; eax already contains <=0
+    nop
+
+.rex_ret:
+    add rsp, 8
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
 ;; gateway_respond — Send response to client
 ;; edi=client_id, rsi=buf, edx=len
-;; For framed clients: wraps in frame with matching seq_id
-;; For legacy clients: sends raw text
+;; Wraps payload in frame with matching seq_id
 ;; ============================================================
 gateway_respond:
     push rbx
@@ -542,16 +598,18 @@ gateway_respond:
     mov r13, rsi                      ; response buf
     mov r14d, edx                     ; response len
 
+    ; Clamp to protocol max (response stream carries full log)
+    cmp r14d, GW_MAX_PAYLOAD
+    jle .resp_len_ok
+    mov r14d, GW_MAX_PAYLOAD
+.resp_len_ok:
+
     ; Get client info
     lea rbx, [rel gw_clients]
     imul eax, r12d, GW_CLIENT_SIZE
     mov edi, [rbx + rax + GW_CLIENT_FD]
     cmp edi, -1
     je .respond_done
-
-    ; Check if legacy client
-    test byte [rbx + rax + GW_CLIENT_FLAGS], GW_FLAG_LEGACY
-    jnz .respond_legacy
 
     ; === FRAMED RESPONSE ===
     ; Build frame header in gw_frame_buf, then send header + payload
@@ -587,17 +645,6 @@ gateway_respond:
     mov edx, r14d
     mov eax, SYS_WRITE
     syscall
-    jmp .respond_done
-
-.respond_legacy:
-    ; === LEGACY: send raw text ===
-    imul eax, r12d, GW_CLIENT_SIZE
-    mov edi, [rbx + rax + GW_CLIENT_FD]
-    mov rsi, r13
-    mov edx, r14d
-    mov eax, SYS_WRITE
-    syscall
-
 .respond_done:
     add rsp, 8
     pop r14
@@ -607,20 +654,95 @@ gateway_respond:
     ret
 
 ;; ============================================================
-;; gateway_client_is_legacy — Check if client uses unframed protocol
-;; edi=client_id
-;; Returns: eax=1 legacy, 0 framed
+;; gateway_stream_set — Set live stream target
+;; edi=client_id, esi=subnet
 ;; ============================================================
-gateway_client_is_legacy:
-    cmp edi, GW_MAX_CLIENTS
-    jge .not_legacy
-    lea rax, [rel gw_clients]
-    imul ecx, edi, GW_CLIENT_SIZE
-    movzx eax, byte [rax + rcx + GW_CLIENT_FLAGS]
-    and eax, GW_FLAG_LEGACY
+gateway_stream_set:
+    mov [rel gw_stream_client], edi
+    mov [rel gw_stream_subnet], sil
     ret
-.not_legacy:
-    xor eax, eax
+
+;; ============================================================
+;; gateway_stream_clear — Disable live stream
+;; ============================================================
+gateway_stream_clear:
+    mov dword [rel gw_stream_client], -1
+    mov word [rel gw_stream_seq], 0
+    ret
+
+;; ============================================================
+;; gateway_stream_send — Send framed stream payload to live target
+;; rsi=buf, edx=len
+;; ============================================================
+gateway_stream_send:
+    push rbx
+    push r12
+    push r13
+    push r14
+    sub rsp, 8                        ; align (4 pushes = even, +8)
+
+    mov eax, [rel gw_stream_client]
+    cmp eax, -1
+    je .stream_done
+    mov r12d, eax                     ; client_id
+    mov r13, rsi                      ; payload ptr
+    mov r14d, edx                     ; payload len
+
+    ; Clamp payload to max
+    cmp r14d, GW_MAX_PAYLOAD
+    jle .len_ok
+    mov r14d, GW_MAX_PAYLOAD
+.len_ok:
+
+    ; Get client fd
+    lea rbx, [rel gw_clients]
+    imul eax, r12d, GW_CLIENT_SIZE
+    mov edi, [rbx + rax + GW_CLIENT_FD]
+    cmp edi, -1
+    jne .fd_ok
+    mov dword [rel gw_stream_client], -1
+    mov word [rel gw_stream_seq], 0
+    jmp .stream_done
+.fd_ok:
+
+    ; Increment stream seq
+    movzx eax, word [rel gw_stream_seq]
+    inc eax
+    mov [rel gw_stream_seq], ax
+
+    ; Build frame header
+    lea rcx, [rel gw_frame_buf]
+    mov word [rcx], GW_MAGIC
+    mov al, [rel gw_stream_subnet]
+    mov [rcx + 2], al
+    mov byte [rcx + 3], 0
+    mov [rcx + 4], ax
+    mov [rcx + 6], r14w
+
+    ; Send header
+    imul eax, r12d, GW_CLIENT_SIZE
+    mov edi, [rbx + rax + GW_CLIENT_FD]
+    lea rsi, [rel gw_frame_buf]
+    mov edx, GW_HEADER_SIZE
+    mov eax, SYS_WRITE
+    syscall
+    test eax, eax
+    js .stream_done
+
+    ; Send payload
+    imul eax, r12d, GW_CLIENT_SIZE
+    mov edi, [rbx + rax + GW_CLIENT_FD]
+    mov rsi, r13
+    mov edx, r14d
+    mov eax, SYS_WRITE
+    syscall
+
+.stream_done:
+    add rsp, 8
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
     ret
 
 ;; ============================================================
@@ -630,6 +752,10 @@ gateway_shutdown:
     push rbx
     push r12
     sub rsp, 8                        ; align (2 pushes = even, +8)
+
+    ; Disable live stream
+    mov dword [rel gw_stream_client], -1
+    mov word [rel gw_stream_seq], 0
 
     ; Close all clients
     xor r12d, r12d

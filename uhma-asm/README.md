@@ -26,6 +26,34 @@ MISS (wrong) → learn correct pattern, emit new code region
 
 The system generates x86-64 code at runtime. Faults (SIGSEGV, SIGILL) are caught and converted to learning signals.
 
+## Living Loop Interactions (Order Matters)
+
+UHMA’s “alive” loops are not isolated. They form a closed feedback system where the **order** of operations is fixed and stateful. The diagram below shows the dominant flow and how loops influence each other.
+
+```
+INPUT (REPL text or digest_file)
+  → dispatch.process_token
+     → HIT/MISS bookkeeping
+     → learn_pattern on MISS/NEW
+     → update_organic_pressure  (fixed order: dream → observe → evolve → introspect)
+         → dream_cycle / observe_cycle / evolve_cycle when thresholds fire
+            → updates regions + presence + drives
+            → changes future dispatch accuracy
+
+IDLE (no input)
+  → tick_workers (autonomy loop)
+     → resonance_select OR pressure fallback
+     → action (dream / observe / evolve / rest / explore / seek / scan / compose / reflect / teach)
+     → record_action_outcome → updates action traces
+     → seek/scan/eat actions feed back into digest_file → process_token
+```
+
+Interaction rules that keep the system coherent:
+1. **Live → Organic → Dream/Observe/Evolve** always runs in that exact order after each token.
+2. **Observe** updates presence and drives, which selects dispatch mode, which changes future hit/miss rates.
+3. **Dream/Evolve** mutate dispatch regions, directly reshaping prediction behavior.
+4. **Autonomy actions** are learned from outcomes, which biases future action selection.
+
 ## REPL Commands
 
 ### Status
@@ -218,7 +246,7 @@ UHMA exposes tools via MCP (Model Context Protocol) for control from Claude Code
 }
 ```
 
-**Important**: UHMA must be running (port 9999) for UHMA commands. Holographic memory (`mem_*`) works standalone. Restart Claude Code after changes. Verify with `/mcp`.
+**Important**: UHMA must be running (gateway port 9999, framed protocol) for UHMA commands. Holographic memory (`mem_*`) works standalone. Use GUI/feeder/MCP server (raw `nc` won't work). Restart Claude Code after changes. Verify with `/mcp`.
 
 ### Available MCP Tools
 
@@ -226,14 +254,16 @@ UHMA exposes tools via MCP (Model Context Protocol) for control from Claude Code
 |----------|-------|
 | Input | `input`, `raw` |
 | Status | `status`, `self`, `intro`, `presence`, `drives`, `metacog`, `genes`, `regions`, `hive`, `colony` |
-| Debug | `why`, `misses`, `receipts` |
+| Debug | `why`, `misses` |
 | Actions | `dream`, `observe`, `compact`, `reset` |
-| I/O | `save`, `load`, `eat` |
-| Memory | `mem_add`, `mem_query`, `mem_state`, `mem_recent`, `mem_summary` |
+| Memory | `mem_add`, `mem_query`, `mem_state`, `mem_recent`, `mem_summary`, `mem_rag_refresh` |
+
+Use `raw` for any other REPL command (`eat`, `save`, `load`, `trace`, `receipts`, `step`, `run`, etc.).
+Note: Gateway responses are capped to `GW_MAX_PAYLOAD` (4096). Large outputs are truncated in MCP responses; the GUI stream panels carry the full run-log.
 
 ### Holographic Memory (Claude's)
 
-Separate 6GB surface for cross-session persistence and 3-layer code RAG. 14 categories (finding, warning, insight, code_high, code_mid, code_low, etc.). Queried by semantic similarity via MPNet embeddings (768→8192 dim projection).
+Separate 6GB surface for cross-session persistence and 3-layer code RAG. 14 categories (finding, warning, insight, code_high, code_mid, code_low, etc.). Queried by semantic similarity via MPNet embeddings (768→8192 dim projection) implemented in assembly. Rebuild code RAG via `mem_rag_refresh`.
 
 ## GUI (Command & Control Center)
 
@@ -248,11 +278,14 @@ cd gui && make
 
 - **Mind Map View**: Central UHMA node with connected subsystems (BRAIN, REGIONS, TOKENS, STATE, etc.)
 - **Carousel Nodes**: Click to expand, click outside to collapse (auto-copies to clipboard)
-- **Side Panels**: FEED, QUERY, DEBUG streams via TCP gateway (port 9999) - click to pause/copy
-- **Auto-Polling**: QUERY and DEBUG panels refresh every ~3 seconds
+- **Side Panels**: FEED, QUERY, DEBUG panels are logical subnets on the single gateway (port 9999) - click to pause/copy
+- **Live Stream Routing**: Output is mirrored via the gateway stream and routed by the originating command's subnet
+- **Live FEED**: FEED panel shows processing/run-log output (feed + autonomous work)
+- **Auto-Polling**: QUERY and DEBUG panels refresh every ~3 seconds (FEED is stream-only)
 - **Dual Spawn Modes**:
   - **DREAM button**: Spawns UHMA in live/autonomous mode (batch OFF)
   - **FEED menu**: Spawns UHMA in feed mode (batch ON)
+- **URL button**: Fetches web content (curl/wget) and feeds it to UHMA
 
 ### Clipboard Copy
 
@@ -267,7 +300,7 @@ cd gui && make
 │ [DREAM] [OBSERVE] [EVOLVE] [STEP] [RUN] [SAVE] [LOAD] ...      │
 ├───────────────────────────────────────────┬─────────────────────┤
 │                                           │ FEED                │
-│     Mind Map / Carousel View              │ [eat/dream/observe] │
+│     Mind Map / Carousel View              │ [live run-log]      │
 │                                           ├─────────────────────┤
 │     Click nodes to expand/inspect         │ QUERY               │
 │                                           │ [status/why/misses] │

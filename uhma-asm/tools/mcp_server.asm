@@ -1,9 +1,9 @@
-; mcp_server.asm — MCP Protocol Handler for Claude Code (replaces server.py)
+; mcp_server.asm — MCP Protocol Handler for Claude Code
 ;
 ; @entry _start                   ; main entry point
 ; @reads stdin (JSON-RPC from Claude Code)
 ; @writes stdout (JSON-RPC responses)
-; @connects UHMA TCP gateway port 9999
+; @connects UHMA TCP gateway port 9999 (framed, single socket)
 ;
 ; PROTOCOL:
 ;   Claude Code sends JSON-RPC requests:
@@ -13,26 +13,26 @@
 ;
 ; TOOLS SUPPORTED:
 ;   Pass-through (just send command):
-;     status, help, self, intro, why, misses, receipts, dream, observe,
-;     compact, reset, presence, drives, metacog, debugger, genes,
-;     subroutines, regions, hive, colony
+;     status, help, self, intro, why, misses, dream, observe,
+;     presence, drives, metacog, genes, regions, hive, colony,
+;     compact, reset
 ;   Special handling:
 ;     input (wrap with ccmode)
-;     quit (close connection)
 ;     raw (send raw command)
+;     mem_rag_refresh (rebuild code RAG in holographic memory)
 ;
 ; ARCHITECTURE:
 ;   1. Read line from stdin (Content-Length header or raw JSON)
 ;   2. Parse JSON to extract method, id, name, arguments
 ;   3. Map name to UHMA command
-;   4. Send command to UHMA via TCP gateway (port 9999)
-;   5. Read response from UHMA gateway (same socket)
+;   4. Send framed command to UHMA gateway (port 9999)
+;   5. Read framed response from UHMA gateway (same socket)
 ;   6. Format as JSON-RPC response
 ;   7. Write to stdout
 ;
 ; GOTCHAS:
 ;   - MCP uses Content-Length framing OR raw JSON lines (detect at runtime)
-;   - UHMA ports must be listening before server starts
+;   - UHMA gateway must be listening before server starts
 ;   - JSON parsing is minimal - just pattern matching for known fields
 ;   - Response timeout of 10 seconds
 ;
@@ -61,12 +61,22 @@ section .data
                     db '{"name":"misses","description":"Show recent misses","inputSchema":{"type":"object","properties":{"n":{"type":"integer"}}}},'
                     db '{"name":"dream","description":"Trigger dream cycle","inputSchema":{"type":"object","properties":{}}},'
                     db '{"name":"observe","description":"Trigger observation","inputSchema":{"type":"object","properties":{}}},'
+                    db '{"name":"presence","description":"Show presence field","inputSchema":{"type":"object","properties":{}}},'
+                    db '{"name":"drives","description":"Show drive levels","inputSchema":{"type":"object","properties":{}}},'
+                    db '{"name":"metacog","description":"Show metacognitive state","inputSchema":{"type":"object","properties":{}}},'
+                    db '{"name":"genes","description":"Show gene pool status","inputSchema":{"type":"object","properties":{}}},'
+                    db '{"name":"regions","description":"List regions with hit/miss stats","inputSchema":{"type":"object","properties":{}}},'
+                    db '{"name":"hive","description":"Show hive pheromone levels","inputSchema":{"type":"object","properties":{}}},'
+                    db '{"name":"colony","description":"Show colony status","inputSchema":{"type":"object","properties":{}}},'
+                    db '{"name":"compact","description":"Compact condemned regions","inputSchema":{"type":"object","properties":{}}},'
+                    db '{"name":"reset","description":"Reset counters (not knowledge)","inputSchema":{"type":"object","properties":{}}},'
                     db '{"name":"raw","description":"Send raw command","inputSchema":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}},'
                     db '{"name":"mem_add","description":"Add to holographic memory","inputSchema":{"type":"object","properties":{"category":{"type":"string"},"content":{"type":"string"},"context":{"type":"string"}},"required":["category","content"]}},'
                     db '{"name":"mem_query","description":"Query holographic memory","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}},'
                     db '{"name":"mem_state","description":"Get memory cognitive state","inputSchema":{"type":"object","properties":{}}},'
                     db '{"name":"mem_recent","description":"Get recent memory entries","inputSchema":{"type":"object","properties":{"limit":{"type":"integer"}}}},'
-                    db '{"name":"mem_summary","description":"Get memory summary","inputSchema":{"type":"object","properties":{}}}', 0
+                    db '{"name":"mem_summary","description":"Get memory summary","inputSchema":{"type":"object","properties":{}}},'
+                    db '{"name":"mem_rag_refresh","description":"Rebuild code RAG entries","inputSchema":{"type":"object","properties":{}}}', 0
     tools_list_end: db ']}}', 10, 0
 
     ; Tool names (for matching)
@@ -82,7 +92,6 @@ section .data
     tool_compact:   db "compact", 0
     tool_reset:     db "reset", 0
     tool_raw:       db "raw", 0
-    tool_quit:      db "quit", 0
     tool_presence:  db "presence", 0
     tool_drives:    db "drives", 0
     tool_metacog:   db "metacog", 0
@@ -95,6 +104,7 @@ section .data
     tool_mem_state: db "mem_state", 0
     tool_mem_recent: db "mem_recent", 0
     tool_mem_summary: db "mem_summary", 0
+    tool_mem_rag_refresh: db "mem_rag_refresh", 0
 
     ; UHMA command templates
     cmd_ccmode_on:  db "ccmode", 10, 0
@@ -116,8 +126,18 @@ section .data
     cmd_colony:     db "colony", 10, 0
     cmd_misses:     db "misses ", 0
 
-    ; Gateway port (single connection replaces query pair)
+    ; Gateway port (single connection)
     GW_PORT:        equ 9999
+    GW_MAGIC:       equ 0x5548
+    GW_HEADER_SIZE: equ 8
+    GW_MAX_PAYLOAD: equ 4096
+    SUBNET_REPL:    equ 1
+    SUBNET_CONSOL:  equ 4
+
+    ; Framing
+    cl_header:      db "Content-Length: ", 0
+    cl_crlf:        db 13, 10, 13, 10, 0   ; \r\n\r\n
+    newline_char:   db 10                   ; \n for stdio framing
 
     ; Error messages
     err_uhma:       db "Error: Cannot connect to UHMA", 0
@@ -150,6 +170,7 @@ section .bss
     send_buf:       resb 4096       ; command buffer
     resp_buf:       resb 65536      ; response buffer
     json_buf:       resb 131072     ; output JSON buffer
+    gw_frame_buf:   resb GW_HEADER_SIZE + GW_MAX_PAYLOAD
 
     ; Parsed request fields
     req_id:         resq 1          ; request ID
@@ -165,8 +186,17 @@ section .bss
     fd_query_in:    resd 1
     fd_query_out:   resd 1
 
+    ; Content-Length write buffer (header + crlf)
+    cl_buf:         resb 64
+
     ; State
     use_content_length: resd 1      ; 1 = Content-Length framing
+    hm_initialized:     resd 1      ; 1 = holo_mem_init done
+    uhma_connected:     resd 1      ; 1 = connected to UHMA
+    gw_seq_counter:     resw 1      ; seq counter for framed gateway
+    gw_expect_seq:      resw 1      ; expected response seq
+    gw_last_seq_rx:     resw 1      ; last received seq
+    gw_last_subnet_rx:  resb 1      ; last received subnet
 
 section .text
 
@@ -177,6 +207,7 @@ extern holo_mem_query
 extern holo_mem_state
 extern holo_mem_recent
 extern holo_mem_summary
+extern holo_mem_rag_refresh
 
 ; Output buffer capture (from format.asm)
 extern set_output_channel
@@ -190,22 +221,12 @@ global _start
 ;; _start — Entry point
 ;; ============================================================
 _start:
-    ; Initialize
+    ; Initialize state only — no slow init here (deferred to first use)
     mov dword [rel use_content_length], 1
     mov dword [rel fd_query_in], -1
     mov dword [rel fd_query_out], -1
-
-    ; Redirect output to stderr during init (stdout is for JSON-RPC only)
-    mov edi, 2
-    call set_output_channel
-    ; Initialize holographic memory (Claude's exclusive memory)
-    call holo_mem_init
-    ; Restore stdout for JSON responses
-    call reset_output_channel
-
-    ; Try to connect to UHMA (optional - mem_* commands work without it)
-    call connect_uhma
-    ; Don't exit on failure - mem_* commands work standalone
+    mov dword [rel hm_initialized], 0
+    mov dword [rel uhma_connected], 0
 
     ; Main loop: read requests, process, respond
 .main_loop:
@@ -232,6 +253,9 @@ _start:
     jmp exit
 
 .parse_error:
+    ; If no "id" field, this is a notification — silently skip
+    cmp qword [rel req_id], 0
+    je .main_loop
     mov rdi, [rel req_id]
     lea rsi, [rel err_parse]
     call send_error_response
@@ -254,6 +278,7 @@ connect_uhma:
     ; Same socket for both read and write (gateway is bidirectional)
     mov [rel fd_query_in], eax
     mov [rel fd_query_out], eax
+    mov word [rel gw_seq_counter], 0
 
     mov eax, 1
     jmp .conn_ret
@@ -321,59 +346,185 @@ connect_port:
 
 ;; ============================================================
 ;; read_request — Read JSON-RPC request from stdin
+;; Supports both newline-delimited JSON (MCP stdio spec) and
+;; Content-Length framing. Auto-detects based on first byte.
 ;; Returns: eax = bytes read, 0 on EOF
 ;; ============================================================
 read_request:
     push rbx
     push r12
-    sub rsp, 8
+    push r13
+    sub rsp, 16                 ; align (3 pushes = odd, +16)
 
-    ; Read a line from stdin (simple line-based JSON-RPC)
+    ; Read first byte to detect framing
+    xor r12d, r12d              ; position = 0
+.rr_read_first:
+    mov eax, SYS_READ
+    xor edi, edi                ; stdin
     lea rsi, [rel read_buf]
-    xor r12d, r12d              ; total bytes read
+    mov edx, 1
+    syscall
+    test eax, eax
+    jle .rr_eof
 
-.read_loop:
+    ; Skip blank lines (newlines between messages)
+    movzx eax, byte [rel read_buf]
+    cmp al, 10                  ; \n
+    je .rr_read_first
+    cmp al, 13                  ; \r
+    je .rr_read_first
+
+    ; Check if first byte is '{' — newline-delimited JSON
+    cmp al, '{'
+    je .rr_json_line
+
+    ; Otherwise assume Content-Length framing — read rest of header line
+    mov r12d, 1                 ; already have 1 byte
+    jmp .rr_cl_header_byte
+
+    ; === Newline-delimited JSON mode ===
+    ; First byte '{' already in read_buf[0], read until \n
+.rr_json_line:
+    mov r12d, 1                 ; already have '{'
+.rr_json_byte:
     mov eax, SYS_READ
     xor edi, edi                ; stdin
     lea rsi, [rel read_buf]
     add rsi, r12
-    mov edx, 65536
+    mov edx, 1
+    syscall
+    test eax, eax
+    jle .rr_json_done           ; EOF — use what we have
+
+    lea rcx, [rel read_buf]
+    movzx eax, byte [rcx + r12]
+    cmp al, 10                  ; newline = end of message
+    je .rr_json_done
+
+    inc r12d
+    cmp r12d, 65534             ; overflow protection
+    jl .rr_json_byte
+
+.rr_json_done:
+    ; Strip trailing \r if present
+    lea rdi, [rel read_buf]
+    test r12d, r12d
+    jz .rr_eof
+    cmp byte [rdi + r12 - 1], 13
+    jne .rr_json_term
+    dec r12d
+.rr_json_term:
+    mov byte [rdi + r12], 0
+    mov eax, r12d
+    jmp .rr_ret
+
+    ; === Content-Length framing mode ===
+    ; First byte already in read_buf[0], finish reading header
+.rr_cl_header_byte:
+    mov eax, SYS_READ
+    xor edi, edi
+    lea rsi, [rel cl_buf]       ; use cl_buf for header
+    add rsi, r12
+    mov edx, 1
+    syscall
+    test eax, eax
+    jle .rr_eof
+
+    ; Copy first byte to cl_buf if this is the start
+    cmp r12d, 1
+    jne .rr_cl_check_nl
+    movzx eax, byte [rel read_buf]
+    mov byte [rel cl_buf], al
+
+.rr_cl_check_nl:
+    lea rcx, [rel cl_buf]
+    movzx eax, byte [rcx + r12]
+    cmp al, 10
+    je .rr_cl_got_line
+
+    inc r12d
+    cmp r12d, 60
+    jl .rr_cl_header_byte
+    ; Line too long, restart
+    xor r12d, r12d
+    jmp .rr_cl_header_byte
+
+.rr_cl_got_line:
+    lea rcx, [rel cl_buf]
+    mov byte [rcx + r12], 0
+    ; Strip \r
+    test r12d, r12d
+    jz .rr_cl_blank
+    cmp byte [rcx + r12 - 1], 13
+    jne .rr_cl_check_cl
+    dec r12d
+    mov byte [rcx + r12], 0
+    test r12d, r12d
+    jz .rr_cl_blank
+
+.rr_cl_check_cl:
+    ; Check for "Content-Length: "
+    lea rdi, [rel cl_header]
+    lea rsi, [rel cl_buf]
+.rr_cl_cmp:
+    mov al, [rdi]
+    test al, al
+    jz .rr_cl_match
+    cmp al, [rsi]
+    jne .rr_cl_next_line
+    inc rdi
+    inc rsi
+    jmp .rr_cl_cmp
+
+.rr_cl_match:
+    mov rdi, rsi
+    call atoi
+    mov r13d, eax
+    ; Fall through to read next line
+
+.rr_cl_next_line:
+    xor r12d, r12d
+    jmp .rr_cl_header_byte
+
+.rr_cl_blank:
+    test r13d, r13d
+    jz .rr_cl_next_line         ; no Content-Length yet
+
+    ; Read exactly r13d bytes of JSON payload
+    xor r12d, r12d
+.rr_cl_payload:
+    mov eax, SYS_READ
+    xor edi, edi
+    lea rsi, [rel read_buf]
+    add rsi, r12
+    mov edx, r13d
     sub edx, r12d
     syscall
     test eax, eax
-    jle .read_check_got
-
+    jle .rr_cl_check_got
     add r12d, eax
+    cmp r12d, r13d
+    jl .rr_cl_payload
 
-    ; Check if we have a complete line (ends with newline)
     lea rdi, [rel read_buf]
-    add rdi, r12
-    dec rdi
-    cmp byte [rdi], 10
-    jne .read_loop              ; keep reading if no newline
-
-    ; Remove trailing newline
-    mov byte [rdi], 0
-
+    mov byte [rdi + r12], 0
     mov eax, r12d
-    jmp .read_ret
+    jmp .rr_ret
 
-.read_check_got:
-    ; EOF or error - return what we have
-    mov eax, r12d
-    test eax, eax
-    jz .read_eof
-    ; Null terminate
+.rr_cl_check_got:
+    test r12d, r12d
+    jz .rr_eof
     lea rdi, [rel read_buf]
-    add rdi, r12
-    mov byte [rdi], 0
-    jmp .read_ret
+    mov byte [rdi + r12], 0
+    mov eax, r12d
+    jmp .rr_ret
 
-.read_eof:
+.rr_eof:
     xor eax, eax
 
-.read_ret:
-    add rsp, 8
+.rr_ret:
+    add rsp, 16
+    pop r13
     pop r12
     pop rbx
     ret
@@ -640,6 +791,55 @@ dispatch_request:
     test eax, eax
     jnz .do_drives
 
+    ; metacog
+    lea rdi, [rel tool_metacog]
+    mov rsi, rbx
+    call match_tool_name
+    test eax, eax
+    jnz .do_metacog
+
+    ; genes
+    lea rdi, [rel tool_genes]
+    mov rsi, rbx
+    call match_tool_name
+    test eax, eax
+    jnz .do_genes
+
+    ; regions
+    lea rdi, [rel tool_regions]
+    mov rsi, rbx
+    call match_tool_name
+    test eax, eax
+    jnz .do_regions
+
+    ; hive
+    lea rdi, [rel tool_hive]
+    mov rsi, rbx
+    call match_tool_name
+    test eax, eax
+    jnz .do_hive
+
+    ; colony
+    lea rdi, [rel tool_colony]
+    mov rsi, rbx
+    call match_tool_name
+    test eax, eax
+    jnz .do_colony
+
+    ; compact
+    lea rdi, [rel tool_compact]
+    mov rsi, rbx
+    call match_tool_name
+    test eax, eax
+    jnz .do_compact
+
+    ; reset
+    lea rdi, [rel tool_reset]
+    mov rsi, rbx
+    call match_tool_name
+    test eax, eax
+    jnz .do_reset
+
     ; mem_add
     lea rdi, [rel tool_mem_add]
     mov rsi, rbx
@@ -674,6 +874,13 @@ dispatch_request:
     call match_tool_name
     test eax, eax
     jnz .do_mem_summary
+
+    ; mem_rag_refresh
+    lea rdi, [rel tool_mem_rag_refresh]
+    mov rsi, rbx
+    call match_tool_name
+    test eax, eax
+    jnz .do_mem_rag_refresh
 
     ; Unknown tool - return error
     jmp .dispatch_unknown
@@ -734,6 +941,41 @@ dispatch_request:
     call uhma_command
     jmp .dispatch_ret
 
+.do_metacog:
+    lea rsi, [rel cmd_metacog]
+    call uhma_command
+    jmp .dispatch_ret
+
+.do_genes:
+    lea rsi, [rel cmd_genes]
+    call uhma_command
+    jmp .dispatch_ret
+
+.do_regions:
+    lea rsi, [rel cmd_regions]
+    call uhma_command
+    jmp .dispatch_ret
+
+.do_hive:
+    lea rsi, [rel cmd_hive]
+    call uhma_command
+    jmp .dispatch_ret
+
+.do_colony:
+    lea rsi, [rel cmd_colony]
+    call uhma_command
+    jmp .dispatch_ret
+
+.do_compact:
+    lea rsi, [rel cmd_compact]
+    call uhma_command
+    jmp .dispatch_ret
+
+.do_reset:
+    lea rsi, [rel cmd_reset]
+    call uhma_command
+    jmp .dispatch_ret
+
 .do_input:
     ; Send ccmode then text
     lea rdi, [rel send_buf]
@@ -781,6 +1023,7 @@ dispatch_request:
     jmp .dispatch_ret
 
 .do_mem_add:
+    call ensure_holo_mem
     ; Call holo_mem_add(category, content, context, source)
     ; Parse category from req_category
     mov rsi, [rel req_category]
@@ -825,6 +1068,7 @@ dispatch_request:
     jmp .dispatch_ret
 
 .do_mem_query:
+    call ensure_holo_mem
     ; Call holo_mem_query(query, limit)
     mov rsi, [rel req_text]
     test rsi, rsi
@@ -863,6 +1107,7 @@ dispatch_request:
     jmp .dispatch_ret
 
 .do_mem_state:
+    call ensure_holo_mem
     call set_output_buffer
     call holo_mem_state
     call get_output_buffer       ; rax=buf, edx=len
@@ -876,6 +1121,7 @@ dispatch_request:
     jmp .dispatch_ret
 
 .do_mem_recent:
+    call ensure_holo_mem
     call set_output_buffer
     mov edi, [rel req_n]
     test edi, edi
@@ -894,8 +1140,23 @@ dispatch_request:
     jmp .dispatch_ret
 
 .do_mem_summary:
+    call ensure_holo_mem
     call set_output_buffer
     call holo_mem_summary
+    call get_output_buffer       ; rax=buf, edx=len
+    call reset_output_channel
+    lea rdi, [rel resp_buf]
+    mov rsi, rax
+    mov ecx, edx
+    rep movsb
+    mov byte [rdi], 0
+    call send_success_response
+    jmp .dispatch_ret
+
+.do_mem_rag_refresh:
+    call ensure_holo_mem
+    call set_output_buffer
+    call holo_mem_rag_refresh
     call get_output_buffer       ; rax=buf, edx=len
     call reset_output_channel
     lea rdi, [rel resp_buf]
@@ -918,45 +1179,40 @@ dispatch_request:
     ret
 
 ;; ============================================================
-;; drain_output — Drain any stale data from output channel
-;; Non-blocking read to clear buffer
+;; ensure_holo_mem — Lazy init holographic memory on first use
 ;; ============================================================
-drain_output:
+ensure_holo_mem:
+    cmp dword [rel hm_initialized], 1
+    je .ehm_done
     push rbx
-    sub rsp, 24
-
-    ; Quick poll with 0 timeout (non-blocking check)
-    mov eax, [rel fd_query_out]
-    mov [rsp], eax
-    mov word [rsp + 4], POLLIN
-    mov word [rsp + 6], 0
-
-.drain_loop:
-    mov eax, SYS_POLL
-    lea rdi, [rsp]
-    mov esi, 1
-    xor edx, edx            ; 0 timeout = non-blocking
-    syscall
-
-    test eax, eax
-    jle .drain_done
-
-    movzx eax, word [rsp + 6]
-    test ax, POLLIN
-    jz .drain_done
-
-    ; Read and discard
-    mov eax, SYS_READ
-    mov edi, [rel fd_query_out]
-    lea rsi, [rel resp_buf]
-    mov edx, 65536
-    syscall
-    test eax, eax
-    jg .drain_loop          ; keep draining if more data
-
-.drain_done:
-    add rsp, 24
+    sub rsp, 8
+    ; Redirect output to stderr during init
+    mov edi, 2
+    call set_output_channel
+    call holo_mem_init
+    call reset_output_channel
+    mov dword [rel hm_initialized], 1
+    add rsp, 8
     pop rbx
+.ehm_done:
+    ret
+
+;; ============================================================
+;; ensure_uhma — Lazy connect to UHMA gateway on first use
+;; ============================================================
+ensure_uhma:
+    cmp dword [rel uhma_connected], 1
+    je .eu_done
+    push rbx
+    sub rsp, 8
+    call connect_uhma
+    test eax, eax
+    jz .eu_ret
+    mov dword [rel uhma_connected], 1
+.eu_ret:
+    add rsp, 8
+    pop rbx
+.eu_done:
     ret
 
 ;; ============================================================
@@ -1011,6 +1267,189 @@ ensure_connection:
     ret
 
 ;; ============================================================
+;; gw_send_frame — Send framed payload to UHMA gateway
+;; edi = subnet, rsi = payload ptr, edx = payload len
+;; Returns: ax = seq_id (0 on failure)
+;; ============================================================
+gw_send_frame:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 8
+
+    mov r12, rsi                      ; payload ptr
+    mov r13d, edx                     ; payload len
+    mov r15b, dil                     ; subnet
+
+    mov ebx, [rel fd_query_in]
+    cmp ebx, -1
+    je .gs_fail
+
+    cmp r13d, GW_MAX_PAYLOAD
+    ja .gs_fail
+
+    ; Next seq
+    movzx eax, word [rel gw_seq_counter]
+    inc eax
+    mov [rel gw_seq_counter], ax
+    mov r14d, eax                     ; seq_id
+
+    ; Build header
+    lea rdi, [rel gw_frame_buf]
+    mov word [rdi], GW_MAGIC
+    mov [rdi + 2], r15b
+    mov byte [rdi + 3], 0
+    mov [rdi + 4], r14w
+    mov [rdi + 6], r13w
+
+    ; Copy payload
+    lea rdi, [rel gw_frame_buf + GW_HEADER_SIZE]
+    mov rsi, r12
+    mov ecx, r13d
+    rep movsb
+
+    ; Send frame
+    mov eax, SYS_WRITE
+    mov edi, ebx
+    lea rsi, [rel gw_frame_buf]
+    mov edx, GW_HEADER_SIZE
+    add edx, r13d
+    syscall
+    test eax, eax
+    jle .gs_fail
+
+    mov eax, r14d
+    jmp .gs_ret
+
+.gs_fail:
+    xor eax, eax
+
+.gs_ret:
+    add rsp, 8
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; gw_read_exact — Read exactly edx bytes from gateway socket
+;; edi = fd, rsi = buf, edx = len
+;; Returns: eax = bytes read (len) or <=0 on error/EOF
+;; ============================================================
+gw_read_exact:
+    push rbx
+    push r12
+    push r13
+    push r14
+    sub rsp, 8
+
+    mov ebx, edi                      ; fd
+    mov r12, rsi                      ; base buffer
+    mov r14d, edx                     ; remaining (callee-saved, safe across syscall)
+    xor r13d, r13d                    ; total read (callee-saved, safe across syscall)
+
+.gr_loop:
+    test r14d, r14d
+    jz .gr_done
+    mov eax, SYS_READ
+    mov edi, ebx
+    lea rsi, [r12 + r13]
+    mov edx, r14d
+    syscall
+    test eax, eax
+    jle .gr_err
+    add r13d, eax
+    sub r14d, eax
+    jmp .gr_loop
+
+.gr_done:
+    mov eax, r13d
+    jmp .gr_ret
+
+.gr_err:
+    ; eax already <= 0
+    nop
+
+.gr_ret:
+    add rsp, 8
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; gw_read_frame — Read one framed response into resp_buf
+;; Returns: eax = payload len (0 on error)
+;; Sets gw_last_seq_rx and gw_last_subnet_rx
+;; ============================================================
+gw_read_frame:
+    push rbx
+    push r12
+    push r13
+    sub rsp, 8
+
+    mov ebx, [rel fd_query_out]
+    cmp ebx, -1
+    je .gf_fail
+
+    ; Read header
+    mov edi, ebx
+    lea rsi, [rel gw_frame_buf]
+    mov edx, GW_HEADER_SIZE
+    call gw_read_exact
+    cmp eax, GW_HEADER_SIZE
+    jne .gf_fail
+
+    ; Validate magic
+    lea rdx, [rel gw_frame_buf]
+    movzx eax, word [rdx]
+    cmp ax, GW_MAGIC
+    jne .gf_fail
+
+    ; Capture subnet + seq
+    movzx eax, byte [rdx + 2]
+    mov [rel gw_last_subnet_rx], al
+    movzx eax, word [rdx + 4]
+    mov [rel gw_last_seq_rx], ax
+
+    ; Payload length
+    movzx eax, word [rdx + 6]
+    test eax, eax
+    jle .gf_fail
+    cmp eax, GW_MAX_PAYLOAD
+    jg .gf_fail
+    mov r13d, eax
+
+    ; Read payload into resp_buf
+    mov edi, ebx
+    lea rsi, [rel resp_buf]
+    mov edx, r13d
+    call gw_read_exact
+    cmp eax, r13d
+    jne .gf_fail
+
+    ; Null-terminate
+    lea rdi, [rel resp_buf]
+    mov byte [rdi + r13], 0
+    mov eax, r13d
+    jmp .gf_ret
+
+.gf_fail:
+    xor eax, eax
+
+.gf_ret:
+    add rsp, 8
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
 ;; uhma_command — Send command to UHMA, get response, format JSON
 ;; rsi = command string
 ;; ============================================================
@@ -1026,21 +1465,16 @@ uhma_command:
     test eax, eax
     jz .uhma_cmd_fail
 
-    ; Drain any stale data first
-    call drain_output
-
-    ; Send command - first get string length
+    ; Send framed command on REPL subnet
     mov rdi, r12                ; strlen expects string in rdi
     call strlen
-    mov rdx, rax                ; length for write
-    mov rsi, r12                ; buffer for write
-    mov eax, SYS_WRITE
-    mov edi, [rel fd_query_in]  ; fd for write
-    syscall
-
-    ; Check write succeeded
+    mov edx, eax                ; payload length
+    mov rsi, r12                ; payload ptr
+    mov edi, SUBNET_REPL
+    call gw_send_frame
     test eax, eax
-    jle .uhma_cmd_fail
+    jz .uhma_cmd_fail
+    mov [rel gw_expect_seq], ax
 
     ; Wait for response (poll with timeout)
     call read_uhma_response
@@ -1074,39 +1508,29 @@ uhma_input:
     test eax, eax
     jz .input_fail
 
-    ; Enable ccmode
-    mov edi, [rel fd_query_in]
+    ; Enable ccmode (framed)
+    lea rdi, [rel cmd_ccmode_on]
+    call strlen
+    mov edx, eax
     lea rsi, [rel cmd_ccmode_on]
-    mov edx, 7
-    mov eax, SYS_WRITE
-    syscall
+    mov edi, SUBNET_CONSOL
+    call gw_send_frame
 
-    ; Small delay
-    sub rsp, 16
-    mov qword [rsp], 0          ; 0 seconds
-    mov qword [rsp + 8], 100000000  ; 100ms
-    lea rdi, [rsp]
-    xor esi, esi
-    mov eax, SYS_NANOSLEEP
-    syscall
-    add rsp, 16
-
-    ; Send the text
+    ; Send the text (ensure newline terminator)
     lea rdi, [rel send_buf]
     call strlen
-    mov rdx, rax
+    lea rdi, [rel send_buf]
+    add rdi, rax
+    mov byte [rdi], 10
+    mov byte [rdi + 1], 0
+    inc eax
+    mov edx, eax                ; payload length incl newline
     lea rsi, [rel send_buf]
-    mov eax, SYS_WRITE
-    mov edi, [rel fd_query_in]
-    syscall
-
-    ; Send newline
-    mov eax, SYS_WRITE
-    mov edi, [rel fd_query_in]
-    lea rsi, [rel json_buf]
-    mov byte [rsi], 10
-    mov edx, 1
-    syscall
+    mov edi, SUBNET_CONSOL
+    call gw_send_frame
+    test eax, eax
+    jz .input_fail
+    mov [rel gw_expect_seq], ax
 
     ; Read response
     call read_uhma_response
@@ -1131,111 +1555,57 @@ read_uhma_response:
     push rbx
     push r12
     push r13
-    sub rsp, 32
+    sub rsp, 16
 
-    ; Clear resp_buf first (first 256 bytes is enough for null detection)
-    lea rdi, [rel resp_buf]
-    xor eax, eax
-    mov ecx, 256
-    rep stosb
+    ; Clear resp_buf (first byte)
+    mov byte [rel resp_buf], 0
 
-    xor r12d, r12d          ; total bytes read
-    xor r13d, r13d          ; consecutive empty polls
+    movzx r12d, word [rel gw_expect_seq]
+    xor r13d, r13d              ; consecutive timeouts
 
     ; Setup pollfd struct
     mov eax, [rel fd_query_out]
-    mov [rsp], eax          ; fd
+    mov [rsp], eax              ; fd
     mov word [rsp + 4], POLLIN  ; events
-    mov word [rsp + 6], 0   ; revents
+    mov word [rsp + 6], 0       ; revents
 
 .read_loop:
-    ; Reset revents before poll
     mov word [rsp + 6], 0
-
-    ; Poll with 2 second timeout (shorter, loop more)
     mov eax, SYS_POLL
     lea rdi, [rsp]
     mov esi, 1
-    mov edx, 2000           ; 2 seconds
+    mov edx, 2000               ; 2 seconds
     syscall
 
     test eax, eax
-    jl .read_done           ; error
-    jz .poll_timeout        ; timeout
+    jl .read_done               ; error
+    jz .poll_timeout
 
-    ; Check revents
     movzx eax, word [rsp + 6]
     test ax, POLLIN
     jz .poll_timeout
 
-    ; Read available data
-    mov eax, SYS_READ
-    mov edi, [rel fd_query_out]
-    lea rsi, [rel resp_buf]
-    add rsi, r12
-    mov edx, 65536
-    sub edx, r12d
-    syscall
+    ; Read one framed response
+    call gw_read_frame
     test eax, eax
-    jle .read_done
+    jz .poll_timeout
 
-    add r12d, eax
-    xor r13d, r13d          ; reset timeout counter on successful read
+    ; Reset timeout counter on any frame
+    xor r13d, r13d
 
-    ; Check for prompt "uhma> " at end of response
-    cmp r12d, 6
-    jl .read_loop
-
-    lea rdi, [rel resp_buf]
-    add rdi, r12
-    sub rdi, 6
-    ; Check "uhma> " byte by byte
-    cmp byte [rdi], 'u'
-    jne .read_loop
-    cmp byte [rdi + 1], 'h'
-    jne .read_loop
-    cmp byte [rdi + 2], 'm'
-    jne .read_loop
-    cmp byte [rdi + 3], 'a'
-    jne .read_loop
-    cmp byte [rdi + 4], '>'
-    jne .read_loop
-    ; Found prompt, we're done
+    ; Check seq match
+    movzx eax, word [rel gw_last_seq_rx]
+    cmp ax, r12w
+    jne .read_loop              ; discard mismatched frames
     jmp .read_done
 
 .poll_timeout:
-    ; After 3 consecutive timeouts with data, assume response complete
     inc r13d
-    cmp r13d, 3
-    jl .read_loop
-    ; If we have any data, consider it complete
-    test r12d, r12d
-    jnz .read_done
-    ; No data after 6 seconds - continue waiting up to 15 seconds total
-    cmp r13d, 8
+    cmp r13d, 5                 ; ~10s total
     jl .read_loop
 
 .read_done:
-    ; Null terminate
-    lea rdi, [rel resp_buf]
-    mov byte [rdi + r12], 0
-
-    ; Strip trailing prompt if present
-    cmp r12d, 6
-    jl .read_ret
-    lea rdi, [rel resp_buf]
-    add rdi, r12
-    sub rdi, 6
-    cmp byte [rdi], 'u'
-    jne .read_ret
-    cmp byte [rdi + 4], '>'
-    jne .read_ret
-    ; Remove prompt from response
-    mov byte [rdi], 0
-    sub r12d, 6
-
-.read_ret:
-    add rsp, 32
+    add rsp, 16
     pop r13
     pop r12
     pop rbx
@@ -1432,17 +1802,44 @@ send_tools_list:
 ;; Helper functions
 ;; ============================================================
 
-; write_stdout - rsi = string
+; write_stdout - rsi = null-terminated JSON string
+; Writes newline-delimited JSON per MCP stdio spec: JSON\n
 write_stdout:
     push rbx
-    mov rbx, rsi
-    mov rdi, rsi            ; strlen expects rdi
+    push r12
+    sub rsp, 8              ; align (2 pushes = even, +8)
+
+    mov rbx, rsi            ; save JSON pointer
+    mov rdi, rsi
     call strlen
-    mov edx, eax
+    mov r12d, eax           ; r12d = JSON length
+
+    ; Strip trailing newline if present (we'll add our own)
+    test r12d, r12d
+    jz .ws_done
+    lea rdi, [rbx + r12 - 1]
+    cmp byte [rdi], 10
+    jne .ws_write
+    dec r12d
+
+.ws_write:
+    ; Write the JSON body
     mov eax, SYS_WRITE
     mov edi, STDOUT
     mov rsi, rbx
+    mov edx, r12d
     syscall
+
+    ; Write terminating newline
+    lea rsi, [rel newline_char]
+    mov eax, SYS_WRITE
+    mov edi, STDOUT
+    mov edx, 1
+    syscall
+
+.ws_done:
+    add rsp, 8
+    pop r12
     pop rbx
     ret
 

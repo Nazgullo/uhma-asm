@@ -1,4 +1,4 @@
-; feeder.asm — TCP training client for UHMA (replaces feed.sh)
+; feeder.asm — TCP training client for UHMA (assembly-only)
 ;
 ; @entry _start                   ; main entry point
 ; @calls UHMA TCP gateway port 9999 (single connection)
@@ -20,7 +20,7 @@
 ;   4. Fire and forget - responses handled by drain loop
 ;
 ; GOTCHAS:
-;   - Output ports MUST be drained continuously or UHMA blocks
+;   - Gateway responses MUST be drained continuously or UHMA blocks
 ;   - Use poll() for multiplexed I/O, not threads
 ;   - getdents64 for directory scanning (not opendir/readdir)
 ;   - Connect failures retry with backoff
@@ -34,8 +34,13 @@ section .data
     default_cons:    equ 30             ; minutes
     default_cycles:  equ 1
 
-    ; UHMA gateway port (single connection replaces 5 ports)
+    ; UHMA gateway port (single connection)
     GW_PORT:         equ 9999
+    GW_MAGIC:        equ 0x5548
+    GW_HEADER_SIZE:  equ 8
+    GW_MAX_PAYLOAD:  equ 1024
+    SUBNET_REPL:     equ 1
+    SUBNET_CONSOL:   equ 4
 
     ; Messages
     msg_start:       db "[FEEDER] Starting UHMA training client", 10, 0
@@ -94,12 +99,9 @@ section .bss
     do_spawn:        resd 1             ; spawn UHMA if not running
     uhma_pid:        resd 1             ; PID of spawned UHMA
 
-    ; Socket file descriptors (all point to same gateway socket)
-    fd_feed_in:      resd 1             ; gateway socket (send commands)
-    fd_feed_out:     resd 1             ; gateway socket (drain output)
-    fd_query_in:     resd 1             ; gateway socket (send queries)
-    fd_query_out:    resd 1             ; gateway socket (drain output)
-    fd_debug_out:    resd 1             ; gateway socket (drain output)
+    ; Gateway socket (single fd)
+    gw_fd:           resd 1             ; gateway socket fd
+    gw_seq_counter:  resw 1             ; framed seq counter
 
     ; Directory scanning
     dir_fd:          resd 1
@@ -110,12 +112,15 @@ section .bss
     last_consolidate: resq 1            ; unix timestamp
     current_time:    resq 2             ; timeval struct
 
-    ; Poll structures (5 output fds for draining)
+    ; Poll structure (single fd)
     ; struct pollfd { int fd; short events; short revents; } = 8 bytes
-    poll_fds:        resb 40            ; 5 * 8 bytes
+    poll_fds:        resb 8
 
     ; Send buffer
     send_buf:        resb 1024
+
+    ; Framed buffer (header + payload)
+    gw_frame_buf:    resb GW_HEADER_SIZE + GW_MAX_PAYLOAD
 
     ; Drain buffer
     drain_buf:       resb 4096
@@ -347,7 +352,7 @@ _start:
 
     ; Send save command
     lea rsi, [rel cmd_save]
-    mov edi, [rel fd_feed_in]
+    mov edi, SUBNET_CONSOL
     call send_cmd
 
     ; Wait a bit
@@ -356,7 +361,7 @@ _start:
 
     ; Send quit command
     lea rsi, [rel cmd_quit]
-    mov edi, [rel fd_feed_in]
+    mov edi, SUBNET_CONSOL
     call send_cmd
 
     ; Drain any pending output
@@ -391,12 +396,9 @@ connect_all:
     test eax, eax
     js .conn_fail
 
-    ; All fd slots point to the same gateway socket
-    mov [rel fd_feed_in], eax
-    mov [rel fd_feed_out], eax
-    mov [rel fd_query_in], eax
-    mov [rel fd_query_out], eax
-    mov [rel fd_debug_out], eax
+    ; Store gateway socket
+    mov [rel gw_fd], eax
+    mov word [rel gw_seq_counter], 0
 
     mov eax, 1
     jmp .conn_ret
@@ -623,7 +625,7 @@ training_loop:
 
     ; Scan and feed files
 .read_dir:
-    mov eax, SYS_GETDENTS
+    mov eax, SYS_GETDENTS64
     mov edi, [rel dir_fd]
     lea rsi, [rel dir_buf]
     mov edx, 8192
@@ -833,7 +835,7 @@ feed_file:
 
     ; Send to FEED_IN
     lea rsi, [rel send_buf]
-    mov edi, [rel fd_feed_in]
+    mov edi, SUBNET_CONSOL
     call send_cmd
 
     add rsp, 8
@@ -841,16 +843,19 @@ feed_file:
     ret
 
 ;; ============================================================
-;; send_cmd — Send command string to socket
-;; edi = socket fd, rsi = string
+;; send_cmd — Send framed command to gateway
+;; edi = subnet, rsi = string
 ;; ============================================================
 send_cmd:
     push rbx
     push r12
+    push r13
+    push r14
+    push r15
     sub rsp, 8
 
-    mov ebx, edi
-    mov r12, rsi
+    mov r12, rsi                ; payload ptr
+    mov r15b, dil               ; subnet
 
     ; Get string length
     xor ecx, ecx
@@ -862,19 +867,49 @@ send_cmd:
     jmp .len_loop
 
 .do_send:
+    cmp ecx, GW_MAX_PAYLOAD
+    jg .send_done
+
+    ; Next seq
+    movzx eax, word [rel gw_seq_counter]
+    inc eax
+    mov [rel gw_seq_counter], ax
+    mov r14d, eax               ; seq_id
+
+    ; Build header
+    lea rdi, [rel gw_frame_buf]
+    mov word [rdi], GW_MAGIC
+    mov [rdi + 2], r15b
+    mov byte [rdi + 3], 0
+    mov [rdi + 4], r14w
+    mov [rdi + 6], cx           ; payload_len (u16)
+
+    ; Copy payload
+    lea rdi, [rel gw_frame_buf + GW_HEADER_SIZE]
+    mov rsi, r12
+    mov r13d, ecx
+    rep movsb
+
+    ; Send frame
+    mov ebx, [rel gw_fd]
     mov eax, SYS_WRITE
     mov edi, ebx
-    mov rsi, r12
-    mov edx, ecx
+    lea rsi, [rel gw_frame_buf]
+    mov edx, GW_HEADER_SIZE
+    add edx, r13d
     syscall
 
+.send_done:
     add rsp, 8
+    pop r15
+    pop r14
+    pop r13
     pop r12
     pop rbx
     ret
 
 ;; ============================================================
-;; drain_outputs — Poll and drain output sockets
+;; drain_outputs — Poll and drain gateway responses
 ;; edi = timeout in milliseconds
 ;; ============================================================
 drain_outputs:
@@ -884,61 +919,130 @@ drain_outputs:
 
     mov r12d, edi                       ; save timeout
 
-    ; Setup poll fds for output sockets
+    ; Setup pollfd for gateway socket
     lea rbx, [rel poll_fds]
-
-    ; fd_feed_out
-    mov eax, [rel fd_feed_out]
+    mov eax, [rel gw_fd]
     mov [rbx], eax
     mov word [rbx + 4], POLLIN
     mov word [rbx + 6], 0
 
-    ; fd_query_out
-    mov eax, [rel fd_query_out]
-    mov [rbx + 8], eax
-    mov word [rbx + 12], POLLIN
-    mov word [rbx + 14], 0
-
-    ; fd_debug_out
-    mov eax, [rel fd_debug_out]
-    mov [rbx + 16], eax
-    mov word [rbx + 20], POLLIN
-    mov word [rbx + 22], 0
-
-    ; poll(fds, 3, timeout)
+.drain_loop:
     mov eax, SYS_POLL
     lea rdi, [rel poll_fds]
-    mov esi, 3
+    mov esi, 1
     mov edx, r12d
     syscall
     test eax, eax
     jle .drain_ret
 
-    ; Check and drain each socket
-    xor ecx, ecx
-.drain_loop:
-    cmp ecx, 3
-    jge .drain_ret
-
-    ; Check revents
-    imul eax, ecx, 8
-    lea rdx, [rbx + rax]
-    movzx eax, word [rdx + 6]
+    movzx eax, word [rbx + 6]
     test ax, POLLIN
-    jz .drain_next
+    jz .drain_ret
 
-    ; Read and discard
-    mov edi, [rdx]
-    lea rsi, [rel drain_buf]
-    mov edx, 4096
-    mov eax, SYS_READ
-    syscall
-
-.drain_next:
-    inc ecx
+    ; Drain one frame, then continue with 0 timeout
+    call gw_drain_frame
+    xor r12d, r12d
     jmp .drain_loop
 
 .drain_ret:
+    add rsp, 8
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; gw_read_exact — Read exactly edx bytes
+;; edi = fd, rsi = buf, edx = len
+;; Returns: eax = bytes read or <=0 on error
+;; ============================================================
+gw_read_exact:
+    push rbx
+    push r12
+    sub rsp, 8
+
+    mov ebx, edi
+    mov r12, rsi
+    mov r10d, edx
+    xor ecx, ecx
+
+.gre_loop:
+    test r10d, r10d
+    jz .gre_done
+    mov eax, SYS_READ
+    mov edi, ebx
+    lea rsi, [r12 + rcx]
+    mov edx, r10d
+    syscall
+    test eax, eax
+    jle .gre_err
+    add ecx, eax
+    sub r10d, eax
+    jmp .gre_loop
+
+.gre_done:
+    mov eax, ecx
+    jmp .gre_ret
+
+.gre_err:
+    ; eax already <= 0
+    nop
+
+.gre_ret:
+    add rsp, 8
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; gw_drain_frame — Read and discard one framed response
+;; Returns: eax = 1 if drained, 0 on error
+;; ============================================================
+gw_drain_frame:
+    push rbx
+    push r12
+    sub rsp, 8
+
+    mov ebx, [rel gw_fd]
+    cmp ebx, -1
+    je .df_fail
+
+    ; Read header
+    mov edi, ebx
+    lea rsi, [rel gw_frame_buf]
+    mov edx, GW_HEADER_SIZE
+    call gw_read_exact
+    cmp eax, GW_HEADER_SIZE
+    jne .df_fail
+
+    ; Validate magic
+    lea rdx, [rel gw_frame_buf]
+    movzx eax, word [rdx]
+    cmp ax, GW_MAGIC
+    jne .df_fail
+
+    ; Payload length
+    movzx eax, word [rdx + 6]
+    test eax, eax
+    jle .df_fail
+    cmp eax, GW_MAX_PAYLOAD
+    jg .df_fail
+    mov r12d, eax
+
+    ; Read payload into drain_buf
+    mov edi, ebx
+    lea rsi, [rel drain_buf]
+    mov edx, r12d
+    call gw_read_exact
+    cmp eax, r12d
+    jne .df_fail
+
+    mov eax, 1
+    jmp .df_ret
+
+.df_fail:
+    xor eax, eax
+
+.df_ret:
     add rsp, 8
     pop r12
     pop rbx
@@ -983,7 +1087,7 @@ do_consolidate:
     call print_str
 
     ; Send observe
-    mov edi, [rel fd_feed_in]
+    mov edi, SUBNET_CONSOL
     lea rsi, [rel cmd_observe]
     call send_cmd
 
@@ -994,7 +1098,7 @@ do_consolidate:
     call drain_outputs
 
     ; Send dream
-    mov edi, [rel fd_feed_in]
+    mov edi, SUBNET_CONSOL
     lea rsi, [rel cmd_dream]
     call send_cmd
 

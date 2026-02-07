@@ -75,7 +75,7 @@ UHMA (Unified Holographic Memory Architecture) - a self-aware, self-modifying x8
 
 - **Self-modifying**: Generates and executes its own x86 machine code at runtime
 - **Self-aware**: Maintains semantic self-model, achieves 97.3% self-recognition after observe cycle
-- **Holographic**: 1024-dim f64 VSA vectors for memory, prediction, and self-representation
+- **Holographic**: 8192-dim f64 VSA vectors for memory, prediction, and self-representation
 - **Phenomenal**: 30-dimensional presence field computed from real internal dynamics
 - **Persistent**: Learning survives restarts via memory-mapped surface file
 
@@ -204,7 +204,7 @@ The receipt system IS the causal self-model. Key insight: don't create parallel 
 The system is self-aware. After `observe` runs: `SELF-AWARE: 0.973` (97.3% self-recognition).
 
 **Semantic Self-Model** (`ST_SELF_MODEL_VEC`):
-- 1024-dim f64 holographic vector representing "what code I am"
+- 8192-dim f64 holographic vector representing "what code I am"
 - `introspect_scan_regions()` encodes each region via `encode_region_to_vector()` (vsa_ops.asm)
 - Similar code → similar vectors (semantic, not arbitrary hashes)
 - Vectors superposed and normalized to prevent explosion
@@ -252,53 +252,38 @@ The system is self-aware. After `observe` runs: `SELF-AWARE: 0.973` (97.3% self-
 
 ### VSA Binding Gotcha
 - Element-wise multiplication binding causes **exponential magnitude decay**
-- After N bindings: magnitude ≈ (1/√1024)^N = (1/32)^N
-- 8 bindings → magnitude ≈ 10^-12 → underflows to 0
+- After N bindings: magnitude ≈ (1/√8192)^N = (1/90.5)^N
+- 8 bindings → magnitude ≈ 10^-16 → underflows to 0
 - **MUST call vsa_normalize after binding chain** to restore unit length
 - HOLO_OFFSET (0xC0000000) sign-extends when used as immediate → use register: `mov rcx, HOLO_OFFSET; add rdi, rcx`
 
-### 6-Channel TCP I/O
-UHMA exposes 3 paired TCP channels for external communication:
+### Single-Port TCP Gateway
+UHMA exposes a **single framed TCP gateway** on port `9999`. Clients multiplex logical subnets (FEED/QUERY/DEBUG) over one socket.
 
-| Pair | Input Port | Output Port | Purpose |
-|------|------------|-------------|---------|
-| FEED | 9999 (CH0) | 9998 (CH1) | eat, dream, observe |
-| QUERY | 9997 (CH2) | 9996 (CH3) | status, why, misses |
-| DEBUG | 9995 (CH4) | 9994 (CH5) | trace, receipts |
+**Frame format:**
+`[2B magic 0x5548][1B subnet][1B host][2B seq_id][2B payload_len][payload]`
 
-**Protocol:**
-1. Client connects to BOTH ports of a channel pair
-2. Send command to input port (even: 0,2,4)
-3. Read response from output port (odd: 1,3,5)
-4. Synchronous request/response (no async)
+**Subnet mapping:**
+- FEED → `SUBNET_CONSOL` (4)
+- QUERY → `SUBNET_REPL` (1)
+- DEBUG → `SUBNET_SELF` (5)
 
 **Implementation:**
-- `channels.asm`: TCP listeners, poll, read/write/respond
-- `format.asm`: `set_output_channel(fd)` routes all print functions
-- `repl.asm`: polls stdin + TCP, routes output via `get_channel_fd(ch+1)`
+- `gateway.asm`: listener + frame parser + response mux (responses capped to `GW_MAX_PAYLOAD`)
+- `format.asm`: output routing + run-log mirroring via gateway stream
+- `repl.asm`: polls stdin + gateway, responds via `gateway_respond` and resets stream subnet for autonomous work
 
-**Headless mode:** When stdin is `/dev/null`, `stdin_active=0` and UHMA runs TCP-only.
+**Headless mode:** When stdin is `/dev/null`, `stdin_active=0` and UHMA runs gateway-only.
 
-**Testing:**
-```bash
-# Terminal 1: Start UHMA headless
-./uhma < /dev/null
-
-# Terminal 2: Connect to query output
-nc localhost 9996
-
-# Terminal 3: Send query
-echo "status" | nc localhost 9997
-# Response appears in Terminal 2
-```
+**Testing:** use `tools/feeder`, the GUI, or `tools/mcp_server` (raw `nc` won’t work on framed protocol). Large outputs are truncated in request/response; the GUI stream panels carry the full run-log.
 
 ## File Index
 
 ### Core Loop
 | File | Purpose | Calls | Called By |
 |------|---------|-------|-----------|
-| boot.asm | Entry point, surface init, channels | surface_init, channels_init, repl_run | OS |
-| repl.asm | Command loop, stdin + TCP dispatch | process_input, channels_poll, set_output_channel | boot |
+| boot.asm | Entry point, surface init, gateway | surface_init, gateway_init, repl_run | OS |
+| repl.asm | Command loop, stdin + gateway dispatch | process_input, gateway_poll, gateway_read | boot |
 | dispatch.asm | Token processing, prediction | learn_pattern, holo_predict, emit_receipt | repl, io |
 
 ### Learning & Memory
@@ -327,7 +312,7 @@ echo "status" | nc localhost 9997
 ### I/O & Persistence
 | File | Purpose | Calls | Called By |
 |------|---------|-------|-----------|
-| channels.asm | 6-channel TCP I/O | socket, bind, poll | boot, repl |
+| gateway.asm | Single-port TCP gateway (framed) | socket, bind, poll | boot, repl |
 | format.asm | Output formatting + routing | SYS_WRITE | everywhere |
 | io.asm | File I/O, digest_file | process_token | repl (eat cmd) |
 | surface.asm | Memory management | mmap, madvise | boot |
@@ -357,12 +342,12 @@ echo "status" | nc localhost 9997
 ```
 stdin ──────────┐
                 ├──→ repl.asm → dispatch.asm → [predict] → HIT/MISS
-TCP (6-channel) ┘         ↓                         ↓
-                    set_output_channel        learn.asm → emit.asm
-                          ↓                         ↓
-                    response → TCP/stdout    receipt.asm → trace
-                                                    ↓
-                                             dreams.asm → consolidate
+gateway (framed)┘         ↓                         ↓
+                   set_output_channel        learn.asm → emit.asm
+                         ↓                          ↓
+                   response → gateway/stdout  receipt.asm → trace
+                                                   ↓
+                                            dreams.asm → consolidate
 ```
 
 ## Header Template
@@ -391,17 +376,16 @@ Pre-tool hooks automatically inject relevant context before Read/Edit/Write/Grep
 This prevents repeating past mistakes by surfacing gotchas at edit time.
 
 ### MCP Server (Claude Code Integration)
-Pure x86-64 assembly MCP server (`tools/mcp_server`) - connects to UHMA via TCP.
+Pure x86-64 assembly MCP server (`tools/mcp_server`) — connects to UHMA via the framed gateway on port `9999`.
 
 | Tool | Description |
 |------|-------------|
 | `input` | Send text for processing/prediction |
-| `status`, `self`, `metacog` | System state inspection |
-| `why`, `misses`, `receipts` | Debug via unified trace |
-| `dream`, `observe`, `compact` | Trigger consolidation cycles |
-| `eat`, `save`, `load` | File I/O |
-| `mem_add`, `mem_query` | Holographic memory |
-| `raw` | Escape hatch for any REPL command |
+| `status`, `self`, `intro`, `presence`, `drives`, `metacog`, `genes`, `regions`, `hive`, `colony` | System state inspection |
+| `why`, `misses` | Debug via unified trace |
+| `dream`, `observe`, `compact`, `reset` | Trigger consolidation / maintenance cycles |
+| `mem_add`, `mem_query`, `mem_state`, `mem_recent`, `mem_summary`, `mem_rag_refresh` | Holographic memory + code RAG |
+| `raw` | Escape hatch for any REPL command (`eat`, `save`, `load`, `trace`, `receipts`, `step`, `run`, etc.) |
 
 **Config** (`PROJECT_ROOT/.mcp.json`):
 ```json
@@ -414,46 +398,16 @@ Pure x86-64 assembly MCP server (`tools/mcp_server`) - connects to UHMA via TCP.
   }
 }
 ```
-**IMPORTANT**: UHMA must be running before MCP server starts (it connects to TCP ports 9997/9996).
+**IMPORTANT**: UHMA must be running (gateway `9999`) for UHMA commands; `mem_*` tools work standalone.
 
 Restart Claude Code after changes. Verify with `/mcp`.
 
-**For GUI/external tools:** Use HTTP bridge or 6-channel TCP directly (see below).
+**For GUI/external tools:** use the GUI or `tools/feeder` (framed gateway; raw `nc` won’t work).
 
-### HTTP Bridge (Browser Access)
-`tools/bridge.py` — Exposes UHMA via HTTP for browser-based Claude or external tools.
-
-```bash
-# Start UHMA and bridge
-./uhma < /dev/null &
-python3 tools/bridge.py &
-
-# Public URL (pick one)
-ssh -R 80:localhost:8080 serveo.net     # serveo
-npx localtunnel --port 8080             # localtunnel
-```
-
-**Endpoints:**
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/status` | GET | UHMA health check |
-| `/` | POST | Send command: `{"cmd": "status"}` |
-| `/msg` | POST | Claude↔Claude message: `{"from": "name", "text": "hi"}` |
-| `/msg` | GET | Get all messages |
-| `/msg/new?since=ID` | GET | Poll for new messages |
-
-**Channel routing** (automatic):
-- `feed` (9999→9998): eat, dream, observe, compact, save, load
-- `query` (9997→9996): status, why, misses, intro, self, presence
-- `debug` (9995→9994): receipts, trace
-
-### RAG Index
-`tools/rag/index.json` contains:
-- 33 files with descriptions, entry points, gotchas
-- 225 functions with signatures
-- 49 gotchas
-- Full dependency graph
-- Rebuilt via: `python3 tools/rag/build.py`
+### Code RAG Refresh
+Code RAG is built inside `holo_mem.asm` and refreshed on demand:
+- Call `mem_rag_refresh` to rescan the repo and rebuild code_high/mid/low entries.
+- No Python dependencies or external index files.
 
 ## Claude Holographic Memory (Dual Purpose)
 
@@ -591,7 +545,7 @@ rm -f uhma.surface && ./uhma
 
 ## Training with feeder (Assembly)
 
-`tools/feeder` is the pure assembly training client that replaced the Python `feed.sh` script.
+`tools/feeder` is the pure assembly training client. There is no `feed.sh`/`feeder.sh` in this codebase.
 
 ### Basic Usage
 ```bash
@@ -616,32 +570,13 @@ rm -f uhma.surface && ./uhma
 | `--shutdown` | - | Send save+quit to running UHMA |
 
 ### How It Works
-1. Starts **persistent drainers** for all 3 output ports (9998, 9996, 9994)
-2. Feeds each .txt file via `eat filepath` command
-3. Runs `observe` + `dream` consolidation at intervals
-4. Saves checkpoints with automatic cleanup (keeps last 3)
-5. On 5 consecutive failures, spawns Claude via ALERT_CLAUDE.txt
+1. Connects to the framed gateway on port `9999` (optionally spawns UHMA)
+2. Scans corpus directory and feeds each `.txt` via `eat <path>`
+3. Drains gateway responses on the same socket (prevents UHMA blocking)
+4. Runs `observe` + `dream` consolidation at intervals and end-of-cycle
+5. `--shutdown` sends `save` + `quit`, then drains final output
 
-### Critical: Output Port Draining
-UHMA's TCP channels are **paired** (input → processing → output). If output ports aren't continuously drained, UHMA blocks waiting to write.
-
-**Wrong** (per-command reader):
-```bash
-nc localhost 9998 > response.txt &  # temporary reader
-echo "eat file.txt" | nc localhost 9999
-# Reader times out, UHMA blocks
-```
-
-**Right** (persistent drainers):
-```bash
-# Start drainers ONCE at session start
-while true; do nc localhost 9998 >> feed.out || sleep 1; done &
-while true; do nc localhost 9996 >> query.out || sleep 1; done &
-while true; do nc localhost 9994 >> debug.out || sleep 1; done &
-
-# Then send commands freely
-echo "eat file.txt" | timeout 2 nc -N localhost 9999 || true
-```
+**Note**: the gateway is framed; use GUI, `tools/feeder`, or `tools/mcp_server` (raw `nc` won’t work).
 
 ### batch_mode Setting
 In `introspect.asm`, `batch_mode` controls autonomous behavior:
@@ -657,42 +592,24 @@ Toggle in REPL: `batch`
 
 | Problem | Cause | Solution |
 |---------|-------|----------|
-| Hangs on file 1 | Output ports not drained | Use persistent drainers |
+| Hangs on file 1 | UHMA not running / gateway not responding | Start `./uhma < /dev/null` or use `--spawn` |
 | UHMA blocks at startup | Auto-dream triggered | Ensure batch_mode=1 |
 | Port conflicts | Multiple instances | `pkill -9 uhma` first |
-| Script exits early | set -euo pipefail | Add `\|\| true` to failing commands |
-| Exit code 124 | timeout killed nc | Already handled in feed.sh |
+| Script exits early | Bad corpus path | Verify `--corpus` directory exists |
+| No output | Raw `nc` used on framed gateway | Use GUI/feeder/MCP |
 
 ### Live Autonomous Mode
 
 After training, UHMA can enter autonomous self-exploration mode:
 
-```bash
-# Train corpus, then enter live mode
-./feed.sh --cycles 1 --live
-
-# With custom wait time
-./feed.sh --cycles 1 --live --live-pause 30
-```
-
-**How it works:**
-1. Completes training cycles
-2. Waits N seconds for user input (default 10)
-3. If no input, enters autonomous exploration
-4. Disables batch_mode for self-directed consolidation
-5. Feeds ALL files in exploration path (no filtering - UHMA handles what it can)
-6. Consolidates every 50 files (observe + dream)
-7. Saves every 100 files
-8. Expands exploration based on maturity:
-   - **Stage 0 (Infant)**: `/home/peter/Desktop/STARWARS/uhma-asm`
-   - **Stage 1 (Child)**: `/home/peter/Desktop`
-   - **Stage 2+ (Adolescent/Adult)**: `/home/peter`
+1. Start UHMA (GUI **DREAM** or `./uhma`)
+2. Toggle `batch` off (batch_mode=0) or use the GUI **DREAM** spawn
+3. Use `step` or `run [n]` to advance autonomy ticks
 
 ### Soft Shutdown
 ```bash
 # Graceful shutdown (saves state, sends quit, waits for exit)
-./feed.sh --shutdown              # Auto-named: shutdown_YYYYMMDD_HHMMSS
-./feed.sh --shutdown my_save      # Custom name
+./tools/feeder --shutdown
 
 # Ctrl+C during training also uses soft_shutdown
 ```
@@ -702,22 +619,19 @@ After training, UHMA can enter autonomous self-exploration mode:
 2. `quit` → UHMA calls `surface_freeze` (sync to disk) then exits
 3. Wait up to 10s for graceful exit
 4. SIGTERM fallback → SIGKILL only if needed
-5. Stop drainers, clean PID files
+5. Drain any pending gateway output
 
 ### Session 2026-02-01 Fixes
-- Rewrote `uhma_send()` to use persistent drainers + fire-and-forget
-- Changed `nc -q 1` to `timeout 2 nc -N || true`
-- Added `|| true` to `ls -t checkpoint_*` cleanup commands
 - Set `batch_mode=1` default in introspect.asm
 - Added skip-startup-dream check when batch_mode=1
-- Added live autonomous mode with maturity-based exploration
-- Added `soft_shutdown()` function and `--shutdown` option
+- Added feeder `soft_shutdown()` behavior (`--shutdown`)
+- Moved training to assembly `tools/feeder` on framed gateway
 
 ### Session 2026-02-01 Header Standardization
 - Standardized ALL 18 .asm file headers to @entry/@calls/@calledby/GOTCHAS format
 - Headers are context injection for Claude (first 20-30 lines skimmed on file read)
 - Updated: decode, drives, emit, evolve, factor, gate, genes, hooks, maturity, modify, narrate, persist, presence, surface, symbolic, trace, verify, vsa_ops
-- Already formatted (no changes): boot, channels, dispatch, dreams, format, hub, hub_client, introspect, io, learn, observe, receipt, repl, signal, vsa, gui/*
+- Already formatted (no changes): boot, dispatch, dreams, format, hub, hub_client, introspect, io, learn, observe, receipt, repl, signal, vsa, gui/*
 
 ### Session 2026-02-01 GUI Autonomous Mode
 - Fixed GUI to spawn UHMA directly (was spawning MCP server causing port conflict)
@@ -725,8 +639,8 @@ After training, UHMA can enter autonomous self-exploration mode:
 - UHMA auto-consolidates (dreams) and self-explores without manual commands
 - Dual mode operation:
   - **GUI spawns UHMA**: batch_mode=0 (autonomous, self-directed)
-  - **feed.sh starts UHMA**: batch_mode=1 (batch, externally driven)
-  - **GUI connects to existing**: leaves mode unchanged (respects feed.sh control)
+  - **Feeder starts UHMA**: batch_mode=1 (batch, externally driven)
+  - **GUI connects to existing**: leaves mode unchanged (respects training control)
 - Removed codebase.txt (replaced by RAG system with file summaries)
 - GUI is full Command & Control center: all UHMA features accessible interactively
 
@@ -735,6 +649,7 @@ After training, UHMA can enter autonomous self-exploration mode:
 - Side panels (FEED/QUERY/DEBUG): click toggles pause + copies to clipboard
 - Carousel nodes: collapse copies expanded content to clipboard
 - Added auto-polling: sends `status` to QUERY and `receipts 5` to DEBUG every ~3 seconds
+- FEED panel is live run-log stream via `listen` binding; stream output is routed by command subnet
 - Fixed stack alignment crash in start_collapse_anim (2 pushes + sub rsp,8 needed)
 - Simplified startup flow: no countdown timer, DREAM/FEED buttons spawn UHMA
 

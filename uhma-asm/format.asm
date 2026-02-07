@@ -1,4 +1,5 @@
 ; format.asm — Output formatting with channel routing + buffer capture
+; When a GUI stream is active, all prints are mirrored via gateway_stream_send using gw_stream_subnet.
 ;
 ; @entry set_output_channel(edi=fd) -> routes output to socket fd
 ; @entry reset_output_channel() -> resets output to stdout (fd=1)
@@ -40,6 +41,9 @@ section .data
     output_buf_pos: dd 0             ; current write position in output_buffer
 
 section .text
+
+extern gw_stream_client
+extern gateway_stream_send
 
 ;; ============================================================
 ;; set_output_channel(fd)
@@ -85,20 +89,26 @@ get_output_buffer:
 ;; ============================================================
 global print_str
 print_str:
+    push rbx
+    mov rbx, rdi                ; save ptr
+    mov r10, rsi                ; save len
+
     mov edx, [rel output_fd]
     cmp edx, -1
     je .buffer_mode
     ; Normal write to fd
-    mov rdx, rsi
-    mov rsi, rdi
+    mov rdx, r10
+    mov rsi, rbx
     mov edi, [rel output_fd]
     mov rax, SYS_WRITE
     syscall
-    ret
+    jmp .maybe_stream
 .buffer_mode:
     ; Accumulate into output_buffer
     ; rdi=src, rsi=len
     push rcx
+    mov rsi, r10
+    mov rdi, rbx
     mov ecx, [rel output_buf_pos]
     lea rdx, [rcx + rsi]
     cmp edx, 65536              ; don't overflow buffer
@@ -128,6 +138,17 @@ print_str:
     mov [rel output_buf_pos], ecx
 .buffer_done:
     pop rcx
+    jmp .maybe_stream
+
+.maybe_stream:
+    mov eax, [rel gw_stream_client]
+    cmp eax, -1
+    je .print_done
+    mov rsi, rbx
+    mov edx, r10d
+    call gateway_stream_send
+.print_done:
+    pop rbx
     ret
 
 ;; ============================================================

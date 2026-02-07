@@ -36,7 +36,7 @@ cd pet/x86 && make && cd ../..
 cd gui && make && ./uhma-viz
 ```
 
-The GUI provides visual monitoring and full control.
+The GUI provides visual monitoring and full control. Output is mirrored via the gateway stream and routed by the originating command's subnet; FEED is the live run-log for processing/autonomy, while QUERY/DEBUG are polled.
 
 **Startup**: GUI starts without UHMA. Click **DREAM** for autonomous mode or **FEED** for training.
 
@@ -44,8 +44,8 @@ The GUI provides visual monitoring and full control.
 |---------|-------------|
 | Mind Map | Central node with subsystems (BRAIN, REGIONS, TOKENS, CREATURE...) |
 | Carousel | Click node to expand, click outside to collapse |
-| Side Panels | FEED/QUERY/DEBUG TCP streams (live) |
-| Auto-Polling | Sends status/receipts every ~3 seconds |
+| Side Panels | FEED/QUERY/DEBUG panels (gateway subnets); FEED is live run-log |
+| Auto-Polling | Sends status/receipts every ~3 seconds (QUERY/DEBUG only) |
 | Clipboard | Click panel or collapse node to copy (requires `xclip`) |
 | Creature | Live creature panel showing UHMA's cognitive state |
 
@@ -54,13 +54,13 @@ The GUI provides visual monitoring and full control.
 ┌──────────────────────────────────────────────────────────────┐
 │ [DREAM] [OBSERVE] [EVOLVE] [STEP] [RUN] [SAVE] [LOAD] [FEED▼] │
 ├──────────────────────────────────┬───────────────────────────┤
-│                                  │ FEED (9998)               │
-│     Mind Map / Carousel          │ [eat/dream/observe output] │
+│                                  │ FEED                      │
+│     Mind Map / Carousel          │ [live run-log]             │
 │                                  ├───────────────────────────┤
-│     Click nodes to inspect       │ QUERY (9996)              │
+│     Click nodes to inspect       │ QUERY                     │
 │                                  │ [status/why/misses]       │
 │                                  ├───────────────────────────┤
-│                                  │ DEBUG (9994)              │
+│                                  │ DEBUG                     │
 │                                  │ [receipts/trace]          │
 ├──────────────────────────────────┴───────────────────────────┤
 │ INPUT: _______________                      [SEND] [CLEAR]   │
@@ -275,6 +275,7 @@ Separate 6GB surface for cross-session persistence and code RAG.
 | `mem_state` | Cognitive state (entry counts by category) |
 | `mem_recent` | Recent entries |
 | `mem_summary` | Summary statistics |
+| `mem_rag_refresh` | Rebuild code RAG entries |
 
 14 categories: finding, failed, success, insight, warning, session, location, question, todo, context, request, code_high, code_mid, code_low.
 
@@ -284,11 +285,12 @@ Separate 6GB surface for cross-session persistence and code RAG.
 
 UHMA exposes a single TCP gateway on port 9999 for external tools.
 
-**Protocol**: Send command as text line, receive response. Bidirectional on same socket.
+**Protocol**: framed messages (magic + subnet + seq_id + length). Use the GUI, `tools/feeder`, or `tools/mcp_server` (raw `nc` won't work).
+**Note**: response payloads are capped at `GW_MAX_PAYLOAD` (4096). Large outputs are truncated in request/response; use the GUI stream panels for the full run-log.
 
 ```bash
-# Connect and send commands
-echo "status" | nc localhost 9999
+# Quick check (spawns UHMA if needed, feeds once)
+./tools/feeder --spawn --cycles 1
 ```
 
 The GUI, feeder, and MCP server all use this gateway.

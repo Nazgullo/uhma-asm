@@ -1,4 +1,5 @@
 ; receipt.asm — Unified Holographic Receipt Layer + Cognitive Self-Model
+; Output streaming is handled by format.asm; receipt prints follow the active stream subnet.
 ;
 ; RECEIPT EMISSION:
 ; @entry emit_receipt_full(edi=event,esi=ctx,edx=actual,ecx=pred,r8d=region,r9d=aux,xmm0=conf,xmm1=val)

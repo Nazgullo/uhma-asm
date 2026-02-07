@@ -21,6 +21,7 @@
 ; I/O SOURCES:
 ;   stdin (-1)     - interactive terminal (skipped if stdin_active=0)
 ;   TCP gateway    - single-port framed I/O (port 9999)
+;   "listen" binds live receipt stream to FEED panel for GUI clients
 ;
 ; GOTCHAS:
 ;   - Commands are plain words, NOT :prefixed
@@ -53,6 +54,8 @@ section .data
                     db "  intro         Show introspective state (SELF-AWARE reading)", 10
                     db "  observe       Trigger observation cycle (builds self-model)", 10
                     db "  dream         Trigger dream/consolidation cycle", 10
+                    db "  step          Run a single autonomy tick", 10
+                    db "  run [n]       Run n autonomy ticks (default 100)", 10
                     db "  batch         Toggle batch mode (disable autonomous workers)", 10
                     db "  compact       Compact condemned regions", 10
                     db "  save <file>   Save surface to file", 10
@@ -76,6 +79,8 @@ section .data
     listen_enabled_msg: db "[RECEIPT] Listeners enabled (ring+print)", 10, 0
     bye_str:        db "Surface frozen. Goodbye.", 10, 0
     trace_next_msg: db "[JOURNEY] Will trace next token. Type text to trace, 'trace' to show.", 10, 0
+    step_done_msg:  db "[STEP] tick executed", 10, 0
+    run_done_msg:   db "[RUN] ticks executed: ", 0
     ccmode_on_msg:  db "[CC MODE] ON - Claude Code tokens will emit CC receipts", 10, 0
     ccmode_off_msg: db "[CC MODE] OFF - normal input mode", 10, 0
     unknown_str:    db "Unknown command. Type 'help'.", 10, 0
@@ -109,6 +114,9 @@ section .data
     auto_frontier:    db "  Frontier: ", 0
     auto_frontier_entries: db " entries", 10, 0
     auto_curiosity_lbl: db "  Curiosity pressure: ", 0
+    auto_block_lbl: db "  Block boundaries: ", 0
+    auto_block_len: db "  Current block len: ", 0
+    auto_block_conf:db "  Rolling confidence: ", 0
     auto_prefix:    db "  ", 0
     auto_colon:     db ": ", 0
 
@@ -210,6 +218,7 @@ extern drives_show
 extern tick_workers            ; from introspect.asm - autonomous idle processing
 extern batch_mode              ; from introspect.asm - when set, skip autonomous workers
 extern encode_presence_vec     ; from introspect.asm - encode presence into autonomy vec
+extern ensure_action_traces_seeded
 extern get_maturity_level      ; from maturity.asm - current stage (0-2)
 extern holo_cosim_f64          ; from vsa.asm - cosine similarity
 extern presence_show
@@ -243,6 +252,8 @@ extern causal_report          ; from receipt.asm - causal model report
 extern gateway_poll           ; from gateway.asm - poll gateway + stdin
 extern gateway_read           ; from gateway.asm - read frame from client
 extern gateway_respond        ; from gateway.asm - send framed response to client
+extern gateway_stream_set     ; from gateway.asm - set live stream target
+extern gw_stream_subnet       ; from gateway.asm - active stream subnet
 extern set_output_buffer      ; from format.asm - enable buffer capture mode
 extern get_output_buffer      ; from format.asm - get captured buffer (rax=ptr, edx=len)
 extern reset_output_channel   ; from format.asm - reset to stdout
@@ -294,6 +305,7 @@ repl_run:
     cmp eax, -2
     jne .not_timeout
     ; Timeout - do autonomous work (dream/observe/self-ingest based on pressure)
+    mov byte [rel gw_stream_subnet], SUBNET_CONSOL
     call tick_workers
     jmp .loop
 .not_timeout:
@@ -306,6 +318,7 @@ repl_run:
     je .loop                      ; stdin dead, ignore and re-poll
 
     ; stdin has data — ensure output goes to stdout
+    mov byte [rel gw_stream_subnet], SUBNET_CONSOL
     call reset_output_channel
 
     ; Print prompt and read
@@ -481,6 +494,44 @@ repl_run:
     je .cmd_dream
     jmp .not_dream
 .not_dream:
+
+    ; "step" (single autonomy tick)
+    cmp dword [rbx], 'step'
+    jne .not_step
+    movzx eax, byte [rbx + 4]
+    test eax, eax
+    jz .cmd_step
+    cmp eax, ' '
+    je .cmd_step
+    cmp eax, 10
+    je .cmd_step
+    jmp .not_step
+.not_step:
+
+    ; "run" (run N autonomy ticks)
+    cmp word [rbx], 'ru'
+    jne .not_run
+    cmp byte [rbx + 2], 'n'
+    jne .not_run
+    movzx eax, byte [rbx + 3]
+    test eax, eax
+    jz .cmd_run_default
+    cmp eax, 10
+    je .cmd_run_default
+    cmp eax, ' '
+    je .cmd_run_arg
+    jmp .not_run
+.cmd_run_default:
+    mov eax, 100
+    jmp .cmd_run
+.cmd_run_arg:
+    lea rdi, [rbx + 4]        ; skip "run "
+    call parse_decimal
+    test eax, eax
+    jnz .cmd_run
+    mov eax, 100
+    jmp .cmd_run
+.not_run:
 
     ; "compact" (full 7-char match + boundary)
     cmp dword [rbx], 'comp'
@@ -874,6 +925,47 @@ repl_run:
     call persist_save
     jmp .loop
 
+.cmd_step:
+    ; Run a single autonomy tick (temporarily clear batch mode)
+    sub rsp, 16
+    mov rax, [rel batch_mode]
+    mov [rsp], rax
+    mov qword [rel batch_mode], 0
+    call tick_workers
+    mov rax, [rsp]
+    mov [rel batch_mode], rax
+    add rsp, 16
+    lea rdi, [rel step_done_msg]
+    call print_cstr
+    jmp .loop
+
+.cmd_run:
+    ; Run N autonomy ticks (eax = count, default set by parser)
+    sub rsp, 32
+    mov [rsp], rax              ; original count
+    mov [rsp + 8], rax          ; remaining count
+    mov rax, [rel batch_mode]
+    mov [rsp + 16], rax         ; save batch mode
+    mov qword [rel batch_mode], 0
+.run_loop:
+    mov rax, [rsp + 8]
+    test rax, rax
+    jz .run_done
+    call tick_workers
+    dec rax
+    mov [rsp + 8], rax
+    jmp .run_loop
+.run_done:
+    mov rax, [rsp + 16]
+    mov [rel batch_mode], rax
+    lea rdi, [rel run_done_msg]
+    call print_cstr
+    mov rdi, [rsp]              ; original count
+    call print_u64
+    call print_newline
+    add rsp, 32
+    jmp .loop
+
 .cmd_batch:
     ; Toggle batch mode - disables autonomous workers for training
     xor qword [rel batch_mode], 1
@@ -1144,6 +1236,14 @@ repl_run:
     ; Enable receipt listeners (HOLO | PRINT for interactive use)
     mov edi, (LISTENER_HOLO | LISTENER_PRINT)
     call receipt_listen
+    ; If this came from a gateway client, bind run-log stream to FEED subnet
+    mov eax, [rel current_channel]
+    cmp eax, 0
+    jl .listen_done
+    mov edi, eax
+    mov esi, SUBNET_CONSOL
+    call gateway_stream_set
+.listen_done:
     lea rdi, [rel listen_enabled_msg]
     call print_cstr
     jmp .loop
@@ -1458,7 +1558,8 @@ repl_show_autonomy:
     call get_maturity_level
     mov [rsp], eax
 
-    ; Encode current presence for cosim queries
+    ; Ensure action traces are seeded, then encode presence for cosim queries
+    call ensure_action_traces_seeded
     call encode_presence_vec
 
     ; Loop over all 10 actions
@@ -1572,6 +1673,28 @@ repl_show_autonomy:
     lea rdi, [rel auto_curiosity_lbl]
     call print_cstr
     movsd xmm0, [r12 + ST_CURIOSITY_PRESSURE]
+    cvtsd2ss xmm0, xmm0
+    call print_f32
+    call print_newline
+
+    ; Show block boundaries detected
+    lea rdi, [rel auto_block_lbl]
+    call print_cstr
+    mov edi, [r12 + ST_BLOCK_TOTAL]
+    call print_u64
+    call print_newline
+
+    ; Show current block length
+    lea rdi, [rel auto_block_len]
+    call print_cstr
+    mov edi, [r12 + ST_BLOCK_CTX_LEN]
+    call print_u64
+    call print_newline
+
+    ; Show rolling confidence
+    lea rdi, [rel auto_block_conf]
+    call print_cstr
+    movsd xmm0, [r12 + ST_ROLLING_CONF]
     cvtsd2ss xmm0, xmm0
     call print_f32
     call print_newline

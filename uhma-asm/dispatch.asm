@@ -55,6 +55,12 @@ section .data
     align 8
     resonant_thresh: dq 0.7
 
+    ; Block-level context detection constants (f64)
+    align 8
+    block_ema_alpha:     dq 0.1
+    block_ema_1malpha:   dq 0.9
+    block_drop_thresh:   dq 0.5
+
 section .bss
     word_buf:       resb MAX_WORD_LEN
 
@@ -512,6 +518,10 @@ process_token:
     call compute_struct_ctx
     pop r13
     pop r12
+
+    ; --- Accumulate token into block context ---
+    mov edi, r12d
+    call block_accumulate_token
 
     ; --- Check last prediction ---
     lea rax, [rbx + STATE_OFFSET + ST_LAST_PREDICT]
@@ -2237,6 +2247,11 @@ dispatch_predict:
     mov rax, [rsp + 8 + 56]
     mov [rbx + STATE_OFFSET + ST_RUNNER_UP_REGION], rax
 
+    ; Update block confidence tracker (xmm0 = f64 confidence)
+    movss xmm0, [rbx + STATE_OFFSET + ST_EXPECT_CONF]
+    cvtss2sd xmm0, xmm0          ; f32 → f64
+    call block_update_confidence
+
     ; Restore return value
     pop rax
 
@@ -2726,9 +2741,39 @@ compute_struct_ctx:
     jmp .bind_loop
 
 .ctx_normalize:
-    ; Optional: normalize the structural context
-    ; For now, skip normalization to preserve magnitude information
+    ; --- Bind 9th slot: prev block context (coarse grain) ---
+    cmp dword [rbx + STATE_OFFSET + ST_PREV_BLOCK_VALID], 0
+    je .ctx_no_block
 
+    ; Generate role vector for block position (seed = BLOCK_ROLE_SEED)
+    mov edi, BLOCK_ROLE_SEED
+    mov rsi, r14                          ; temp_role (reuse, loop is done)
+    push r12
+    push r13
+    call holo_gen_vec
+    pop r13
+    pop r12
+
+    ; bind(ROLE_BLK, prev_block_vec) → temp_bound
+    mov rdi, r14                          ; role vec
+    lea rsi, [rbx + STATE_OFFSET + ST_PREV_BLOCK_VEC]
+    mov rdx, r15                          ; output to temp_bound
+    push r12
+    push r13
+    call holo_bind_f64
+    pop r13
+    pop r12
+
+    ; Superpose bound block into struct_ctx
+    lea rdi, [rbx + STATE_OFFSET + ST_STRUCT_CTX_VEC]
+    mov rsi, r15
+    push r12
+    push r13
+    call holo_superpose_f64
+    pop r13
+    pop r12
+
+.ctx_no_block:
     ; Mark as valid
     mov dword [rbx + STATE_OFFSET + ST_STRUCT_CTX_VALID], 1
     mov rax, [rbx + STATE_OFFSET + ST_GLOBAL_STEP]
@@ -2740,6 +2785,157 @@ compute_struct_ctx:
     pop r14
     pop r13
     pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; BLOCK-LEVEL CONTEXT DETECTION
+;; Coarse block context layer. Blocks are variable-length token
+;; sequences whose boundaries emerge from prediction confidence
+;; drops (>50%). Finalized block is bound as 9th positional slot
+;; in compute_struct_ctx.
+;; ============================================================
+
+;; block_accumulate_token(edi = token_id)
+;; Superpose token vector into ST_BLOCK_CTX_VEC
+global block_accumulate_token
+block_accumulate_token:
+    push rbx
+    push r12
+    sub rsp, 8                    ; 2 pushes (even) → sub 8 to align
+
+    mov rbx, SURFACE_BASE
+    mov r12d, edi                 ; save token_id
+
+    ; Generate token f64 vec into scratch slot 5
+    mov edi, r12d
+    lea rsi, [rbx + SCRATCH_OFFSET + HOLO_VEC_BYTES * 5]
+    call holo_gen_vec
+
+    ; Superpose into ST_BLOCK_CTX_VEC
+    lea rdi, [rbx + STATE_OFFSET + ST_BLOCK_CTX_VEC]
+    lea rsi, [rbx + SCRATCH_OFFSET + HOLO_VEC_BYTES * 5]
+    call holo_superpose_f64
+
+    ; Increment block length, mark valid
+    inc dword [rbx + STATE_OFFSET + ST_BLOCK_CTX_LEN]
+    mov dword [rbx + STATE_OFFSET + ST_BLOCK_CTX_VALID], 1
+
+    add rsp, 8
+    pop r12
+    pop rbx
+    ret
+
+;; block_update_confidence(xmm0 = f64 confidence)
+;; Updates rolling EMA of prediction confidence.
+;; Detects boundary when confidence drops >50% from rolling average.
+global block_update_confidence
+block_update_confidence:
+    push rbx
+    sub rsp, 16                   ; 1 push (odd) → sub 16 to align
+
+    mov rbx, SURFACE_BASE
+    movsd [rsp], xmm0            ; save incoming confidence
+
+    ; Check warmup phase (samples < 3)
+    mov eax, [rbx + STATE_OFFSET + ST_ROLLING_CONF_SAMPLES]
+    cmp eax, 3
+    jge .block_normal_ema
+
+    ; Warmup: running average = (old * n + new) / (n + 1)
+    inc dword [rbx + STATE_OFFSET + ST_ROLLING_CONF_SAMPLES]
+    cvtsi2sd xmm1, eax           ; n (before increment)
+    movsd xmm2, [rbx + STATE_OFFSET + ST_ROLLING_CONF]  ; old avg
+    mulsd xmm2, xmm1             ; old * n
+    addsd xmm2, xmm0             ; old * n + new
+    inc eax
+    cvtsi2sd xmm1, eax           ; n + 1
+    divsd xmm2, xmm1             ; (old * n + new) / (n + 1)
+    movsd [rbx + STATE_OFFSET + ST_ROLLING_CONF], xmm2
+    jmp .block_conf_done
+
+.block_normal_ema:
+    ; Normal EMA: new_avg = alpha * conf + (1 - alpha) * old_avg
+    movsd xmm1, [rbx + STATE_OFFSET + ST_ROLLING_CONF]  ; old avg
+    movsd xmm2, xmm1             ; save old for boundary check
+
+    ; new = 0.1 * conf + 0.9 * old
+    mulsd xmm0, [rel block_ema_alpha]      ; 0.1 * conf
+    mulsd xmm1, [rel block_ema_1malpha]    ; 0.9 * old
+    addsd xmm0, xmm1                       ; new avg
+    movsd [rbx + STATE_OFFSET + ST_ROLLING_CONF], xmm0
+
+    ; Boundary detection: (old - conf) / old > 0.5
+    ; Only if block_len >= BLOCK_MIN_TOKENS
+    mov eax, [rbx + STATE_OFFSET + ST_BLOCK_CTX_LEN]
+    cmp eax, BLOCK_MIN_TOKENS
+    jl .block_conf_done
+
+    ; old = xmm2, conf = [rsp]
+    movsd xmm0, [rsp]            ; incoming confidence
+    movsd xmm3, xmm2             ; old avg copy
+    subsd xmm3, xmm0             ; old - conf
+    ; Check old > 0 to avoid division by zero
+    xorpd xmm4, xmm4
+    ucomisd xmm2, xmm4
+    jbe .block_conf_done          ; old <= 0, skip
+    divsd xmm3, xmm2             ; (old - conf) / old = relative drop
+    ucomisd xmm3, [rel block_drop_thresh]  ; > 0.5?
+    jbe .block_conf_done
+
+    ; Boundary detected — finalize current block
+    call block_finalize
+
+.block_conf_done:
+    add rsp, 16
+    pop rbx
+    ret
+
+;; block_finalize()
+;; Copy current block vec → prev block vec, normalize, reset current.
+global block_finalize
+block_finalize:
+    push rbx
+    sub rsp, 16                   ; 1 push (odd) → sub 16 to align
+
+    mov rbx, SURFACE_BASE
+
+    ; Copy ST_BLOCK_CTX_VEC → ST_PREV_BLOCK_VEC
+    lea rsi, [rbx + STATE_OFFSET + ST_BLOCK_CTX_VEC]
+    lea rdi, [rbx + STATE_OFFSET + ST_PREV_BLOCK_VEC]
+    mov ecx, HOLO_VEC_BYTES / 8
+.block_copy:
+    mov rax, [rsi]
+    mov [rdi], rax
+    add rsi, 8
+    add rdi, 8
+    dec ecx
+    jnz .block_copy
+
+    ; Normalize the prev block vector
+    lea rdi, [rbx + STATE_OFFSET + ST_PREV_BLOCK_VEC]
+    call holo_normalize_f64
+
+    ; Set prev block valid
+    mov dword [rbx + STATE_OFFSET + ST_PREV_BLOCK_VALID], 1
+
+    ; Zero ST_BLOCK_CTX_VEC
+    lea rdi, [rbx + STATE_OFFSET + ST_BLOCK_CTX_VEC]
+    mov ecx, HOLO_VEC_BYTES / 8
+    xor eax, eax
+.block_zero:
+    mov [rdi], rax
+    add rdi, 8
+    dec ecx
+    jnz .block_zero
+
+    ; Reset block length
+    mov dword [rbx + STATE_OFFSET + ST_BLOCK_CTX_LEN], 0
+
+    ; Increment total boundaries
+    inc dword [rbx + STATE_OFFSET + ST_BLOCK_TOTAL]
+
+    add rsp, 16
     pop rbx
     ret
 

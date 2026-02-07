@@ -27,28 +27,23 @@
 ;   - Stack alignment: ODD pushes → sub rsp must be multiple of 16
 ;   - Spawn uses absolute path /home/peter/Desktop/STARWARS/uhma-asm/uhma
 
+%include "../../include/constants.inc"
+
 section .data
     ; UHMA spawn command
     spawn_cmd:      db "cd /home/peter/Desktop/STARWARS/uhma-asm && ./uhma < /dev/null &", 0
 
     ; Gateway connection params
-    GW_PORT          equ 9999
-    GW_MAGIC         equ 0x5548
-    GW_HEADER_SIZE   equ 8
-    GW_MAX_PAYLOAD   equ 4096
     AF_INET          equ 2
     SOCK_STREAM      equ 1
     SOL_SOCKET       equ 1
     SO_SNDTIMEO      equ 21
+    MSG_NOSIGNAL     equ 0x4000
 
     ; Logical channel → subnet mapping
     MCP_CH_FEED      equ 0
     MCP_CH_QUERY     equ 1
     MCP_CH_DEBUG     equ 2
-    SUBNET_REPL      equ 1
-    SUBNET_CONSOL    equ 4
-    SUBNET_SELF      equ 5
-
     ; Channel to subnet lookup table
     ch_to_subnet:   db SUBNET_CONSOL    ; CH_FEED  (0) → SUBNET_CONSOL (4)
                     db SUBNET_REPL      ; CH_QUERY (1) → SUBNET_REPL   (1)
@@ -57,7 +52,7 @@ section .data
 
     ; Messages
     err_connect:    db "GUI: spawning UHMA...", 10, 0
-    err_spawn:      db "GUI: failed to spawn UHMA (try ./feed.sh first)", 10, 0
+    err_spawn:      db "GUI: failed to spawn UHMA (try ./tools/feeder first)", 10, 0
     msg_connected:  db "GUI: connected to UHMA gateway", 10, 0
     msg_autonomous: db "GUI: enabled autonomous mode (batch_mode=0)", 10, 0
     cmd_batch:      db "batch", 0
@@ -76,6 +71,14 @@ section .bss
     req_buf:        resb GW_HEADER_SIZE + GW_MAX_PAYLOAD  ; frame header + payload
     resp_buf:       resb 65536
     status_cache:   resb 8192
+
+    ; Stream residual buffer (handles multiple frames in one recv)
+    stream_residual:     resb 65536
+    stream_residual_len: resd 1
+
+    ; Last read frame's subnet (set by mcp_read_stream for demux routing)
+    mcp_last_subnet: resb 1
+    mcp_last_seq:    resw 1
 
     ; pollfd struct: { int fd; short events; short revents; }
     poll_fd:        resd 1
@@ -127,6 +130,8 @@ global mcp_spawn_uhma_feed
 global mcp_running
 global mcp_send_async
 global mcp_read_stream
+global mcp_last_subnet
+global mcp_last_seq
 
 ;; ============================================================
 ;; mcp_connect_gateway — Connect single socket to port 9999
@@ -486,6 +491,115 @@ mcp_call_feed:
     jmp mcp_call_ch
 
 ;; ============================================================
+;; mcp_read_exact — Read exactly edx bytes from socket (blocking)
+;; edi = fd, rsi = buf, edx = len
+;; Returns: eax = bytes read (len) or <=0 on error/EOF
+;; ============================================================
+mcp_read_exact:
+    push rbx
+    push r12
+    sub rsp, 8
+
+    mov ebx, edi
+    mov r12, rsi
+    mov r10d, edx
+    xor r11d, r11d
+
+.rex_loop:
+    test r10d, r10d
+    jz .rex_done
+    mov edi, ebx
+    lea rsi, [r12 + r11]
+    mov edx, r10d
+    xor ecx, ecx                ; flags = 0
+    call recv
+    test eax, eax
+    jle .rex_err
+    add r11d, eax
+    sub r10d, eax
+    jmp .rex_loop
+
+.rex_done:
+    mov eax, r11d
+    jmp .rex_ret
+
+.rex_err:
+    ; eax already <= 0
+    nop
+
+.rex_ret:
+    add rsp, 8
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; mcp_read_frame_blocking — Read one framed response into resp_buf
+;; edi = socket fd
+;; Returns: eax = payload len (0 on error)
+;; Sets mcp_last_subnet, mcp_last_seq
+;; ============================================================
+mcp_read_frame_blocking:
+    push rbx
+    push r12
+    push r13
+    sub rsp, 8
+
+    mov ebx, edi
+
+    ; Read header into req_buf
+    mov edi, ebx
+    lea rsi, [rel req_buf]
+    mov edx, GW_HEADER_SIZE
+    call mcp_read_exact
+    cmp eax, GW_HEADER_SIZE
+    jne .rfb_fail
+
+    ; Validate magic
+    lea rdx, [rel req_buf]
+    movzx eax, word [rdx]
+    cmp ax, GW_MAGIC
+    jne .rfb_fail
+
+    ; Subnet + seq
+    movzx eax, byte [rdx + 2]
+    mov [rel mcp_last_subnet], al
+    movzx eax, word [rdx + 4]
+    mov [rel mcp_last_seq], ax
+
+    ; Payload length
+    movzx eax, word [rdx + 6]
+    test eax, eax
+    jle .rfb_fail
+    cmp eax, GW_MAX_PAYLOAD
+    jg .rfb_fail
+    mov r13d, eax
+
+    ; Read payload into resp_buf
+    mov edi, ebx
+    lea rsi, [rel resp_buf]
+    mov edx, r13d
+    call mcp_read_exact
+    cmp eax, r13d
+    jne .rfb_fail
+
+    ; Null-terminate
+    lea rdi, [rel resp_buf]
+    mov byte [rdi + r13], 0
+    mov eax, r13d
+    jmp .rfb_ret
+
+.rfb_fail:
+    xor eax, eax
+
+.rfb_ret:
+    add rsp, 8
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
 ;; mcp_call_ch — Send framed command on logical channel, wait for response
 ;; edi = logical channel (0=FEED, 1=QUERY, 2=DEBUG)
 ;; rsi = tool name (C string)
@@ -572,10 +686,12 @@ mcp_call_ch:
     mov edx, eax
     mov edi, ebx                    ; socket fd
     lea rsi, [rel req_buf]
-    xor ecx, ecx                    ; flags = 0
+    mov ecx, MSG_NOSIGNAL           ; avoid SIGPIPE
     call send
 
-    ; Poll for response (100ms timeout)
+    ; Poll/read for matching response (up to ~5s)
+    mov ecx, 50
+.wait_loop:
     mov [rel poll_fd], ebx
     mov word [rel poll_events], 1   ; POLLIN
     mov word [rel poll_revents], 0
@@ -585,49 +701,23 @@ mcp_call_ch:
     call poll
 
     cmp eax, 0
-    jle .ch_no_response
+    jle .wait_timeout
 
-    ; Read response frame
+    ; Read one framed response
     mov edi, ebx
-    lea rsi, [rel resp_buf]
-    mov edx, 65535
-    xor ecx, ecx
-    call recv
-    mov r15, rax                    ; bytes received
+    call mcp_read_frame_blocking
+    test eax, eax
+    jz .wait_timeout
 
-    cmp r15, GW_HEADER_SIZE
-    jl .ch_no_response
-
-    ; Check if framed response (has magic header)
-    lea rax, [rel resp_buf]
-    movzx ecx, word [rax]
-    cmp cx, GW_MAGIC
-    jne .ch_legacy_response
-
-    ; Parse frame: extract payload after header
-    movzx ecx, word [rax + 6]      ; payload_len from header
-    mov rdx, r15
-    sub rdx, GW_HEADER_SIZE         ; actual payload bytes
-    cmp ecx, edx
-    jle .payload_ok
-    mov ecx, edx                    ; clamp
-.payload_ok:
-    ; Move payload to beginning of resp_buf for caller
-    lea rdi, [rel resp_buf]
-    lea rsi, [rel resp_buf + GW_HEADER_SIZE]
-    mov edx, ecx
-    push rcx
-    call memcpy
-    pop rcx
-    lea rax, [rel resp_buf]
-    mov byte [rax + rcx], 0         ; null terminate
+    ; Check seq match
+    movzx eax, word [rel mcp_last_seq]
+    cmp ax, r14w
+    jne .wait_loop
     jmp .ch_done
 
-.ch_legacy_response:
-    ; Server sent unframed response (legacy compat)
-    lea rax, [rel resp_buf]
-    mov byte [rax + r15], 0         ; null terminate
-    jmp .ch_done
+.wait_timeout:
+    dec ecx
+    jnz .wait_loop
 
 .ch_no_response:
     lea rax, [rel resp_buf]
@@ -753,7 +843,7 @@ mcp_send_async:
     mov edx, eax
     mov edi, ebx
     lea rsi, [rel req_buf]
-    xor ecx, ecx
+    mov ecx, MSG_NOSIGNAL
     call send
 
 .async_done:
@@ -764,31 +854,37 @@ mcp_send_async:
     ret
 
 ;; ============================================================
-;; mcp_read_stream — Non-blocking read from gateway
+;; mcp_read_stream — Non-blocking read from gateway (multi-frame safe)
 ;; edi = logical channel (0=FEED, 1=QUERY, 2=DEBUG) — currently ignored
 ;; rsi = buffer to store payload data
 ;; edx = buffer size
 ;; Returns: eax = bytes read (0 if nothing available)
+;; Sets mcp_last_subnet for caller to route by
 ;; ============================================================
 mcp_read_stream:
     push rbx
     push r12
     push r13
     push r14
-    sub rsp, 24                 ; 4 pushes (even) + 24 = 56, need 8 mod 16
-                                ; 4*8=32+24=56, 56 mod 16 = 8. aligned.
+    push r15
+    sub rsp, 16                 ; 5 pushes (odd) + 16 → aligned
 
-    mov r12d, edi               ; channel (for future subnet filtering)
+    mov r12d, edi               ; channel (unused, single socket)
     mov r13, rsi                ; output buffer
-    mov r14d, edx               ; buffer size
+    mov r14d, edx               ; output buffer size
 
     ; Check connected
     mov eax, [rel mcp_socket]
     cmp eax, -1
     je .stream_no_data
-    mov ebx, eax
+    mov ebx, eax                ; ebx = socket fd
 
-    ; Poll with 0 timeout (non-blocking)
+    ; Check if we have residual data from a previous multi-frame recv
+    mov eax, [rel stream_residual_len]
+    test eax, eax
+    jg .parse_from_residual
+
+    ; No residual — poll socket for new data
     mov [rsp], ebx              ; pollfd.fd
     mov word [rsp + 4], 1       ; POLLIN
     mov word [rsp + 6], 0       ; revents
@@ -805,7 +901,7 @@ mcp_read_stream:
     test eax, 1                 ; POLLIN
     jz .stream_no_data
 
-    ; Data available — read into resp_buf first (may be framed)
+    ; Data available — recv into resp_buf
     mov edi, ebx
     lea rsi, [rel resp_buf]
     mov edx, 65535
@@ -815,10 +911,25 @@ mcp_read_stream:
     test eax, eax
     jle .stream_no_data
 
-    mov ebx, eax                ; total bytes received
+    mov r15d, eax               ; r15d = total bytes in resp_buf
+    jmp .parse_resp_buf
+
+.parse_from_residual:
+    ; Copy residual into resp_buf for uniform parsing
+    mov r15d, eax               ; r15d = residual bytes
+    mov [rsp + 8], eax          ; save in local stack space
+    lea rdi, [rel resp_buf]
+    lea rsi, [rel stream_residual]
+    mov edx, eax
+    call memcpy
+    mov eax, [rsp + 8]
+    mov dword [rel stream_residual_len], 0
+
+.parse_resp_buf:
+    ; resp_buf has r15d bytes. Parse first frame.
 
     ; Check if framed
-    cmp ebx, GW_HEADER_SIZE
+    cmp r15d, GW_HEADER_SIZE
     jl .stream_raw
 
     lea rcx, [rel resp_buf]
@@ -826,47 +937,76 @@ mcp_read_stream:
     cmp dx, GW_MAGIC
     jne .stream_raw
 
-    ; Framed — extract payload
-    movzx eax, word [rcx + 6]  ; payload_len
-    mov edx, ebx
-    sub edx, GW_HEADER_SIZE
-    cmp eax, edx
-    jle .stream_payload_ok
-    mov eax, edx
-.stream_payload_ok:
+    ; === FRAMED ===
+    movzx edx, byte [rcx + 2]  ; subnet
+    mov byte [rel mcp_last_subnet], dl
+    movzx eax, word [rcx + 4]  ; seq_id
+    mov [rel mcp_last_seq], ax
+    movzx eax, word [rcx + 6]  ; payload_len from header
+
+    ; Clamp to available data after header
+    mov ecx, r15d
+    sub ecx, GW_HEADER_SIZE     ; actual payload bytes available
+    cmp eax, ecx
+    jle .frame_payload_ok
+    mov eax, ecx
+.frame_payload_ok:
+    mov r12d, eax               ; r12d = this frame's payload length
+
     ; Clamp to caller buffer
     cmp eax, r14d
-    jle .stream_copy_framed
+    jle .frame_copy
     mov eax, r14d
-.stream_copy_framed:
-    push rax
-    mov rdi, r13                ; dst
-    lea rsi, [rel resp_buf + GW_HEADER_SIZE]  ; src
+.frame_copy:
+    mov [rsp + 8], eax          ; save return byte count
+    mov rdi, r13                ; dst = caller's buffer
+    lea rsi, [rel resp_buf + GW_HEADER_SIZE]
     mov edx, eax
     call memcpy
-    pop rax
+    mov eax, [rsp + 8]          ; restore return byte count
+
+    ; Check for leftover frames after this one
+    mov ecx, r12d
+    add ecx, GW_HEADER_SIZE     ; consumed = header + payload
+    cmp ecx, r15d
+    jge .stream_done            ; no leftover
+
+    ; Save remaining bytes to residual buffer
+    mov edx, r15d
+    sub edx, ecx               ; edx = remaining bytes
+    mov [rel stream_residual_len], edx
+    mov [rsp + 8], eax          ; save return value in local stack space
+    lea rdi, [rel stream_residual]
+    lea rsi, [rel resp_buf]
+    add rsi, rcx                ; skip past consumed bytes
+    ; edx already = remaining byte count (memcpy len)
+    call memcpy
+    mov eax, [rsp + 8]          ; restore return value
     jmp .stream_done
 
 .stream_raw:
-    ; Unframed — copy as-is
-    mov eax, ebx
+    ; Unframed — return as-is, default REPL subnet
+    mov byte [rel mcp_last_subnet], SUBNET_REPL
+    mov word [rel mcp_last_seq], 0
+    mov eax, r15d
     cmp eax, r14d
-    jle .stream_copy_raw
+    jle .raw_copy
     mov eax, r14d
-.stream_copy_raw:
-    push rax
+.raw_copy:
+    mov [rsp + 8], eax          ; save return byte count
     mov rdi, r13
     lea rsi, [rel resp_buf]
     mov edx, eax
     call memcpy
-    pop rax
+    mov eax, [rsp + 8]          ; restore return byte count
     jmp .stream_done
 
 .stream_no_data:
     xor eax, eax
 
 .stream_done:
-    add rsp, 24
+    add rsp, 16
+    pop r15
     pop r14
     pop r13
     pop r12

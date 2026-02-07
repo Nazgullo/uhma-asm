@@ -1245,6 +1245,24 @@
 
 %define ST_DISCOVERY_END        (ST_LAST_ACTION_SCORE + 8)  ; padded
 
+; Block-Level Context Detection
+; Coarse block context layer on top of 8-token fine-grained structural context.
+; Blocks are variable-length token sequences whose boundaries emerge from
+; prediction confidence drops (>50%). Finalized block bound as 9th positional slot.
+%define ST_BLOCK_CTX_VEC        ST_DISCOVERY_END                     ; f64[HOLO_DIM] accumulating block
+%define ST_PREV_BLOCK_VEC       (ST_BLOCK_CTX_VEC + HOLO_VEC_BYTES) ; f64[HOLO_DIM] finalized block
+%define ST_BLOCK_META           (ST_PREV_BLOCK_VEC + HOLO_VEC_BYTES)
+%define ST_BLOCK_CTX_VALID      ST_BLOCK_META                        ; u32: current block has tokens
+%define ST_BLOCK_CTX_LEN        (ST_BLOCK_CTX_VALID + 4)             ; u32: tokens in current block
+%define ST_BLOCK_TOTAL          (ST_BLOCK_CTX_LEN + 4)               ; u32: total boundaries detected
+%define ST_PREV_BLOCK_VALID     (ST_BLOCK_TOTAL + 4)                 ; u32: prev block usable as 9th slot
+%define ST_ROLLING_CONF         (ST_PREV_BLOCK_VALID + 4)            ; f64: EMA of prediction confidence
+%define ST_ROLLING_CONF_SAMPLES (ST_ROLLING_CONF + 8)                ; u32: samples seen (warmup < 3)
+%define ST_BLOCK_END            (ST_ROLLING_CONF_SAMPLES + 4)
+
+%define BLOCK_MIN_TOKENS        3              ; min tokens before boundary detection
+%define BLOCK_ROLE_SEED         0x424C4B08     ; "BLK" + 8 — 9th position role seed
+
 ; Fidelity for CC events (high persistence - Claude patterns should last)
 %define FIDELITY_CC         0x3FEE666666666666                ; 0.95 - very persistent
 
@@ -1601,7 +1619,7 @@
 %define MAX_WORD_LEN        128
 
 ;; ============================================================
-;; Gateway Networking (replaces 6-channel TCP)
+;; Gateway Networking (single-port framed)
 ;; Single port, framed messages, multiplexed responses
 ;; ============================================================
 
@@ -1625,11 +1643,8 @@
 %define GW_CLIENT_FD        0         ; i32 socket fd (-1 = empty)
 %define GW_CLIENT_SEQ       4         ; u16 pending request seq_id
 %define GW_CLIENT_SUBNET    6         ; u8 last subnet
-%define GW_CLIENT_FLAGS     7         ; u8 flags (bit 0 = legacy/unframed)
+%define GW_CLIENT_FLAGS     7         ; u8 flags (reserved)
 %define GW_CLIENT_SIZE      8         ; bytes per entry
-
-; Client flags
-%define GW_FLAG_LEGACY      0x01      ; client uses unframed plain text
 
 ; Response buffer (format.asm buffer capture mode)
 %define GW_RESPONSE_BUF_SIZE 65536    ; 64KB response accumulation buffer

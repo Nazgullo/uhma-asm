@@ -6,7 +6,7 @@
 ; @entry bp_inject(rdi=addr, rsi=handler) -> void
 ; @entry bp_remove(rdi=addr) -> void
 ; @calledby boot.asm:_start (install)
-; @calledby channels.asm:channels_init (set TCP mode)
+; @calledby gateway.asm:gateway_init (set TCP mode)
 ; @calledby io.asm:digest_file (safe point setup)
 ;
 ; FLOW: fault → handler → check fault_safe_rsp → longjmp to REPL
@@ -21,7 +21,7 @@
 ;   - After fault recovery, r14 (SURFACE_BASE) may be clobbered - reload it
 ;   - Max 3 consecutive faults before forced return (anti-loop)
 ;   - Breakpoint handler must preserve all regs except rax
-;   - SIGPIPE: mode 0 exits (interactive), mode 1 ignores (TCP) - set by channels_init
+;   - SIGPIPE: mode 0 exits (interactive), mode 1 ignores (TCP) - set by gateway_init
 ;
 %include "syscalls.inc"
 %include "constants.inc"

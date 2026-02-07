@@ -163,7 +163,7 @@ ARM instructions are fixed 4 bytes each. Easier to calculate region sizes. No va
 ### Android-Specific
 
 - **Surface file location**: `Context.getFilesDir()` → `/data/data/com.app.pet/files/uhma.surface`
-- **No TCP channels**: the 6-channel TCP system is replaced by direct function calls through JNI. No sockets, no ports, no poll loop. Function calls are faster and don't need network permissions.
+- **No TCP gateway**: external sockets are replaced by direct function calls through JNI. No sockets, no ports, no poll loop. Function calls are faster and don't need network permissions.
 - **No stdin/stdout**: all I/O through JNI bridge. Input comes from touch events and text input. Output goes to animation parameters.
 - **Background processing**: Android `WorkManager` for dream cycles when app is backgrounded and phone is charging.
 

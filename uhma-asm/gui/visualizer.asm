@@ -5,15 +5,16 @@
 ; @entry vis_update() -> eax=1 to continue, 0 to quit
 ; @entry vis_shutdown()
 ; @entry copy_ring_to_clipboard(rdi=ring_buf) -> copies 8KB ring buffer to X clipboard
-; @entry poll_channels() -> sends status/receipts to QUERY/DEBUG channels
+; @entry poll_channels() -> sends status/receipts to QUERY/DEBUG panels (gateway subnets)
 ; @calls gfx.asm:gfx_init, gfx.asm:gfx_fill_rect, gfx.asm:gfx_text
-; @calls mcp_client.asm:mcp_spawn_uhma, mcp_client.asm:mcp_call_ch
+; @calls mcp_client.asm:mcp_spawn_uhma, mcp_client.asm:mcp_send_async, mcp_client.asm:mcp_read_stream
 ; @calledby viz_main.asm:main
 ;
 ; FEATURES:
 ;   - DREAM button spawns UHMA in live/autonomous mode (batch OFF)
 ;   - FEED menu spawns UHMA in feed mode (batch ON)
 ;   - Side panels (FEED/QUERY/DEBUG) click to toggle pause + copy to clipboard
+;   - FEED panel is live run-log (receipt stream), not polled
 ;   - Carousel nodes expand on click, collapse copies content to clipboard
 ;   - Auto-polling every ~3 seconds populates QUERY/DEBUG panels
 ;
@@ -59,9 +60,9 @@ section .data
     lbl_waveform:   db "WAVEFORM", 0
     lbl_patterns:   db "PATTERNS", 0
     lbl_output:     db "REPL OUTPUT", 0
-    lbl_feed:       db "FEED (9998)", 0
-    lbl_query:      db "QUERY (9996)", 0
-    lbl_debug:      db "DEBUG (9994)", 0
+    lbl_feed:       db "FEED", 0
+    lbl_query:      db "QUERY", 0
+    lbl_debug:      db "DEBUG", 0
     lbl_paused:     db "[PAUSED]", 0
 
     ; Mind map node labels
@@ -105,11 +106,11 @@ section .data
     menu_live:      db "Live", 0
     menu_stop:      db "Stop", 0
 
-    ; Feed commands for dropdown
-    feed_cmd_quick:    db "./feed.sh --corpus corpus/ --cycles 1 --pause 5 &", 0
-    feed_cmd_mastery:  db "./feed.sh --corpus corpus/ --mastery &", 0
-    feed_cmd_live:     db "./feed.sh --corpus corpus/ --mastery --live &", 0
-    feed_cmd_stop:     db "./feed.sh --shutdown gui_stop", 0
+    ; Feed commands for dropdown (tools/feeder training client)
+    feed_cmd_quick:    db "./tools/feeder --corpus corpus/ --cycles 1 --pause 5 &", 0
+    feed_cmd_mastery:  db "./tools/feeder --corpus corpus/ --cycles 0 --consolidate 30 &", 0
+    feed_cmd_live:     db "./tools/feeder --corpus corpus/ --cycles 0 --consolidate 30 &", 0
+    feed_cmd_stop:     db "./tools/feeder --shutdown", 0
 
     ; Clipboard copy (xclip)
     clip_tmpfile:      db "/tmp/uhma_clip.txt", 0
@@ -117,7 +118,7 @@ section .data
     clip_xclip:        db "xclip -selection clipboard < /tmp/uhma_clip.txt", 0
     clip_copied_msg:   db "Copied to clipboard", 0
 
-    ; Polling commands for QUERY/DEBUG channels
+    ; Polling commands for QUERY/DEBUG panels
     poll_status_cmd:   db "status", 0
     poll_receipts_cmd: db "receipts 5", 0
 
@@ -139,6 +140,12 @@ section .data
     cmd_geom:       db "geom", 0
     cmd_colony:     db "colony", 0
     cmd_genes:      db "genes", 0
+    cmd_dream:      db "dream", 0
+    cmd_observe:    db "observe", 0
+    cmd_evolve:     db "evolve", 0
+    cmd_geom_0:     db "geom 0", 0
+    cmd_geom_1:     db "geom 1", 0
+    cmd_geom_2:     db "geom 2", 0
 
     ; New feature labels
     lbl_rosetta:    db "ROSETTA STONE", 0
@@ -254,8 +261,8 @@ section .data
     zenity_dir:     db "zenity --file-selection --directory --title='Select Folder' 2>/dev/null > /tmp/.uhma_pick", 0
     zenity_url:     db "zenity --entry --title='Fetch URL' --text='Enter URL to digest:' 2>/dev/null > /tmp/.uhma_pick", 0
     zenity_feed:    db "zenity --entry --title='Feed Configuration' "
-                    db "--text='Edit feed.sh command:' "
-                    db "--entry-text='./feed.sh --corpus corpus/ --cycles 1 --pause 5' "
+                    db "--text='Edit feeder command:' "
+                    db "--entry-text='./tools/feeder --corpus corpus/ --cycles 1 --pause 5' "
                     db "2>/dev/null > /tmp/.uhma_feed", 0
     tmp_feed_path:  db "/tmp/.uhma_feed", 0
     tmp_pick_path:  db "/tmp/.uhma_pick", 0
@@ -265,19 +272,20 @@ section .data
     msg_dream:      db "Dream complete", 0
     msg_observe:    db "Observe complete", 0
     msg_evolve:     db "Evolve complete", 0
-    msg_step:       db "Step complete", 0
-    msg_run:        db "100 steps done", 0
+    msg_step:       db "Step tick queued", 0
+    msg_run:        db "Run 100 queued", 0
     msg_save:       db "State saved", 0
     msg_load:       db "State loaded", 0
     msg_sent:       db "Input sent", 0
     msg_clear:      db "Cleared", 0
     msg_file_ok:    db "File loaded", 0
     msg_dir_ok:     db "Dir loaded", 0
-    msg_url_ok:     db "URL fetched", 0
+    msg_url_ok:     db "URL fed", 0
+    msg_url_err:    db "URL fetch failed", 0
     msg_intro_ok:   db "Intro shown", 0
     msg_file_err:   db "Load failed", 0
-    msg_trace_on:   db "Trace ON", 0
-    msg_trace_off:  db "Trace OFF", 0
+    msg_trace_on:   db "Trace armed", 0
+    msg_trace_off:  db "Trace shown", 0
     msg_geom_abs:   db "Verify: ABSTRACT", 0
     msg_geom_vec:   db "Verify: GEOMETRIC", 0
     msg_geom_both:  db "Verify: BOTH", 0
@@ -288,14 +296,20 @@ section .data
     dbg_dream:      db "DEBUG: do_dream called", 10, 0
     dbg_spawning:   db "DEBUG: mcp_running=0, calling spawn", 10, 0
 
-    ; MCP command strings
-    raw_tool:       db "raw", 0
-    step_text:      db " ", 0
-    run_cmd_arg:    db '"command":"run 100"', 0
-    trace_on_arg:   db '"command":"listen"', 0
-    trace_off_arg:  db '"command":"trace"', 0
-    geom_cmd_arg:   db '"command":"geom"', 0
-    eat_cmd_pre:    db '"command":"eat ', 0
+    ; Command strings
+    cmd_step:       db "step", 0
+    cmd_run_100:    db "run 100", 0
+    cmd_trace:      db "trace", 0
+    cmd_ccmode:     db "ccmode", 0
+    cmd_listen:     db "listen", 0
+    eat_cmd_pre:    db "eat ", 0
+
+    ; URL fetch helpers
+    url_tmp_path:   db "/tmp/.uhma_url.txt", 0
+    url_curl_pre:   db "curl -L -s --max-time 15 --fail -o /tmp/.uhma_url.txt -- '", 0
+    url_curl_post:  db "'", 0
+    url_wget_pre:   db "wget -q -O /tmp/.uhma_url.txt --timeout=15 -- '", 0
+    url_wget_post:  db "'", 0
 
     ; Number format
     hex_prefix:     db "0x", 0
@@ -303,9 +317,9 @@ section .data
     quote_char:     db "'", 0
 
     ; Feed control commands
-    feed_start_cmd: db "./feed.sh --cycles 1 --pause 5 &", 0
-    feed_stop_cmd:  db "pkill -TERM -f feed.sh", 0
-    feed_check_cmd: db "pgrep -f feed.sh >/dev/null 2>&1", 0
+    feed_start_cmd: db "./tools/feeder --corpus corpus/ --cycles 1 --pause 5 &", 0
+    feed_stop_cmd:  db "pkill -TERM -f feeder", 0
+    feed_check_cmd: db "pgrep -f feeder >/dev/null 2>&1", 0
 
     ; Sine table (64 entries for quarter wave, values 0-127 representing 0.0-1.0)
     ; sin(i * 90 / 64) * 127
@@ -455,10 +469,6 @@ section .bss
     input_buf:      resb 256
     input_len:      resd 1
 
-    ; Output buffer (last response from UHMA)
-    output_buf:     resb 4096
-    output_len:     resd 1
-
     ; Feedback
     feedback_msg:   resq 1
     feedback_timer: resd 1
@@ -496,25 +506,25 @@ section .bss
     ; Ring buffers for live streaming panels
     ; Each buffer: data + write_pos + view_pos + paused flag
 
-    ; FEED output (channel 1 = port 9998) - eat/dream/observe responses
+    ; FEED output (SUBNET_CONSOL) - eat/dream/observe responses
     feed_ring:      resb 8192
     feed_write:     resd 1          ; write position (0-8191)
     feed_view:      resd 1          ; view position (follows write unless paused)
     feed_paused:    resd 1          ; 1 = paused (user examining), 0 = live
 
-    ; QUERY output (channel 3 = port 9996) - status/why/misses responses
+    ; QUERY output (SUBNET_REPL) - status/why/misses responses
     query_ring:     resb 8192
     query_write:    resd 1
     query_view:     resd 1
     query_paused:   resd 1
 
-    ; DEBUG output (channel 5 = port 9994) - trace/receipts
+    ; DEBUG output (SUBNET_SELF) - trace/receipts
     debug_ring:     resb 8192
     debug_write:    resd 1
     debug_view:     resd 1
     debug_paused:   resd 1
 
-    ; Polling state for QUERY/DEBUG channels
+    ; Polling state for QUERY/DEBUG panels
     poll_counter:   resd 1          ; frames since last poll
     POLL_INTERVAL   equ 180         ; poll every 180 frames (~3 seconds at 60fps)
 
@@ -522,9 +532,9 @@ section .bss
     RING_MASK       equ 8191        ; for wrapping (size - 1)
 
     ; Feed control state
-    feed_running:   resd 1          ; 1 if feed.sh is running
+    feed_running:   resd 1          ; 1 if feeder is running
     feed_check_ctr: resd 1          ; counter for polling (every 60 frames)
-    feed_cmd_buf:   resb 512        ; dynamically built feed.sh command
+    feed_cmd_buf:   resb 512        ; dynamically built feeder command
     feed_cfg_buf:   resb 256        ; parsed config from zenity
 
     ; Dropdown menu state
@@ -638,25 +648,19 @@ extern strcpy
 extern strcat
 extern strlen
 extern strcmp
-; MCP client functions (replaces direct UHMA calls)
-extern mcp_dream
-extern mcp_observe
-extern mcp_evolve
-extern mcp_send_text
+; MCP client functions (gateway framed I/O)
 extern mcp_save
 extern mcp_load
-extern mcp_get_status
-extern mcp_call
-extern mcp_call_ch
 extern mcp_send_async
 extern mcp_read_stream
+extern mcp_last_subnet
 extern mcp_spawn_uhma
 extern mcp_spawn_uhma_feed
 extern mcp_try_connect
 extern mcp_running
 
 ; Rosetta Stone / Geometric Verification
-; Verify mode handled via MCP raw commands
+; Verify mode handled via gateway commands
 
 ; Colony / Mycorrhiza
 ; Shared mode queried via MCP
@@ -858,6 +862,12 @@ vis_init:
 
     ; Try to connect to existing UHMA (sets mcp_running=1 if successful)
     call mcp_try_connect
+    ; If connected, populate panels instantly
+    cmp dword [rel mcp_running], 0
+    je .no_initial_poll
+    call enable_feed_stream
+    call poll_channels
+.no_initial_poll:
 
     mov eax, 1
     jmp .done
@@ -954,9 +964,12 @@ vis_update:
     mov [rel feedback_timer], eax
 .no_dec:
 
-    ; Poll QUERY/DEBUG channels periodically (only if UHMA running)
+    ; Poll QUERY/DEBUG panels periodically (only if UHMA running)
     cmp dword [rel mcp_running], 0
     je .skip_poll
+    ; Don't auto-poll while a node is expanded (preserve node-specific data in query_ring)
+    cmp dword [rel focus_node], -1
+    jne .skip_poll
     inc dword [rel poll_counter]
     mov eax, [rel poll_counter]
     cmp eax, POLL_INTERVAL
@@ -1440,74 +1453,74 @@ handle_click:
     je .send_colony
     jmp .done_click
 .send_regions:
-    lea rdi, [rel cmd_regions]
-    xor esi, esi
-    call mcp_call
+    mov edi, 1                      ; channel 1 → SUBNET_REPL → query_ring
+    lea rsi, [rel cmd_regions]
+    call mcp_send_async
     jmp .done_click
 .send_receipts:
-    lea rdi, [rel cmd_receipts]
-    xor esi, esi
-    call mcp_call
+    mov edi, 1
+    lea rsi, [rel cmd_receipts]
+    call mcp_send_async
     jmp .done_click
 .send_intro:
-    lea rdi, [rel cmd_intro]
-    xor esi, esi
-    call mcp_call
+    mov edi, 1
+    lea rsi, [rel cmd_intro]
+    call mcp_send_async
     jmp .done_click
 .send_metacog:
-    lea rdi, [rel cmd_metacog]
-    xor esi, esi
-    call mcp_call
+    mov edi, 1
+    lea rsi, [rel cmd_metacog]
+    call mcp_send_async
     jmp .done_click
 .send_drives:
-    lea rdi, [rel cmd_drives]
-    xor esi, esi
-    call mcp_call
+    mov edi, 1
+    lea rsi, [rel cmd_drives]
+    call mcp_send_async
     jmp .done_click
 .send_presence:
-    lea rdi, [rel cmd_presence]
-    xor esi, esi
-    call mcp_call
+    mov edi, 1
+    lea rsi, [rel cmd_presence]
+    call mcp_send_async
     jmp .done_click
 .send_hive:
-    lea rdi, [rel cmd_hive]
-    xor esi, esi
-    call mcp_call
+    mov edi, 1
+    lea rsi, [rel cmd_hive]
+    call mcp_send_async
     jmp .done_click
 .send_self:
-    lea rdi, [rel cmd_self]
-    xor esi, esi
-    call mcp_call
+    mov edi, 1
+    lea rsi, [rel cmd_self]
+    call mcp_send_async
     jmp .done_click
 .send_status:
-    lea rdi, [rel cmd_status]
-    xor esi, esi
-    call mcp_call
+    mov edi, 1
+    lea rsi, [rel cmd_status]
+    call mcp_send_async
     jmp .done_click
 .send_geom:
-    lea rdi, [rel cmd_geom]
-    xor esi, esi
-    call mcp_call
+    mov edi, 1
+    lea rsi, [rel cmd_geom]
+    call mcp_send_async
     jmp .done_click
 .send_colony:
-    lea rdi, [rel cmd_colony]
-    xor esi, esi
-    call mcp_call
+    mov edi, 1
+    lea rsi, [rel cmd_colony]
+    call mcp_send_async
     jmp .done_click
 .send_genes:
-    lea rdi, [rel cmd_genes]
-    xor esi, esi
-    call mcp_call
+    mov edi, 1
+    lea rsi, [rel cmd_genes]
+    call mcp_send_async
     jmp .done_click
 
 .click_brain:
     ; BRAIN node - switch to brain/memory view
     mov dword [rel view_mode], 1
-    ; Clear query_ring and send regions command
+    ; Clear query_ring and send regions command (async → query_ring)
     mov dword [rel query_write], 0
-    lea rdi, [rel cmd_regions]
-    xor esi, esi
-    call mcp_call
+    mov edi, 1
+    lea rsi, [rel cmd_regions]
+    call mcp_send_async
     jmp .done_click
 
 .next_node:
@@ -1711,6 +1724,41 @@ do_action:
 
     cmp ebx, ACT_QUIT
     je .quit
+    cmp ebx, ACT_CLEAR
+    je .do_clear
+    cmp ebx, ACT_GEOM
+    je .do_geom
+
+    ; Ensure UHMA connected before any command-sending action
+    cmp dword [rel mcp_running], 0
+    jne .connected
+    ; Try passive connect (UHMA may be running externally)
+    ; Save ebx in local stack space (stack already 16-aligned here)
+    mov [rsp], ebx
+    call mcp_try_connect
+    mov ebx, [rsp]
+    test eax, eax
+    jnz .connected
+    ; Not running — spawn in autonomous mode
+    mov [rsp], ebx
+    call mcp_spawn_uhma
+    mov ebx, [rsp]
+    test eax, eax
+    jz .spawn_failed
+    ; Just connected — populate panels immediately
+    mov [rsp], ebx
+    call poll_channels
+    mov ebx, [rsp]
+    jmp .connected
+.spawn_failed:
+    ; Spawn failed — show error and bail
+    lea rax, [rel msg_spawn_fail]
+    mov [rel feedback_msg], rax
+    mov dword [rel feedback_timer], 90
+    jmp .continue
+.connected:
+    ; Ensure FEED panel is bound to live run-log stream
+    call enable_feed_stream
 
     cmp ebx, ACT_DREAM
     je .do_dream
@@ -1767,7 +1815,9 @@ do_action:
     test eax, eax
     jz .dream_fail
 .dream_send:
-    call mcp_dream
+    mov edi, 0                  ; FEED channel
+    lea rsi, [rel cmd_dream]
+    call mcp_send_async
     lea rax, [rel msg_dream]
     mov [rel feedback_msg], rax
     mov dword [rel feedback_timer], 60
@@ -1779,33 +1829,38 @@ do_action:
     jmp .continue
 
 .do_observe:
-    call mcp_observe
+    mov edi, 0                  ; FEED channel
+    lea rsi, [rel cmd_observe]
+    call mcp_send_async
     lea rax, [rel msg_observe]
     mov [rel feedback_msg], rax
     mov dword [rel feedback_timer], 60
     jmp .continue
 
 .do_evolve:
-    call mcp_evolve
+    mov edi, 0                  ; FEED channel
+    lea rsi, [rel cmd_evolve]
+    call mcp_send_async
     lea rax, [rel msg_evolve]
     mov [rel feedback_msg], rax
     mov dword [rel feedback_timer], 60
     jmp .continue
 
 .do_step:
-    ; Send a space character via MCP
-    lea rdi, [rel step_text]
-    call mcp_send_text
+    ; Run a single autonomous tick
+    mov edi, 1                  ; QUERY channel
+    lea rsi, [rel cmd_step]
+    call mcp_send_async
     lea rax, [rel msg_step]
     mov [rel feedback_msg], rax
     mov dword [rel feedback_timer], 60
     jmp .continue
 
 .do_run:
-    ; Send run100 via MCP raw command
-    lea rdi, [rel raw_tool]
-    lea rsi, [rel run_cmd_arg]
-    call mcp_call
+    ; Run 100 autonomous ticks
+    mov edi, 1                  ; QUERY channel
+    lea rsi, [rel cmd_run_100]
+    call mcp_send_async
     lea rax, [rel msg_run]
     mov [rel feedback_msg], rax
     mov dword [rel feedback_timer], 60
@@ -1834,22 +1889,19 @@ do_action:
     jmp .continue
 
 .do_url:
-    ; URL fetch/digest - use zenity for URL input, then MCP web_fetch
+    ; URL fetch/digest - use zenity or input field, then eat fetched file
     call load_url
     jmp .continue
 
 .do_intro:
     ; Show introspective state via MCP
-    lea rdi, [rel .intro_tool]
-    xor esi, esi
-    call mcp_call
-    ; Response is in rax, could display it in output panel
+    mov edi, 1                  ; QUERY channel
+    lea rsi, [rel cmd_intro]
+    call mcp_send_async
     lea rax, [rel msg_intro_ok]
     mov [rel feedback_msg], rax
     mov dword [rel feedback_timer], 90
     jmp .continue
-
-.intro_tool: db "intro", 0
 
 .do_trace:
     ; Toggle trace via MCP
@@ -1857,16 +1909,16 @@ do_action:
     test eax, eax
     jnz .trace_off
     mov dword [rel trace_active], 1
-    lea rdi, [rel raw_tool]
-    lea rsi, [rel trace_on_arg]
-    call mcp_call
+    mov edi, 2                  ; DEBUG channel
+    lea rsi, [rel cmd_trace]
+    call mcp_send_async
     lea rax, [rel msg_trace_on]
     jmp .trace_msg
 .trace_off:
     mov dword [rel trace_active], 0
-    lea rdi, [rel raw_tool]
-    lea rsi, [rel trace_off_arg]
-    call mcp_call
+    mov edi, 2                  ; DEBUG channel
+    lea rsi, [rel cmd_trace]
+    call mcp_send_async
     lea rax, [rel msg_trace_off]
 .trace_msg:
     mov [rel feedback_msg], rax
@@ -1882,23 +1934,23 @@ do_action:
     xor eax, eax
 .geom_set:
     mov [rel geom_mode], eax
-    ; Send to MCP
-    push rax
-    lea rdi, [rel raw_tool]
-    lea rsi, [rel geom_cmd_arg]
-    call mcp_call
-    pop rax
-    ; Feedback based on mode
+    mov edi, 1                  ; QUERY channel
     cmp eax, 0
     jne .geom_not_abs
+    lea rsi, [rel cmd_geom_0]
+    call mcp_send_async
     lea rax, [rel msg_geom_abs]
     jmp .geom_msg
 .geom_not_abs:
     cmp eax, 1
     jne .geom_not_vec
+    lea rsi, [rel cmd_geom_1]
+    call mcp_send_async
     lea rax, [rel msg_geom_vec]
     jmp .geom_msg
 .geom_not_vec:
+    lea rsi, [rel cmd_geom_2]
+    call mcp_send_async
     lea rax, [rel msg_geom_both]
 .geom_msg:
     mov [rel feedback_msg], rax
@@ -1970,28 +2022,14 @@ do_send_input:
     lea rdi, [rel input_buf]
     mov byte [rdi + r12], 0
 
-    ; Send via MCP
-    lea rdi, [rel input_buf]
-    call mcp_send_text
-    mov rbx, rax                ; save response ptr in rbx
+    ; Send ccmode + input via gateway (FEED channel)
+    xor edi, edi                ; FEED channel
+    lea rsi, [rel cmd_ccmode]
+    call mcp_send_async
+    xor edi, edi
+    lea rsi, [rel input_buf]
+    call mcp_send_async
 
-    ; Save response to output_buf
-    test rbx, rbx
-    jz .no_response
-    cmp byte [rbx], 0
-    je .no_response
-
-    ; Copy response using strcpy
-    lea rdi, [rel output_buf]
-    mov rsi, rbx
-    call strcpy
-
-    ; Get length
-    lea rdi, [rel output_buf]
-    call strlen
-    mov [rel output_len], eax
-
-.no_response:
     mov dword [rel input_len], 0
     lea rax, [rel msg_sent]
     mov [rel feedback_msg], rax
@@ -3692,7 +3730,7 @@ draw_query_lines:
     ret
 
 ;; ============================================================
-;; poll_channels — Send periodic queries to QUERY/DEBUG channels
+;; poll_channels — Send periodic queries to QUERY/DEBUG panels
 ;; Sends "status" to QUERY (channel 1) and "receipts 5" to DEBUG (channel 2)
 ;; ============================================================
 poll_channels:
@@ -3709,13 +3747,28 @@ poll_channels:
     lea rsi, [rel poll_receipts_cmd]
     call mcp_send_async
 
+
     add rsp, 8
     pop rbx
     ret
 
 ;; ============================================================
-;; read_streams — Read from all output channels into ring buffers
-;; Called each frame to capture streaming data from UHMA
+;; enable_feed_stream — Bind run-log stream to FEED panel
+;; ============================================================
+enable_feed_stream:
+    sub rsp, 8                      ; align for call
+    cmp dword [rel mcp_running], 0
+    je .efs_done
+    mov edi, 0                      ; FEED channel
+    lea rsi, [rel cmd_listen]
+    call mcp_send_async
+.efs_done:
+    add rsp, 8
+    ret
+
+;; ============================================================
+;; read_streams — Read from gateway socket, route by subnet to ring buffers
+;; Single socket, demux by subnet field in frame header
 ;; ============================================================
 read_streams:
     push rbx
@@ -3723,110 +3776,75 @@ read_streams:
     push r13
     push r14
     sub rsp, 1032               ; temp buffer on stack (1024 + alignment)
+                                ; 4 pushes (even) + 1032 → 1064 mod 16 = 8. aligned.
 
-    ; Read from FEED output (channel 0 output = socket index 1)
-    xor edi, edi                ; logical channel 0
-    lea rsi, [rsp]              ; temp buffer
-    mov edx, 1024               ; max bytes
-    call mcp_read_stream
-    test eax, eax
-    jle .no_feed                ; handle 0 or negative
-    cmp eax, 2048               ; sanity check
-    jg .no_feed
-
-    ; Append to feed_ring
-    mov r12d, eax               ; bytes read
-    lea rsi, [rsp]              ; source
-    lea rdi, [rel feed_ring]    ; dest base
-    mov r13d, [rel feed_write]  ; write pos
-    xor ecx, ecx
-.feed_copy:
-    cmp ecx, r12d
-    jge .feed_copy_done
-    mov al, [rsi + rcx]
-    mov edx, r13d
-    and edx, RING_MASK
-    mov [rdi + rdx], al
-    inc r13d
-    inc ecx
-    jmp .feed_copy
-.feed_copy_done:
-    and r13d, RING_MASK
-    mov [rel feed_write], r13d
-    ; Update view if not paused
-    cmp dword [rel feed_paused], 0
-    jne .no_feed
-    mov [rel feed_view], r13d
-
-.no_feed:
-    ; Read from QUERY output (channel 1 output = socket index 3)
-    mov edi, 1                  ; logical channel 1
+.read_again:
+    ; Read one frame from gateway (channel param ignored, single socket)
+    xor edi, edi
     lea rsi, [rsp]
     mov edx, 1024
     call mcp_read_stream
     test eax, eax
-    jle .no_query
+    jle .streams_done           ; no data or error
     cmp eax, 2048
-    jg .no_query
+    jg .streams_done            ; sanity
 
-    ; Append to query_ring
-    mov r12d, eax
-    lea rsi, [rsp]
+    mov r12d, eax               ; r12d = bytes read
+
+    ; Route by subnet from last frame header
+    movzx eax, byte [rel mcp_last_subnet]
+    cmp al, SUBNET_CONSOL       ; 4 = FEED
+    je .route_feed
+    cmp al, SUBNET_SELF         ; 5 = DEBUG
+    je .route_debug
+    ; Default (SUBNET_REPL=1 or unknown) → QUERY
+    jmp .route_query
+
+.route_feed:
+    lea rdi, [rel feed_ring]
+    lea r13, [rel feed_write]
+    lea r14, [rel feed_paused]
+    lea rbx, [rel feed_view]
+    jmp .append_ring
+
+.route_query:
     lea rdi, [rel query_ring]
-    mov r13d, [rel query_write]
-    xor ecx, ecx
-.query_copy:
-    cmp ecx, r12d
-    jge .query_copy_done
-    mov al, [rsi + rcx]
-    mov edx, r13d
-    and edx, RING_MASK
-    mov [rdi + rdx], al
-    inc r13d
-    inc ecx
-    jmp .query_copy
-.query_copy_done:
-    and r13d, RING_MASK
-    mov [rel query_write], r13d
-    cmp dword [rel query_paused], 0
-    jne .no_query
-    mov [rel query_view], r13d
+    lea r13, [rel query_write]
+    lea r14, [rel query_paused]
+    lea rbx, [rel query_view]
+    jmp .append_ring
 
-.no_query:
-    ; Read from DEBUG output (channel 2 output = socket index 5)
-    mov edi, 2                  ; logical channel 2
-    lea rsi, [rsp]
-    mov edx, 1024
-    call mcp_read_stream
-    test eax, eax
-    jle .no_debug
-    cmp eax, 2048
-    jg .no_debug
-
-    ; Append to debug_ring
-    mov r12d, eax
-    lea rsi, [rsp]
+.route_debug:
     lea rdi, [rel debug_ring]
-    mov r13d, [rel debug_write]
+    lea r13, [rel debug_write]
+    lea r14, [rel debug_paused]
+    lea rbx, [rel debug_view]
+
+.append_ring:
+    ; rdi=ring base, r13=&write_pos, r14=&paused, rbx=&view_pos
+    ; r12d=byte count, [rsp]=source data
+    lea rsi, [rsp]
+    mov r8d, [r13]              ; current write pos
     xor ecx, ecx
-.debug_copy:
+.ring_copy:
     cmp ecx, r12d
-    jge .debug_copy_done
-    mov al, [rsi + rcx]
-    mov edx, r13d
+    jge .ring_copy_done
+    movzx eax, byte [rsi + rcx]
+    mov edx, r8d
     and edx, RING_MASK
     mov [rdi + rdx], al
-    inc r13d
+    inc r8d
     inc ecx
-    jmp .debug_copy
-.debug_copy_done:
-    and r13d, RING_MASK
-    mov [rel debug_write], r13d
-    cmp dword [rel debug_paused], 0
-    jne .no_debug
-    mov [rel debug_view], r13d
+    jmp .ring_copy
+.ring_copy_done:
+    and r8d, RING_MASK
+    mov [r13], r8d              ; update write pos
+    cmp dword [r14], 0          ; paused?
+    jne .read_again             ; if paused, don't update view, try next frame
+    mov [rbx], r8d              ; update view pos
+    jmp .read_again             ; drain all available frames
 
-.no_debug:
+.streams_done:
     add rsp, 1032
     pop r14
     pop r13
@@ -4742,11 +4760,48 @@ load_file:
     jz .error
 .file_have_uhma:
 
-    ; Use path from input_buf (user types path, clicks FILE)
+    ; Check if user typed a path in input_buf
     mov eax, [rel input_len]
     test eax, eax
-    jz .error                       ; no path entered
+    jnz .file_from_input
 
+    ; No path typed — open zenity file picker
+    lea rdi, [rel zenity_file]
+    call system
+    test eax, eax
+    jnz .error                      ; user cancelled
+
+    ; Read picked path from /tmp/.uhma_pick
+    lea rdi, [rel tmp_pick_path]
+    lea rsi, [rel read_mode]
+    call fopen
+    test rax, rax
+    jz .error
+    mov r12, rax
+    lea rdi, [rel file_path_buf]
+    mov esi, 511
+    mov rdx, r12
+    call fgets
+    push rax
+    mov rdi, r12
+    call fclose
+    pop rax
+    test rax, rax
+    jz .error
+
+    ; Strip trailing newline
+    lea rdi, [rel file_path_buf]
+    call strlen
+    test eax, eax
+    jz .error
+    dec eax
+    lea rdi, [rel file_path_buf]
+    cmp byte [rdi + rax], 10
+    jne .file_build_cmd
+    mov byte [rdi + rax], 0
+    jmp .file_build_cmd
+
+.file_from_input:
     ; Copy input to file_path_buf and null-terminate
     lea rdi, [rel file_path_buf]
     lea rsi, [rel input_buf]
@@ -4758,24 +4813,19 @@ load_file:
     rep movsb
     mov byte [rdi], 0
 
-    ; Build "eat /path" command and send via MCP
+.file_build_cmd:
+
+    ; Build "eat /path" command and send via gateway
     lea rdi, [rel eat_cmd_buf]
     lea rsi, [rel eat_cmd_pre]
     call strcpy
     lea rdi, [rel eat_cmd_buf]
     lea rsi, [rel file_path_buf]
     call strcat
-    ; Close the quote
-    lea rdi, [rel eat_cmd_buf]
-    call strlen
-    lea rdi, [rel eat_cmd_buf + rax]
-    mov byte [rdi], '"'
-    mov byte [rdi + 1], 0
-
-    ; Send via MCP raw command
-    lea rdi, [rel raw_tool]
+    ; Send via gateway (FEED channel)
+    xor edi, edi
     lea rsi, [rel eat_cmd_buf]
-    call mcp_call
+    call mcp_send_async
 
     ; Clear input after use
     mov dword [rel input_len], 0
@@ -4815,11 +4865,48 @@ load_dir:
     jz .error
 .dir_have_uhma:
 
-    ; Use path from input_buf (user types path, clicks DIR)
+    ; Check if user typed a path in input_buf
     mov eax, [rel input_len]
     test eax, eax
-    jz .error                       ; no path entered
+    jnz .dir_from_input
 
+    ; No path typed — open zenity directory picker
+    lea rdi, [rel zenity_dir]
+    call system
+    test eax, eax
+    jnz .error                      ; user cancelled
+
+    ; Read picked path from /tmp/.uhma_pick
+    lea rdi, [rel tmp_pick_path]
+    lea rsi, [rel read_mode]
+    call fopen
+    test rax, rax
+    jz .error
+    mov r12, rax
+    lea rdi, [rel file_path_buf]
+    mov esi, 511
+    mov rdx, r12
+    call fgets
+    push rax
+    mov rdi, r12
+    call fclose
+    pop rax
+    test rax, rax
+    jz .error
+
+    ; Strip trailing newline
+    lea rdi, [rel file_path_buf]
+    call strlen
+    test eax, eax
+    jz .error
+    dec eax
+    lea rdi, [rel file_path_buf]
+    cmp byte [rdi + rax], 10
+    jne .dir_open
+    mov byte [rdi + rax], 0
+    jmp .dir_open
+
+.dir_from_input:
     ; Copy input to file_path_buf and null-terminate
     lea rdi, [rel file_path_buf]
     lea rsi, [rel input_buf]
@@ -4833,6 +4920,8 @@ load_dir:
 
     ; Clear input after use
     mov dword [rel input_len], 0
+
+.dir_open:
 
     lea rdi, [rel file_path_buf]
     call opendir
@@ -4886,26 +4975,19 @@ load_dir:
     jmp .cp_name
 
 .open:
-    ; Build "eat /path" command and send via MCP
+    ; Build "eat /path" command and send via gateway
     lea rdi, [rel eat_cmd_buf]
     lea rsi, [rel eat_cmd_pre]
     call strcpy
     lea rdi, [rel eat_cmd_buf]
     lea rsi, [rsp]              ; full file path
     call strcat
-    ; Close the quote
-    lea rdi, [rel eat_cmd_buf]
-    call strlen
-    lea rdi, [rel eat_cmd_buf + rax]
-    mov byte [rdi], '"'
-    mov byte [rdi + 1], 0
-
-    ; Send via MCP
+    ; Send via gateway (FEED channel)
     push r12
     push r13
-    lea rdi, [rel raw_tool]
+    xor edi, edi
     lea rsi, [rel eat_cmd_buf]
-    call mcp_call
+    call mcp_send_async
     pop r13
     pop r12
     jmp .next
@@ -4913,8 +4995,10 @@ load_dir:
 .dir_done:
     mov rdi, r12
     call closedir
-    ; Dream already happens inside eat via MCP
-    call mcp_dream
+    ; Kick a dream cycle after bulk ingest
+    mov edi, 0
+    lea rsi, [rel cmd_dream]
+    call mcp_send_async
 
     lea rax, [rel msg_dir_ok]
     mov [rel feedback_msg], rax
@@ -4941,7 +5025,21 @@ load_dir:
 load_url:
     push rbx
     push r12
+    push r13
     sub rsp, 8
+
+    ; Ensure UHMA running
+    cmp dword [rel mcp_running], 0
+    jne .url_have_uhma
+    call mcp_spawn_uhma_feed        ; batch ON for feeding
+    test eax, eax
+    jz .url_error
+.url_have_uhma:
+
+    ; Check if user typed a URL in input_buf
+    mov eax, [rel input_len]
+    test eax, eax
+    jnz .url_from_input
 
     ; Use zenity to get URL
     lea rdi, [rel zenity_url]
@@ -4968,33 +5066,77 @@ load_url:
 
     test r12, r12
     jz .url_error
+    jmp .url_strip
 
+.url_from_input:
+    ; Copy input to file_path_buf and null-terminate
+    lea rdi, [rel file_path_buf]
+    lea rsi, [rel input_buf]
+    mov ecx, [rel input_len]
+    cmp ecx, 510
+    jle .url_copy_ok
+    mov ecx, 510
+.url_copy_ok:
+    rep movsb
+    mov byte [rdi], 0
+    mov dword [rel input_len], 0
+
+.url_strip:
     ; Strip newline from URL
     lea rdi, [rel file_path_buf]
     call strlen
     test rax, rax
     jz .url_error
-    lea rdi, [rel file_path_buf + rax - 1]
-    cmp byte [rdi], 10
-    jne .no_strip_url
-    mov byte [rdi], 0
-.no_strip_url:
+    dec rax
+    lea rdi, [rel file_path_buf]
+    cmp byte [rdi + rax], 10
+    jne .url_fetch
+    mov byte [rdi + rax], 0
 
-    ; Build web_fetch command: "url":"URL","digest":true
+.url_fetch:
+    ; Build curl command into eat_cmd_buf and fetch
     lea rdi, [rel eat_cmd_buf]
-    lea rsi, [rel .url_arg_pre]
+    lea rsi, [rel url_curl_pre]
     call strcpy
     lea rdi, [rel eat_cmd_buf]
     lea rsi, [rel file_path_buf]
     call strcat
     lea rdi, [rel eat_cmd_buf]
-    lea rsi, [rel .url_arg_post]
+    lea rsi, [rel url_curl_post]
     call strcat
 
-    ; Send via MCP web_fetch
-    lea rdi, [rel .web_fetch_tool]
+    lea rdi, [rel eat_cmd_buf]
+    call system
+    test eax, eax
+    jz .url_fetched
+
+    ; Fallback to wget
+    lea rdi, [rel eat_cmd_buf]
+    lea rsi, [rel url_wget_pre]
+    call strcpy
+    lea rdi, [rel eat_cmd_buf]
+    lea rsi, [rel file_path_buf]
+    call strcat
+    lea rdi, [rel eat_cmd_buf]
+    lea rsi, [rel url_wget_post]
+    call strcat
+
+    lea rdi, [rel eat_cmd_buf]
+    call system
+    test eax, eax
+    jnz .url_error
+
+.url_fetched:
+    ; Send fetched file via eat
+    lea rdi, [rel eat_cmd_buf]
+    lea rsi, [rel eat_cmd_pre]
+    call strcpy
+    lea rdi, [rel eat_cmd_buf]
+    lea rsi, [rel url_tmp_path]
+    call strcat
+    xor edi, edi
     lea rsi, [rel eat_cmd_buf]
-    call mcp_call
+    call mcp_send_async
 
     lea rax, [rel msg_url_ok]
     mov [rel feedback_msg], rax
@@ -5002,19 +5144,16 @@ load_url:
     jmp .url_done
 
 .url_error:
-    lea rax, [rel msg_file_err]
+    lea rax, [rel msg_url_err]
     mov [rel feedback_msg], rax
     mov dword [rel feedback_timer], 90
 
 .url_done:
     add rsp, 8
+    pop r13
     pop r12
     pop rbx
     ret
-
-.web_fetch_tool: db "web_fetch", 0
-.url_arg_pre:    db '"url":"', 0
-.url_arg_post:   db '","digest":true', 0
 
 ;; ============================================================
 ;; show_feed_config — Show zenity entry dialog, read command directly
