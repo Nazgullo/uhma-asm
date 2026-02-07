@@ -45,8 +45,9 @@ section .bss
     color_black:    resq 1
     color_white:    resq 1
 
-    ; Last keycode from KeyPress event
+    ; Last keycode + modifier state from KeyPress event
     last_keycode:   resd 1
+    last_key_state: resd 1
 
     ; Mouse state
     last_mouse_x:   resd 1
@@ -458,7 +459,9 @@ gfx_poll_event:
 
     cmp eax, 2              ; KeyPress
     jne .not_keypress
-    ; Save keycode (at offset 84 in XKeyEvent)
+    ; Save keycode + modifier state (keycode at 84, state at 80)
+    mov edx, [rbp - 200 + 80]
+    mov [rel last_key_state], edx
     mov edx, [rbp - 200 + 84]
     mov [rel last_keycode], edx
     jmp .done
@@ -497,6 +500,15 @@ gfx_poll_event:
 global gfx_get_last_keycode
 gfx_get_last_keycode:
     mov eax, [rel last_keycode]
+    ret
+
+;; ============================================================
+;; gfx_get_last_keystate — Get modifier state from last KeyPress
+;; Returns: eax = state bitmask (ShiftMask=1)
+;; ============================================================
+global gfx_get_last_keystate
+gfx_get_last_keystate:
+    mov eax, [rel last_key_state]
     ret
 
 ;; ============================================================

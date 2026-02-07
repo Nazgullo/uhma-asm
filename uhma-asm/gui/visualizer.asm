@@ -468,6 +468,7 @@ section .bss
     ; Input buffer
     input_buf:      resb 256
     input_len:      resd 1
+    key_mods:       resd 1
 
     ; Feedback
     feedback_msg:   resq 1
@@ -632,6 +633,7 @@ extern gfx_flip
 extern gfx_poll_event
 extern gfx_text
 extern gfx_get_last_keycode
+extern gfx_get_last_keystate
 extern gfx_get_mouse_pos
 extern usleep
 extern system
@@ -1031,6 +1033,10 @@ handle_key:
 
     mov ebx, edi
 
+    ; Capture modifier state (ShiftMask) for key translation
+    call gfx_get_last_keystate
+    mov [rel key_mods], eax
+
     ; Escape = quit
     cmp ebx, 9
     je .quit
@@ -1086,6 +1092,7 @@ handle_key:
 ;; keycode_to_char — X11 keycode to ASCII
 ;; ============================================================
 keycode_to_char:
+    %define SHIFT_MASK 1
     cmp edi, 65
     jne .not_space
     mov al, ' '
@@ -1094,6 +1101,12 @@ keycode_to_char:
     ; Common punctuation for paths/URLs
     cmp edi, 20                 ; '-'
     jne .not_dash
+    mov eax, [rel key_mods]
+    test eax, SHIFT_MASK
+    jz .dash
+    mov al, '_'
+    ret
+.dash:
     mov al, '-'
     ret
 .not_dash:
