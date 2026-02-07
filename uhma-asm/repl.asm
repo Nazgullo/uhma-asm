@@ -1125,7 +1125,53 @@ repl_run:
 
 .cmd_ccmode:
     ; Toggle Claude Code input mode (ST_CC_INPUT_MODE)
+    ; Supports: "ccmode on" | "ccmode off" (idempotent)
     mov rax, SURFACE_BASE
+
+    ; Check for argument after "ccmode"
+    cmp byte [rbx + 6], ' '
+    jne .ccmode_toggle
+
+    lea rsi, [rbx + 7]
+.ccmode_skip_space:
+    cmp byte [rsi], ' '
+    jne .ccmode_arg
+    inc rsi
+    jmp .ccmode_skip_space
+
+.ccmode_arg:
+    mov al, [rsi]
+    or al, 0x20                ; lowercase
+    cmp al, 'o'
+    jne .ccmode_toggle
+
+    mov al, [rsi + 1]
+    or al, 0x20
+    cmp al, 'n'
+    je .ccmode_set_on
+    cmp al, 'f'
+    jne .ccmode_toggle
+    cmp byte [rsi + 2], 'f'
+    jne .ccmode_toggle
+    jmp .ccmode_set_off
+
+.ccmode_set_on:
+    cmp byte [rax + STATE_OFFSET + ST_CC_INPUT_MODE], 1
+    je .loop
+    mov byte [rax + STATE_OFFSET + ST_CC_INPUT_MODE], 1
+    lea rdi, [rel ccmode_on_msg]
+    call print_cstr
+    jmp .loop
+
+.ccmode_set_off:
+    cmp byte [rax + STATE_OFFSET + ST_CC_INPUT_MODE], 0
+    je .loop
+    mov byte [rax + STATE_OFFSET + ST_CC_INPUT_MODE], 0
+    lea rdi, [rel ccmode_off_msg]
+    call print_cstr
+    jmp .loop
+
+.ccmode_toggle:
     xor byte [rax + STATE_OFFSET + ST_CC_INPUT_MODE], 1  ; toggle 0↔1
     cmp byte [rax + STATE_OFFSET + ST_CC_INPUT_MODE], 0
     je .ccmode_off

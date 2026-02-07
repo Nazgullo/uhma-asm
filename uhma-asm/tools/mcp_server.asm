@@ -107,7 +107,7 @@ section .data
     tool_mem_rag_refresh: db "mem_rag_refresh", 0
 
     ; UHMA command templates
-    cmd_ccmode_on:  db "ccmode", 10, 0
+    cmd_ccmode_on:  db "ccmode on", 10, 0
     cmd_status:     db "status", 10, 0
     cmd_help:       db "help", 10, 0
     cmd_self:       db "self", 10, 0

@@ -300,7 +300,7 @@ section .data
     cmd_step:       db "step", 0
     cmd_run_100:    db "run 100", 0
     cmd_trace:      db "trace", 0
-    cmd_ccmode:     db "ccmode", 0
+    cmd_ccmode:     db "ccmode on", 0
     cmd_listen:     db "listen", 0
     eat_cmd_pre:    db "eat ", 0
 
