@@ -244,7 +244,7 @@ gateway_poll:
     test ax, POLLIN
     jnz .do_accept
 
-    ; Check clients for hangup first (only if no data ready)
+    ; Check clients for hangup (always, even if POLLIN is also set)
     xor r12d, r12d
 .check_hangup:
     cmp r12d, GW_MAX_CLIENTS
@@ -252,12 +252,10 @@ gateway_poll:
 
     lea rcx, [rbx + 16 + r12 * 8]
     movzx eax, word [rcx + 6]
-    test ax, POLLIN
-    jnz .next_hangup
     test ax, POLLHUP | POLLERR
     jz .next_hangup
 
-    ; Close this client
+    ; Close this client (reaps zombie connections promptly)
     call gw_close_client
 
 .next_hangup:
@@ -325,7 +323,47 @@ gw_accept_client:
     jmp .find_slot
 
 .table_full:
-    ; Reject: accept and immediately close
+    ; Try to reap zombie connections before rejecting
+    xor r12d, r12d
+.reap_zombies:
+    cmp r12d, GW_MAX_CLIENTS
+    jge .truly_full
+
+    imul eax, r12d, GW_CLIENT_SIZE
+    mov edi, [rbx + rax + GW_CLIENT_FD]
+    cmp edi, -1
+    je .reap_found_empty          ; found a free slot after all
+
+    ; poll(fd, POLLIN, 0) — check if this fd is dead
+    push r12
+    sub rsp, 8                    ; align for syscall
+    mov [rsp], edi                ; pollfd.fd
+    mov word [rsp + 4], 0x0001   ; events = POLLIN
+    mov word [rsp + 6], 0        ; revents = 0
+    mov eax, SYS_POLL
+    mov rdi, rsp
+    mov esi, 1
+    xor edx, edx                 ; timeout = 0
+    syscall
+    movzx eax, word [rsp + 6]    ; revents
+    add rsp, 8
+    pop r12
+    test ax, POLLHUP | POLLERR
+    jz .reap_next
+
+    ; Dead connection — close it and use this slot
+    call gw_close_client
+    jmp .find_slot                ; retry find_slot now that one is free
+
+.reap_next:
+    inc r12d
+    jmp .reap_zombies
+
+.reap_found_empty:
+    jmp .find_slot                ; re-scan, should find the empty slot
+
+.truly_full:
+    ; All slots verified alive — reject for real
     mov dword [rel gw_addr_len], 16
     mov eax, SYS_ACCEPT
     mov edi, [rel gw_listen_fd]
@@ -636,7 +674,7 @@ gateway_respond:
     pop r12
 
     test eax, eax
-    js .respond_done
+    js .respond_write_fail
 
     ; Send payload
     imul eax, r12d, GW_CLIENT_SIZE
@@ -645,6 +683,14 @@ gateway_respond:
     mov edx, r14d
     mov eax, SYS_WRITE
     syscall
+    test eax, eax
+    js .respond_write_fail
+    jmp .respond_done
+
+.respond_write_fail:
+    ; Client gone (EPIPE) — close slot to prevent zombie accumulation
+    call gw_close_client
+
 .respond_done:
     add rsp, 8
     pop r14
