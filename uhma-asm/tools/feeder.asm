@@ -654,10 +654,13 @@ training_loop:
     movzx eax, word [rsi + 16]          ; d_reclen
     mov r15d, eax                       ; save for next
 
-    ; Check d_type (regular file = 8)
+    ; Check d_type (regular file = 8, symlink = 10)
     movzx eax, byte [rsi + 18]          ; d_type
     cmp eax, 8                          ; DT_REG
+    je .dtype_ok
+    cmp eax, 10                         ; DT_LNK (follow symlinks)
     jne .next_entry
+.dtype_ok:
 
     ; Get filename
     lea rdi, [rsi + 19]                 ; d_name
@@ -941,6 +944,8 @@ drain_outputs:
 
     ; Drain one frame, then continue with 0 timeout
     call gw_drain_frame
+    test eax, eax
+    jz .drain_ret                       ; exit on drain failure (malformed data)
     xor r12d, r12d
     jmp .drain_loop
 
@@ -958,29 +963,30 @@ drain_outputs:
 gw_read_exact:
     push rbx
     push r12
+    push r13
     sub rsp, 8
 
     mov ebx, edi
     mov r12, rsi
     mov r10d, edx
-    xor ecx, ecx
+    xor r13d, r13d                      ; bytes_read (rcx is clobbered by syscall)
 
 .gre_loop:
     test r10d, r10d
     jz .gre_done
     mov eax, SYS_READ
     mov edi, ebx
-    lea rsi, [r12 + rcx]
+    lea rsi, [r12 + r13]
     mov edx, r10d
     syscall
     test eax, eax
     jle .gre_err
-    add ecx, eax
+    add r13d, eax
     sub r10d, eax
     jmp .gre_loop
 
 .gre_done:
-    mov eax, ecx
+    mov eax, r13d
     jmp .gre_ret
 
 .gre_err:
@@ -989,6 +995,7 @@ gw_read_exact:
 
 .gre_ret:
     add rsp, 8
+    pop r13
     pop r12
     pop rbx
     ret
