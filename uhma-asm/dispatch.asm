@@ -61,6 +61,11 @@ section .data
     block_ema_1malpha:   dq 0.9
     block_drop_thresh:   dq 0.5
 
+    ; Quantum surprise boundary constants (f64)
+    align 8
+    qsurp_one:           dq 1.0
+    qsurp_epsilon:       dq 1.0e-6
+
 section .bss
     word_buf:       resb MAX_WORD_LEN
 
@@ -117,6 +122,11 @@ extern emit_receipt_full
 extern emit_receipt_cc
 extern receipt_resonate
 extern cc_trace_resonate
+extern holo_store
+extern qdec_set_amps
+extern qdec_measure
+extern qdec_entropy
+extern qdec_collapse
 
 ;; ============================================================
 ;; dispatch_init
@@ -555,6 +565,14 @@ process_token:
     addsd xmm5, [rbx + STATE_OFFSET + ST_ENERGY_INCOME]
     movsd [rbx + STATE_OFFSET + ST_ENERGY_INCOME], xmm5
 
+    ; --- Always reinforce holographic memory on HIT (quantum circuit fix #2) ---
+    ; Unconditional holo_store strengthens hit patterns regardless of dispatch mode
+    mov edi, r13d             ; ctx_hash
+    mov esi, r12d             ; token_id
+    mov rax, 0x3FF0000000000000  ; 1.0 f64 strength
+    movq xmm0, rax
+    call holo_store
+
     ; --- Self-knowledge: track context-type accuracy ---
     ; Extract ctx_type from hash (top 4 bits → 16 types)
     mov rax, [rbx + STATE_OFFSET + ST_CTX_HASH]
@@ -706,21 +724,43 @@ process_token:
     test rcx, rcx
     jz .surprise_outcome       ; no region = expected miss
 
-    ; Compute predicting region's accuracy
+    ; Compute predicting region's accuracy → quantum surprise boundary
     mov eax, [rcx + RHDR_HITS]
     mov edx, [rcx + RHDR_MISSES]
     add edx, eax
     test edx, edx
     jz .surprise_outcome
-    cvtsi2ss xmm0, eax
-    cvtsi2ss xmm1, edx
-    divss xmm0, xmm1          ; accuracy of predicting region
-    ; If accuracy > 0.7 → self-model violated (high confidence was wrong)
-    mov eax, 0x3F333333        ; 0.7f
-    movd xmm1, eax
-    comiss xmm0, xmm1
-    jbe .surprise_outcome
-    ; SURPRISE_SELF: high-confidence region missed — self-model violated
+    cvtsi2sd xmm0, eax        ; hits as f64
+    cvtsi2sd xmm1, edx        ; total as f64
+    divsd xmm0, xmm1          ; accuracy = hits/total (f64)
+
+    ; === QUANTUM SURPRISE BOUNDARY (Born rule measurement) ===
+    ; amp[0] = sqrt(1 - accuracy) → SURPRISE_OUTCOME (world unknown)
+    ; amp[1] = sqrt(accuracy) → SURPRISE_SELF (self-model violated)
+    ; Measure → probabilistic self/other classification
+    sub rsp, 16               ; 2 × f64 on stack
+    ; amp[1] = accuracy (will be sqrt'd by qdec_set_amps)
+    movsd [rsp + 8], xmm0
+    ; amp[0] = 1.0 - accuracy
+    movsd xmm1, [rel qsurp_one]
+    subsd xmm1, xmm0
+    maxsd xmm1, [rel qsurp_epsilon]   ; floor at epsilon
+    movsd [rsp], xmm1
+
+    ; Normalize to amplitudes (sqrt + normalize)
+    mov rdi, rsp
+    mov esi, 2
+    call qdec_set_amps
+
+    ; Measure (Born rule)
+    mov rdi, rsp
+    mov esi, 2
+    call qdec_measure          ; eax = 0 (OUTCOME) or 1 (SELF)
+    add rsp, 16
+
+    test eax, eax
+    jz .surprise_outcome
+    ; SURPRISE_SELF: Born rule selected self-model violation
     lea rax, [rbx + STATE_OFFSET + ST_SURPRISE_TYPE]
     mov dword [rax], SURPRISE_SELF
 
@@ -810,6 +850,25 @@ process_token:
     test rcx, rcx
     jz .record_miss
     inc dword [rcx + RHDR_MISSES]
+
+    ; === REGION CORRECTION (quantum circuit fix #1) ===
+    ; If misses > hits + REGION_CORRECTION_MARGIN, flip predicted token
+    ; This retrains a confidently-wrong region instead of waiting for pruning
+    mov eax, [rcx + RHDR_MISSES]
+    mov edx, [rcx + RHDR_HITS]
+    add edx, REGION_CORRECTION_MARGIN
+    cmp eax, edx
+    jbe .no_region_correction
+    ; Verify this is a DISPATCH region with standard stub layout
+    ; Check for MOV EAX opcode (0xB8) at expected offset
+    cmp byte [rcx + RHDR_SIZE + 7], 0xB8
+    jne .no_region_correction
+    ; Flip the predicted token to actual token (r12d)
+    mov [rcx + RHDR_SIZE + 8], r12d
+    ; Reset hits and misses for clean slate (prevents oscillation)
+    mov dword [rcx + RHDR_HITS], 0
+    mov dword [rcx + RHDR_MISSES], 0
+.no_region_correction:
 
     ; Self-prediction: this region was predicted but missed
     lea rax, [rbx + STATE_OFFSET + ST_SELF_PRED_REGION]

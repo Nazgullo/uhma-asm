@@ -463,8 +463,184 @@ region_alloc:
     ; Increment region count
     lea rax, [rbx + STATE_OFFSET + ST_REGION_COUNT]
     inc qword [rax]
+    jmp .alloc_done
 
 .table_full:
+    ; === RECENCY-BASED EVICTION (quantum circuit fix #4) ===
+    ; Table is full — sample EVICT_SAMPLE_SIZE random regions, evict worst
+    ; Score = activation * (0.3 + 0.7 * accuracy) * recency
+    ; recency = 1.0 / (1.0 + age / 100000.0)
+    ; PROMOTED regions get 3x score multiplier
+    ;
+    ; Stack state: [rsp] = header_ptr (from push rcx at line 434)
+    ; Registers: r12=code_size, r13=type, r14=birth_step, rbx=SURFACE_BASE
+
+    ; Allocate scratch: [rsp+0] = header_ptr (already there)
+    ;                   sub 24: [rsp+0..7]=worst_score, [rsp+8..11]=worst_idx,
+    ;                           [rsp+12..15]=pad, [rsp+16..23]=saved_r14
+    sub rsp, 24
+    mov [rsp + 16], r14       ; save birth_step before repurposing r14
+
+    ; Use ctx_hash-seeded probe for pseudo-random sampling
+    mov r14, [rbx + STATE_OFFSET + ST_CTX_HASH]   ; seed
+
+    ; Initialize worst candidate
+    mov dword [rsp + 8], 0    ; worst_idx = 0
+    mov rax, 0x7FEFFFFFFFFFFFFF  ; +infinity f64
+    mov [rsp], rax             ; worst_score = huge
+
+    mov eax, [rbx + STATE_OFFSET + ST_REGION_COUNT]
+    test eax, eax
+    jz .evict_skip             ; safety: no regions to evict
+
+    ; Loop counter in ecx (caller-saved, no function calls in loop)
+    mov ecx, EVICT_SAMPLE_SIZE
+.evict_sample_loop:
+    test ecx, ecx
+    jz .evict_do
+    dec ecx
+
+    ; Pseudo-random index: (seed * 0x9E3779B1 + i * 31) % region_count
+    mov rax, r14
+    mov rdi, 0x9E3779B1
+    imul rax, rdi
+    mov edx, ecx              ; i = current counter
+    imul edx, 31
+    add eax, edx
+    xor edx, edx
+    push rcx                  ; save loop counter (div clobbers rcx via edx:eax)
+    mov ecx, [rbx + STATE_OFFSET + ST_REGION_COUNT]
+    div ecx                    ; edx = idx % region_count
+    pop rcx                   ; restore loop counter
+    ; edx = sampled index
+
+    ; Load region table entry
+    push rdx                  ; save idx
+    imul rdi, rdx, RTE_SIZE
+    lea rsi, [rbx + REGION_TABLE_OFFSET]
+    add rdi, rsi              ; rdi = table entry
+
+    ; Skip CONDEMNED regions
+    movzx eax, word [rdi + RTE_FLAGS]
+    test eax, RFLAG_CONDEMNED
+    jnz .evict_next
+    ; Skip FROZEN regions
+    test eax, RFLAG_FROZEN
+    jnz .evict_next
+
+    ; Get region header
+    mov rsi, [rdi + RTE_ADDR]
+    test rsi, rsi
+    jz .evict_next
+
+    ; Compute score = activation * accuracy_blend * recency
+    movsd xmm0, [rsi + RHDR_ACTIVATION]
+    ; Clamp activation to [0.01, 1.0]
+    mov rax, 0x3F847AE147AE147B  ; 0.01 f64
+    movq xmm4, rax
+    maxsd xmm0, xmm4
+
+    ; accuracy = hits / (hits + misses)
+    mov eax, [rsi + RHDR_HITS]
+    mov r8d, [rsi + RHDR_MISSES]
+    add r8d, eax
+    test r8d, r8d
+    jz .evict_low_score
+    cvtsi2sd xmm1, eax
+    cvtsi2sd xmm2, r8d
+    divsd xmm1, xmm2          ; accuracy
+    ; accuracy_blend = 0.3 + 0.7 * accuracy
+    mov rax, 0x3FE6666666666666  ; 0.7 f64
+    movq xmm3, rax
+    mulsd xmm3, xmm1
+    mov rax, 0x3FD3333333333333  ; 0.3 f64
+    movq xmm4, rax
+    addsd xmm3, xmm4
+    mulsd xmm0, xmm3
+
+    ; recency = 1.0 / (1.0 + age / 100000.0)
+    mov eax, [rbx + STATE_OFFSET + ST_GLOBAL_STEP]
+    sub eax, [rsi + RHDR_BIRTH]
+    cvtsi2sd xmm1, eax
+    mov rax, 0x40F86A0000000000  ; 100000.0 f64
+    movq xmm2, rax
+    divsd xmm1, xmm2
+    mov rax, 0x3FF0000000000000  ; 1.0 f64
+    movq xmm3, rax
+    addsd xmm1, xmm3
+    movapd xmm2, xmm3
+    divsd xmm2, xmm1
+    mulsd xmm0, xmm2
+
+    ; PROMOTED regions get 3x score multiplier
+    movzx eax, word [rdi + RTE_FLAGS]
+    test eax, RFLAG_PROMOTED
+    jz .evict_no_boost
+    mov rax, 0x4008000000000000  ; 3.0 f64
+    movq xmm1, rax
+    mulsd xmm0, xmm1
+.evict_no_boost:
+    jmp .evict_check_worst
+
+.evict_low_score:
+    mov rax, 0x3F1A36E2EB1C432D  ; 0.0001 f64
+    movq xmm0, rax
+
+.evict_check_worst:
+    ; Compare with worst score. [rsp] = saved idx, [rsp+8] = worst_score
+    pop rdx                   ; restore idx
+    movsd xmm1, [rsp]         ; worst_score (at rsp+0 of scratch frame)
+    ucomisd xmm0, xmm1
+    jae .evict_not_worst
+    ; New worst found
+    movsd [rsp], xmm0         ; update worst_score
+    mov [rsp + 8], edx        ; update worst_idx
+.evict_not_worst:
+    jmp .evict_sample_loop
+
+.evict_next:
+    pop rdx                   ; discard saved idx
+    jmp .evict_sample_loop
+
+.evict_do:
+    ; Evict the worst region: reuse its table slot
+    mov edx, [rsp + 8]        ; worst_idx
+    imul rdi, rdx, RTE_SIZE
+    lea rsi, [rbx + REGION_TABLE_OFFSET]
+    add rsi, rdi               ; rsi = table entry to reuse
+
+    ; Mark old region as condemned
+    mov rax, [rsi + RTE_ADDR]
+    test rax, rax
+    jz .evict_write_new
+    or word [rax + RHDR_FLAGS], RFLAG_CONDEMNED
+.evict_write_new:
+    ; Write new region into the evicted slot
+    ; header_ptr is at [rsp + 24] (scratch_24 + original push)
+    mov rcx, [rsp + 24]       ; header_ptr
+    mov [rsi + RTE_ADDR], rcx
+    mov eax, r12d
+    add eax, RHDR_SIZE
+    mov [rsi + RTE_LEN], eax
+    mov [rsi + RTE_TYPE], r13w
+    mov word [rsi + RTE_FLAGS], RFLAG_NURSERY
+    mov dword [rsi + RTE_HITS], 0
+    mov dword [rsi + RTE_MISSES], 0
+    ; Birth step: use global step since r14 was repurposed
+    mov eax, [rbx + STATE_OFFSET + ST_GLOBAL_STEP]
+    mov [rsi + RTE_BIRTH], eax
+    mov [rcx + RHDR_BIRTH], eax
+
+    ; Track eviction count
+    inc dword [rbx + STATE_OFFSET + ST_EVICT_COUNT]
+
+.evict_skip:
+    ; Restore r14 (birth_step)
+    mov r14, [rsp + 16]
+    add rsp, 24               ; remove scratch frame
+    ; Now [rsp] = header_ptr from original push rcx
+
+.alloc_done:
     pop rcx                   ; restore header ptr
 
     ; Update alloc pointer past this region

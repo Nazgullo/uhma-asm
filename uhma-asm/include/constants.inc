@@ -183,6 +183,7 @@
 %define RFLAG_CONDEMNED     0x0008
 %define RFLAG_NEEDS_REPAIR  0x0010  ; Self-surprise: region violated self-model, needs introspection
 %define RFLAG_ANALYZED      0x0020  ; Symbolic analysis cached, skip in dream scan unless modified
+%define RFLAG_PROMOTED      0x0040  ; High-accuracy region (>0.8), protected from eviction
 
 ;; ============================================================
 ;; Region Table Entry (32 bytes)
@@ -942,6 +943,18 @@
 %define ST_SELF_MODEL_VEC_SIZE HOLO_VEC_BYTES             ; Size matches HOLO_VEC_BYTES
 %define ST_SELF_AWARENESS_END  (ST_SELF_MODEL_VEC + ST_SELF_MODEL_VEC_SIZE)
 
+;; ============================================================
+;; Quantum Decision State (Born rule measurement)
+;; ============================================================
+
+; Eviction tracking
+%define ST_EVICT_COUNT      ST_SELF_AWARENESS_END              ; u32 evictions since last rebuild
+; Drive quantum state
+%define ST_DRIVE_ACTIVE     (ST_EVICT_COUNT + 4)               ; u32 Born-rule selected drive index
+%define ST_DRIVE_ENTROPY    (ST_DRIVE_ACTIVE + 4)              ; f32 last measurement entropy
+%define ST_DRIVE_PRESSURES  (ST_DRIVE_ENTROPY + 4)             ; f32[4] quantum amplitudes for drives
+%define ST_QUANTUM_END      (ST_DRIVE_PRESSURES + 16)          ; end of quantum state block
+
 ; Base fidelity by event type (f64 bit patterns)
 ; Higher fidelity = more persistent storage, less decay
 ; These are modulated by |valence| at emission time
@@ -1648,5 +1661,23 @@
 
 ; Response buffer (format.asm buffer capture mode)
 %define GW_RESPONSE_BUF_SIZE 65536    ; 64KB response accumulation buffer
+
+;; ============================================================
+;; Quantum Decision Constants
+;; ============================================================
+
+%define QDEC_MAX_STATES     16        ; max states (2^n_qubits)
+%define QDEC_STRUCT_SIZE    136       ; 8 header + 16*8 amplitudes
+
+;; Eviction Constants
+%define EVICT_SAMPLE_SIZE   256       ; random regions sampled for eviction
+%define EVICT_REBUILD_EVERY 2000      ; rebuild HT every N evictions
+
+;; Region Correction
+%define REGION_CORRECTION_MARGIN  2   ; misses > hits + this → retrain
+
+;; Drive Constants (supplements existing DRIVE_* at line ~1519)
+%define DRIVE_COUNT         4
+%define DRIVE_PRESSURE_FLOOR_HEX 0x3DCCCCCD  ; 0.1 f32
 
 %endif

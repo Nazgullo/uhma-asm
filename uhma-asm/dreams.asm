@@ -271,6 +271,14 @@ dream_cycle:
     mov esi, r15d
     call fire_hook
 
+    ; === DREAM PRESSURE RESET (quantum circuit fix #3) ===
+    ; After dream completes, reset dream_pressure to 0 and halve observe_pressure
+    xor eax, eax
+    mov [rbx + STATE_OFFSET + ST_DREAM_PRESSURE], rax         ; zero f64
+    movsd xmm0, [rbx + STATE_OFFSET + ST_OBSERVE_PRESSURE]
+    mulsd xmm0, [rel schema_trace_decay]                      ; *= 0.5 (reuse existing constant)
+    movsd [rbx + STATE_OFFSET + ST_OBSERVE_PRESSURE], xmm0
+
     pop r15
     pop r14
     pop r13
@@ -434,19 +442,30 @@ dream_consolidate:
     cmp eax, 50               ; minimum age before judgment
     jl .consol_next
 
-    ; Check performance
+    ; === CONSERVATIVE PRUNING (quantum circuit fix) ===
+    ; Only condemn regions that are PROVEN BAD: total >= 3 AND accuracy < 0.1
+    ; This prevents killing young regions that haven't been properly tested
     mov eax, [rsi + RHDR_HITS]
     mov edx, [rsi + RHDR_MISSES]
-    add edx, eax              ; total
+    add edx, eax              ; total = hits + misses
     test edx, edx
-    jz .condemn_nursery        ; no activity = condemn
+    jz .consol_next            ; no activity yet = skip, don't condemn
 
-    ; If any hits, promote to ACTIVE
-    test eax, eax
-    jnz .promote_nursery
+    ; Need minimum 3 events before judging
+    cmp edx, 3
+    jl .consol_next            ; too few events, keep in nursery
+
+    ; Compute accuracy = hits/total, check if < 0.1
+    ; Integer check: hits * 10 < total → accuracy < 0.1
+    mov ecx, eax              ; save hits
+    imul ecx, 10
+    cmp ecx, edx
+    jge .promote_nursery       ; accuracy >= 0.1, promote
+
+    ; accuracy < 0.1 AND total >= 3 → condemn
 
 .condemn_nursery:
-    ; No hits after min age — condemn
+    ; Proven bad region — condemn
     or word [rsi + RHDR_FLAGS], RFLAG_CONDEMNED
     and word [rsi + RHDR_FLAGS], ~RFLAG_NURSERY
     ; Update table flags
@@ -459,6 +478,19 @@ dream_consolidate:
     or word [rsi + RHDR_FLAGS], RFLAG_ACTIVE
     ; Update table
     and word [rdi + RTE_FLAGS], ~RFLAG_NURSERY
+
+    ; Check if high-accuracy (>0.8) → mark PROMOTED for eviction protection
+    mov eax, [rsi + RHDR_HITS]
+    mov ecx, [rsi + RHDR_MISSES]
+    add ecx, eax              ; total
+    ; hits * 10 >= total * 8 → accuracy >= 0.8
+    imul eax, 10
+    imul ecx, 8
+    cmp eax, ecx
+    jl .skip_promote_flag
+    or word [rsi + RHDR_FLAGS], RFLAG_PROMOTED
+    or word [rdi + RTE_FLAGS], RFLAG_PROMOTED
+.skip_promote_flag:
 
     ; === REINFORCE HOLOGRAPHIC TRACE ===
     ; Proven patterns must be reinforced to counteract decay (LTM)
