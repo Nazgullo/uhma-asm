@@ -2,14 +2,20 @@
 
 Self-modifying x86-64 assembly that learns patterns through holographic vector encoding.
 
-## Quick Start
+## Quick Start (GUI-First)
 
 ```bash
 make clean && make
-./uhma
+./gui/uhma-viz
 ```
 
-Requires: `nasm`, `ld` (GNU linker), Linux x86-64
+GUI-only flow (no CLI required):
+1. Click **DREAM** to start autonomy (batch OFF).
+2. Click **FEED▼ → Quick** to ingest the corpus.
+3. Click **FILE** to ingest one file (type a path in the input bar or use the picker).
+4. Click **URL** to ingest web content (type URL or use the dialog).
+
+Requires: `nasm`, `ld` (GNU linker), Linux x86-64. The GUI uses X11 and `xclip`.
 
 ## What It Does
 
@@ -54,7 +60,21 @@ Interaction rules that keep the system coherent:
 3. **Dream/Evolve** mutate dispatch regions, directly reshaping prediction behavior.
 4. **Autonomy actions** are learned from outcomes, which biases future action selection.
 
+## GUI-Only Learning Checks (Examples)
+
+**A/B Pass (same file twice, watch growth):**
+1. Type `corpus/causal-structures.txt` in the GUI input bar.
+2. Click **FILE → DREAM → INTRO**.
+3. Repeat the same three clicks.
+4. Look for non-zero resonance and shifting intro metrics on the second pass.
+
+**Mini-Batch (Quick feed + consolidation):**
+1. Click **FEED▼ → Quick**.
+2. Click **DREAM → OBSERVE → INTRO** after the feed starts.
+3. FEED should stream the live run-log; QUERY/DEBUG should keep updating.
+
 ## REPL Commands
+These are the same commands the GUI sends over the gateway. The GUI is the primary control surface; REPL is optional for headless use.
 
 ### Status
 | Command | Description |
@@ -199,19 +219,13 @@ pet/x86/
 ## Testing Tips
 
 ```bash
-# Quick test (tiny input)
-echo "a b a b a" | ./uhma 2>&1 | grep -E "HIT|NEW"
-
-# Stream output (never run blind on large files)
-./uhma < commands.txt 2>&1 | tee /tmp/test.log
-
-# Check hit ratio
-grep -c "HIT" /tmp/test.log && grep -c "NEW" /tmp/test.log
-
-# Debug a miss
-./uhma
-> some input that fails
-> why
+# GUI sanity check
+# - FEED panel is live run-log (streamed, not polled)
+# - QUERY panel updates via status
+# - DEBUG panel shows receipts/trace
+#
+# Optional headless checks (advanced):
+# echo "a b a b a" | ./uhma 2>&1 | rg -e "HIT|NEW"
 ```
 
 ## Debugging
@@ -256,14 +270,14 @@ UHMA exposes tools via MCP (Model Context Protocol) for control from Claude Code
 | Status | `status`, `self`, `intro`, `presence`, `drives`, `metacog`, `genes`, `regions`, `hive`, `colony` |
 | Debug | `why`, `misses` |
 | Actions | `dream`, `observe`, `compact`, `reset` |
-| Memory | `mem_add`, `mem_query`, `mem_state`, `mem_recent`, `mem_summary`, `mem_rag_refresh` |
+| Memory | `mem_add`, `mem_query`, `mem_state`, `mem_recent`, `mem_summary`, `mem_rag_refresh`, `mem_rag_update`, `mem_rag_rebuild` |
 
 Use `raw` for any other REPL command (`eat`, `save`, `load`, `trace`, `receipts`, `step`, `run`, etc.).
 Note: Gateway responses are capped to `GW_MAX_PAYLOAD` (4096). Large outputs are truncated in MCP responses; the GUI stream panels carry the full run-log.
 
 ### Holographic Memory (Claude's)
 
-Separate 6GB surface for cross-session persistence and 3-layer code RAG. 14 categories (finding, warning, insight, code_high, code_mid, code_low, etc.). Queried by semantic similarity via MPNet embeddings (768→8192 dim projection) implemented in assembly. Rebuild code RAG via `mem_rag_refresh`.
+Separate 6GB surface for cross-session persistence and 3-layer code RAG. 14 categories (finding, warning, insight, code_high, code_mid, code_low, etc.). Queried by semantic similarity via MPNet embeddings (768→8192 dim projection) implemented in assembly. `mem_rag_refresh` rebuilds traces from existing entries (fast). `mem_rag_update` and `mem_rag_rebuild` scan `.` `include/` `tools/` `gui/` `embed/` and `pet/x86/`.
 
 ## GUI (Command & Control Center)
 

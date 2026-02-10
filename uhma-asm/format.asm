@@ -72,6 +72,7 @@ set_output_buffer:
     mov dword [rel output_buf_pos], 0
     ret
 
+
 ;; ============================================================
 ;; get_output_buffer — Get captured buffer contents
 ;; Returns: rax=buffer ptr, edx=length
@@ -93,10 +94,23 @@ print_str:
     mov rbx, rdi                ; save ptr
     mov r10, rsi                ; save len
 
+    ; Always mirror to stderr (fd 2) for log capture.
+    ; When output_fd is 1 (stdout), stdout and stderr both go to the log
+    ; file via shell redirection (2>&1), so this is a harmless double-write.
+    ; When output_fd is -1 (buffer) or a socket, this ensures the log file
+    ; captures all output.
+    mov eax, SYS_WRITE
+    mov edi, 2
+    mov rsi, rbx
+    mov rdx, r10
+    syscall
+
     mov edx, [rel output_fd]
     cmp edx, -1
     je .buffer_mode
-    ; Normal write to fd
+    cmp edx, 2
+    jle .maybe_stream           ; already wrote to stderr, skip normal write to stdout/stderr
+    ; Write to socket/channel fd
     mov rdx, r10
     mov rsi, rbx
     mov edi, [rel output_fd]
@@ -104,35 +118,32 @@ print_str:
     syscall
     jmp .maybe_stream
 .buffer_mode:
-    ; Accumulate into output_buffer
-    ; rdi=src, rsi=len
+    ; Accumulate into output_buffer for gateway response framing
     push rcx
     mov rsi, r10
     mov rdi, rbx
     mov ecx, [rel output_buf_pos]
     lea rdx, [rcx + rsi]
-    cmp edx, 65536              ; don't overflow buffer
+    cmp edx, 65536
     jg .buffer_truncate
-    mov rdx, rsi                ; bytes to copy
+    mov rdx, rsi
     jmp .buffer_copy
 .buffer_truncate:
     mov edx, 65536
-    sub edx, ecx               ; remaining space
+    sub edx, ecx
     test edx, edx
     jle .buffer_done
 .buffer_copy:
-    ; memcpy: output_buffer+pos <- rdi, edx bytes
     push rdi
     push rsi
     lea rax, [rel output_buffer]
-    add rax, rcx                ; dest = output_buffer + pos
-    mov ecx, edx               ; count
-    mov rsi, rdi                ; src
-    mov rdi, rax                ; dest
+    add rax, rcx
+    mov ecx, edx
+    mov rsi, rdi
+    mov rdi, rax
     rep movsb
     pop rsi
     pop rdi
-    ; Update position
     mov ecx, [rel output_buf_pos]
     add ecx, edx
     mov [rel output_buf_pos], ecx

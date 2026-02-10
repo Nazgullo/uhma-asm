@@ -7,7 +7,9 @@
 ; @entry holo_mem_state() -> void  ; prints cognitive state
 ; @entry holo_mem_outcome(edi=entry_id, esi=worked) -> void  ; record outcome
 ; @entry holo_mem_summary() -> void  ; prints summary stats
-; @entry holo_mem_rag_refresh() -> void  ; rebuild code RAG from repo files
+; @entry holo_mem_rag_refresh() -> void  ; rebuild code RAG traces from existing entries
+; @entry holo_mem_rag_update() -> void   ; delta update code RAG (mtime-based)
+; @entry holo_mem_rag_rebuild() -> void  ; full rebuild code RAG from repo files
 ;
 ; STANDALONE: Uses own 6GB mmap file, NOT UHMA's surface.
 ; @calledby tools/mcp_server.asm (mem_* commands)
@@ -15,6 +17,7 @@
 ; DUAL PURPOSE:
 ;   1. Chat Sessions Memory - findings, insights, sessions, warnings
 ;   2. 3-Layer Code RAG - file/function/implementation fidelity levels
+;      (RAG refresh scans ., include/, tools/, gui/, embed/, pet/x86/)
 ;
 ; CATEGORIES (Chat Sessions):
 ;   0 = finding     Confirmed facts (decay 0.95)
@@ -55,6 +58,9 @@
 ;   - Entries are stored in surface file (persisted)
 ;   - VSA similarity search is O(n) but fast with dot product
 ;   - Category traces enable "find similar warnings" type queries
+;   - mem_rag_refresh rebuilds code traces from existing entries (fast)
+;   - mem_rag_update rescans repo and re-embeds only changed/new files
+;   - mem_rag_rebuild clears and rebuilds all code entries from files
 ;
 %include "syscalls.inc"
 
@@ -165,11 +171,17 @@ section .data
     cat_code_mid:   db "code_mid", 0
     cat_code_low:   db "code_low", 0
 
-    ; RAG refresh messages/strings
-    rag_refresh_msg: db "[HOLO_MEM] RAG refresh started", 10, 0
-    rag_done_msg:    db "[HOLO_MEM] RAG refreshed. Files: ", 0
-    rag_entries_msg: db " entries: ", 0
-    rag_source:      db "rag_refresh", 0
+    ; RAG messages/strings
+    rag_refresh_msg:       db "[HOLO_MEM] RAG refresh (traces) started", 10, 0
+    rag_refresh_done_msg:  db "[HOLO_MEM] RAG refresh done. Entries: ", 0
+    rag_rebuild_msg:       db "[HOLO_MEM] RAG rebuild started", 10, 0
+    rag_rebuild_done_msg:  db "[HOLO_MEM] RAG rebuilt. Files: ", 0
+    rag_update_msg:        db "[HOLO_MEM] RAG update started", 10, 0
+    rag_update_done_msg:   db "[HOLO_MEM] RAG update done. Files: ", 0
+    rag_entries_msg:       db " entries: ", 0
+    rag_deleted_msg:       db " deleted: ", 0
+    rag_source_rebuild:    db "rag_rebuild", 0
+    rag_source_update:     db "rag_update", 0
     rag_file_prefix: db "FILE ", 0
     rag_sep:         db " - ", 0
     rag_nl:          db 10, 0
@@ -207,6 +219,9 @@ section .bss
     ; RAG refresh scratch
     rag_file_count: resd 1
     rag_entry_count: resd 1
+    rag_deleted_count: resd 1
+    rag_file_mtime: resd 1
+    rag_source_ptr: resq 1
     rag_dir_buf:    resb RAG_DIR_BUF
     rag_path_buf:   resb 512
     rag_file_buf:   resb RAG_READ_MAX + 1
@@ -218,6 +233,7 @@ extern print_cstr
 extern print_u64
 extern print_f64
 extern print_newline
+extern set_output_channel
 
 ; MPNet semantic embeddings
 extern embed_init
@@ -1260,10 +1276,107 @@ holo_mem_summary:
     ret
 
 ;; ============================================================
-;; holo_mem_rag_refresh — Rebuild code RAG entries
+;; holo_mem_rag_refresh — Rebuild code RAG traces from existing entries
 ;; ============================================================
 global holo_mem_rag_refresh
 holo_mem_rag_refresh:
+    push rbx
+    push r12
+    push r13
+    sub rsp, 8
+
+    mov rbx, [rel hm_surface_base]
+    test rbx, rbx
+    jz .rag_refresh_ret
+
+    mov dword [rel rag_entry_count], 0
+
+    lea rdi, [rel rag_refresh_msg]
+    call print_cstr
+
+    call rag_rebuild_traces
+
+    lea rdi, [rel rag_refresh_done_msg]
+    call print_cstr
+    mov edi, [rel rag_entry_count]
+    call print_u64
+    call print_newline
+
+.rag_refresh_ret:
+    add rsp, 8
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; holo_mem_rag_update — Delta update code RAG (mtime-based)
+;; ============================================================
+global holo_mem_rag_update
+holo_mem_rag_update:
+    push rbx
+    push r12
+    push r13
+    push r14
+    sub rsp, 8
+
+    mov rbx, [rel hm_surface_base]
+    test rbx, rbx
+    jz .rag_update_ret
+
+    mov dword [rel rag_file_count], 0
+    mov dword [rel rag_entry_count], 0
+    mov dword [rel rag_deleted_count], 0
+
+    lea rdi, [rel rag_update_msg]
+    call print_cstr
+
+    mov dword [rel hm_quiet], 1
+    lea rax, [rel rag_source_update]
+    mov [rel rag_source_ptr], rax
+
+    lea r12, [rel rag_dirs]
+.rag_update_dir_loop:
+    mov rdi, [r12]
+    test rdi, rdi
+    jz .rag_update_scan_done
+    call rag_scan_dir_update
+    add r12, 8
+    jmp .rag_update_dir_loop
+
+.rag_update_scan_done:
+    call rag_delete_missing_files
+    mov dword [rel hm_quiet], 0
+
+    call rag_rebuild_traces
+
+    lea rdi, [rel rag_update_done_msg]
+    call print_cstr
+    mov edi, [rel rag_file_count]
+    call print_u64
+    lea rdi, [rel rag_entries_msg]
+    call print_cstr
+    mov edi, [rel rag_entry_count]
+    call print_u64
+    lea rdi, [rel rag_deleted_msg]
+    call print_cstr
+    mov edi, [rel rag_deleted_count]
+    call print_u64
+    call print_newline
+
+.rag_update_ret:
+    add rsp, 8
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; holo_mem_rag_rebuild — Full rebuild code RAG entries
+;; ============================================================
+global holo_mem_rag_rebuild
+holo_mem_rag_rebuild:
     push rbx
     push r12
     push r13
@@ -1273,31 +1386,34 @@ holo_mem_rag_refresh:
 
     mov rbx, [rel hm_surface_base]
     test rbx, rbx
-    jz .rag_ret
+    jz .rag_rebuild_ret
 
     mov dword [rel rag_file_count], 0
     mov dword [rel rag_entry_count], 0
+    mov dword [rel rag_deleted_count], 0
 
-    lea rdi, [rel rag_refresh_msg]
+    lea rdi, [rel rag_rebuild_msg]
     call print_cstr
 
     mov dword [rel hm_quiet], 1
+    lea rax, [rel rag_source_rebuild]
+    mov [rel rag_source_ptr], rax
 
     call rag_clear_code_entries
     call rag_clear_code_traces
 
     lea r12, [rel rag_dirs]
-.rag_dir_loop:
+.rag_rebuild_dir_loop:
     mov rdi, [r12]
     test rdi, rdi
-    jz .rag_done
+    jz .rag_rebuild_done
     call rag_scan_dir
     add r12, 8
-    jmp .rag_dir_loop
+    jmp .rag_rebuild_dir_loop
 
-.rag_done:
+.rag_rebuild_done:
     mov dword [rel hm_quiet], 0
-    lea rdi, [rel rag_done_msg]
+    lea rdi, [rel rag_rebuild_done_msg]
     call print_cstr
     mov edi, [rel rag_file_count]
     call print_u64
@@ -1307,7 +1423,7 @@ holo_mem_rag_refresh:
     call print_u64
     call print_newline
 
-.rag_ret:
+.rag_rebuild_ret:
     add rsp, 8
     pop r15
     pop r14
@@ -1371,6 +1487,76 @@ rag_clear_code_traces:
 .rag_trace_done:
     pop r12
     pop rbx
+    ret
+
+; ------------------------------------------------------------
+; rag_rebuild_traces — Rebuild code traces from existing entries
+; Uses rbx = hm_surface_base
+; ------------------------------------------------------------
+rag_rebuild_traces:
+    push r12
+    push r13
+    push r14
+
+    mov dword [rel rag_entry_count], 0
+    call rag_clear_code_traces
+
+    mov r12d, [rbx + HOLO_MEM_STATE_OFFSET + HMS_ENTRY_COUNT]
+    xor r13d, r13d
+.rag_trace_entry_loop:
+    cmp r13d, r12d
+    jge .rag_trace_done
+
+    imul rax, r13, HOLO_MEM_ENTRY_SIZE
+    lea rdi, [rbx + HOLO_MEM_OFFSET + rax]   ; entry ptr
+    mov r14d, [rdi + HME_CATEGORY]
+    cmp r14d, CAT_CODE_HIGH
+    jb .rag_trace_next
+    cmp r14d, CAT_CODE_LOW
+    ja .rag_trace_next
+
+    ; Expand compressed vec to hm_entry_vec
+    push rdi
+    lea rsi, [rdi + HME_VEC]
+    lea rdi, [rel hm_entry_vec]
+    mov ecx, HME_VEC_SIZE / 8
+.rag_trace_copy:
+    mov rax, [rsi]
+    mov [rdi], rax
+    add rsi, 8
+    add rdi, 8
+    dec ecx
+    jnz .rag_trace_copy
+    pop rdi
+
+    ; Pad rest with zeros
+    lea rdi, [rel hm_entry_vec + HME_VEC_SIZE]
+    mov ecx, (HOLO_VEC_BYTES - HME_VEC_SIZE) / 8
+    xor eax, eax
+.rag_trace_pad:
+    mov [rdi], rax
+    add rdi, 8
+    dec ecx
+    jnz .rag_trace_pad
+
+    ; Superpose into category trace
+    mov eax, r14d
+    imul rax, rax, HOLO_VEC_BYTES
+    lea rdi, [rbx + HOLO_MEM_TRACE_OFFSET]
+    add rdi, rax
+    lea rsi, [rel hm_entry_vec]
+    call holo_superpose_f64
+
+    inc dword [rel rag_entry_count]
+
+.rag_trace_next:
+    inc r13d
+    jmp .rag_trace_entry_loop
+
+.rag_trace_done:
+    pop r14
+    pop r13
+    pop r12
     ret
 
 ; ------------------------------------------------------------
@@ -1461,6 +1647,93 @@ rag_scan_dir:
     ret
 
 ; ------------------------------------------------------------
+; rag_scan_dir_update — Scan directory for .asm/.inc files (delta)
+; rdi = dir path
+; ------------------------------------------------------------
+rag_scan_dir_update:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+
+    mov r15, rdi                     ; base path
+
+    mov eax, SYS_OPEN
+    mov rdi, r15
+    mov esi, O_RDONLY | O_DIRECTORY
+    xor edx, edx
+    syscall
+    test eax, eax
+    js .rag_scan_update_ret
+    mov r12d, eax                    ; fd
+
+.rag_update_read_dir:
+    mov eax, SYS_GETDENTS64
+    mov edi, r12d
+    lea rsi, [rel rag_dir_buf]
+    mov edx, RAG_DIR_BUF
+    syscall
+    test eax, eax
+    jle .rag_update_close_dir
+
+    mov r13d, eax                    ; bytes read
+    xor r14d, r14d                   ; offset
+
+.rag_update_entry_loop:
+    cmp r14d, r13d
+    jge .rag_update_read_dir
+
+    lea rbx, [rel rag_dir_buf]
+    add rbx, r14
+    movzx r9d, word [rbx + 16]       ; d_reclen
+    lea rdi, [rbx + 19]              ; d_name
+
+    ; Skip . and ..
+    cmp byte [rdi], '.'
+    jne .rag_update_check_file
+    cmp byte [rdi + 1], 0
+    je .rag_update_next_entry
+    cmp byte [rdi + 1], '.'
+    jne .rag_update_check_file
+    cmp byte [rdi + 2], 0
+    je .rag_update_next_entry
+
+.rag_update_check_file:
+    ; Skip directories
+    cmp byte [rbx + 18], DT_DIR
+    je .rag_update_next_entry
+
+    ; Filter extensions
+    call rag_is_code_file
+    test eax, eax
+    jz .rag_update_next_entry
+
+    ; Build full path and process
+    mov rsi, r15                     ; base path
+    mov rdx, rdi                     ; name
+    call rag_build_path
+    lea rdi, [rel rag_path_buf]
+    call rag_process_file_update
+
+.rag_update_next_entry:
+    add r14d, r9d
+    jmp .rag_update_entry_loop
+
+.rag_update_close_dir:
+    mov eax, SYS_CLOSE
+    mov edi, r12d
+    syscall
+
+.rag_scan_update_ret:
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+; ------------------------------------------------------------
 ; rag_process_file — Read file and add RAG entries
 ; rdi = full path
 ; ------------------------------------------------------------
@@ -1478,6 +1751,17 @@ rag_process_file:
     test eax, eax
     js .rag_proc_done
     mov ebx, eax
+
+    ; Capture file mtime for entry timestamps
+    mov rdi, r12
+    call rag_stat_mtime
+    cmp eax, 0
+    jl .rag_mtime_zero
+    mov [rel rag_file_mtime], eax
+    jmp .rag_mtime_done
+.rag_mtime_zero:
+    mov dword [rel rag_file_mtime], 0
+.rag_mtime_done:
 
     mov eax, SYS_READ
     mov edi, ebx
@@ -1507,6 +1791,47 @@ rag_process_file:
     syscall
 
 .rag_proc_done:
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+; ------------------------------------------------------------
+; rag_process_file_update — Delta update for a single file
+; rdi = full path
+; ------------------------------------------------------------
+rag_process_file_update:
+    push rbx
+    push r12
+    push r13
+
+    mov r12, rdi                     ; path
+    mov rdi, r12
+    call rag_stat_mtime
+    cmp eax, 0
+    jl .rag_update_file_ret
+    mov r13d, eax                    ; mtime
+
+    ; Find existing entry for this path
+    mov rdi, r12
+    call rag_find_entry_by_path
+    test rax, rax
+    jz .rag_update_process
+
+    ; Compare mtime (stored in entry timestamp)
+    mov edx, [rax + HME_TIMESTAMP]
+    cmp edx, r13d
+    jae .rag_update_file_ret         ; unchanged
+
+    ; Delete old entries for this path
+    mov rdi, r12
+    call rag_delete_entries_by_path
+
+.rag_update_process:
+    mov rdi, r12
+    call rag_process_file
+
+.rag_update_file_ret:
     pop r13
     pop r12
     pop rbx
@@ -1569,10 +1894,12 @@ rag_add_low:
     mov edi, CAT_CODE_LOW
     lea rsi, [rel rag_text_buf]
     mov rdx, r12
-    lea rcx, [rel rag_source]
+    mov rcx, [rel rag_source_ptr]
     call holo_mem_add
     test eax, eax
     jz .rag_low_ret
+    mov edi, eax
+    call rag_set_entry_timestamp
     inc dword [rel rag_entry_count]
 
 .rag_low_ret:
@@ -1653,10 +1980,12 @@ rag_add_mid:
     mov edi, CAT_CODE_MID
     lea rsi, [rel rag_text_buf]
     mov rdx, r12
-    lea rcx, [rel rag_source]
+    mov rcx, [rel rag_source_ptr]
     call holo_mem_add
     test eax, eax
     jz .rag_mid_ret
+    mov edi, eax
+    call rag_set_entry_timestamp
     inc dword [rel rag_entry_count]
 
 .rag_mid_ret:
@@ -1702,15 +2031,231 @@ rag_add_high:
     mov edi, CAT_CODE_HIGH
     lea rsi, [rel rag_text_buf]
     mov rdx, r12
-    lea rcx, [rel rag_source]
+    mov rcx, [rel rag_source_ptr]
     call holo_mem_add
     test eax, eax
     jz .rag_high_ret
+    mov edi, eax
+    call rag_set_entry_timestamp
     inc dword [rel rag_entry_count]
 
 .rag_high_ret:
     pop r12
     pop rbx
+    ret
+
+; ------------------------------------------------------------
+; rag_set_entry_timestamp — Set entry timestamp to current file mtime
+; edi = entry_id
+; ------------------------------------------------------------
+rag_set_entry_timestamp:
+    push rbx
+    mov eax, [rel rag_file_mtime]
+    test eax, eax
+    jz .rag_set_ts_ret
+    mov eax, edi
+    call hm_find_entry_by_id
+    test rax, rax
+    jz .rag_set_ts_ret
+    mov edx, [rel rag_file_mtime]
+    mov [rax + HME_TIMESTAMP], edx
+.rag_set_ts_ret:
+    pop rbx
+    ret
+
+; ------------------------------------------------------------
+; rag_find_entry_by_path — Find first code entry by context path
+; rdi = path
+; returns rax = entry ptr or 0
+; ------------------------------------------------------------
+rag_find_entry_by_path:
+    push rbx
+    push r12
+    push r13
+    push r14
+
+    mov rbx, [rel hm_surface_base]
+    test rbx, rbx
+    jz .rag_find_none
+    mov r12, rdi                    ; save path
+    mov r13d, [rbx + HOLO_MEM_STATE_OFFSET + HMS_ENTRY_COUNT]
+    xor r14d, r14d
+.rag_find_loop:
+    cmp r14d, r13d
+    jge .rag_find_none
+    imul rax, r14, HOLO_MEM_ENTRY_SIZE
+    lea rsi, [rbx + HOLO_MEM_OFFSET + rax]   ; entry ptr
+    mov r8, rsi                              ; save entry ptr
+    mov eax, [rsi + HME_CATEGORY]
+    cmp eax, CAT_CODE_HIGH
+    jb .rag_find_next
+    cmp eax, CAT_CODE_LOW
+    ja .rag_find_next
+    lea rdi, [r8 + HME_CONTEXT]
+    mov rsi, r12
+    mov ecx, HME_CONTEXT_LEN
+    call rag_str_eq
+    test eax, eax
+    jz .rag_find_next
+    mov rax, r8                  ; return entry ptr
+    jmp .rag_find_ret
+.rag_find_next:
+    inc r14d
+    jmp .rag_find_loop
+.rag_find_none:
+    xor rax, rax
+.rag_find_ret:
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+; ------------------------------------------------------------
+; rag_delete_entries_by_path — Delete all code entries for path
+; rdi = path
+; ------------------------------------------------------------
+rag_delete_entries_by_path:
+    push rbx
+    push r12
+    push r13
+    push r14
+
+    mov rbx, [rel hm_surface_base]
+    test rbx, rbx
+    jz .rag_del_ret
+    mov r12, rdi                    ; path
+    mov r13d, [rbx + HOLO_MEM_STATE_OFFSET + HMS_ENTRY_COUNT]
+    xor r14d, r14d
+.rag_del_loop:
+    cmp r14d, r13d
+    jge .rag_del_ret
+    imul rax, r14, HOLO_MEM_ENTRY_SIZE
+    lea rdi, [rbx + HOLO_MEM_OFFSET + rax]
+    mov r8, rdi                          ; save entry ptr
+    mov eax, [rdi + HME_CATEGORY]
+    cmp eax, CAT_CODE_HIGH
+    jb .rag_del_next
+    cmp eax, CAT_CODE_LOW
+    ja .rag_del_next
+    lea rsi, [r8 + HME_CONTEXT]
+    mov rdi, r12
+    mov ecx, HME_CONTEXT_LEN
+    call rag_str_eq
+    test eax, eax
+    jz .rag_del_next
+    mov rdi, r8
+    mov dword [rdi + HME_CATEGORY], CAT_DELETED
+    mov qword [rdi + HME_ID], 0
+    mov byte [rdi + HME_CONTENT], 0
+    mov byte [rdi + HME_CONTEXT], 0
+    mov byte [rdi + HME_SOURCE], 0
+    inc dword [rel rag_deleted_count]
+.rag_del_next:
+    inc r14d
+    jmp .rag_del_loop
+.rag_del_ret:
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+; ------------------------------------------------------------
+; rag_delete_missing_files — Tombstone code entries whose files are gone
+; ------------------------------------------------------------
+rag_delete_missing_files:
+    push rbx
+    push r12
+    push r13
+    push r14
+
+    mov rbx, [rel hm_surface_base]
+    test rbx, rbx
+    jz .rag_del_missing_ret
+    mov r12d, [rbx + HOLO_MEM_STATE_OFFSET + HMS_ENTRY_COUNT]
+    xor r13d, r13d
+.rag_del_missing_loop:
+    cmp r13d, r12d
+    jge .rag_del_missing_ret
+    imul rax, r13, HOLO_MEM_ENTRY_SIZE
+    lea rdi, [rbx + HOLO_MEM_OFFSET + rax]
+    mov r8, rdi                          ; save entry ptr
+    mov eax, [rdi + HME_CATEGORY]
+    cmp eax, CAT_CODE_HIGH
+    jb .rag_del_missing_next
+    cmp eax, CAT_CODE_LOW
+    ja .rag_del_missing_next
+    cmp byte [r8 + HME_CONTEXT], 0
+    je .rag_del_missing_next
+    lea rsi, [r8 + HME_CONTEXT]
+    mov rdi, rsi
+    call rag_stat_mtime
+    test eax, eax
+    jge .rag_del_missing_next
+    mov rdi, r8
+    mov dword [rdi + HME_CATEGORY], CAT_DELETED
+    mov qword [rdi + HME_ID], 0
+    mov byte [rdi + HME_CONTENT], 0
+    mov byte [rdi + HME_CONTEXT], 0
+    mov byte [rdi + HME_SOURCE], 0
+    inc dword [rel rag_deleted_count]
+.rag_del_missing_next:
+    inc r13d
+    jmp .rag_del_missing_loop
+.rag_del_missing_ret:
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+; ------------------------------------------------------------
+; rag_stat_mtime — Stat file and return mtime (low 32 bits)
+; rdi = path
+; returns eax = mtime or -1 on error
+; ------------------------------------------------------------
+rag_stat_mtime:
+    push rbx
+    sub rsp, 144
+    mov eax, SYS_STAT
+    mov rsi, rsp
+    syscall
+    test eax, eax
+    js .rag_stat_fail
+    mov eax, [rsp + 88]        ; st_mtime (tv_sec) low 32 bits
+    add rsp, 144
+    pop rbx
+    ret
+.rag_stat_fail:
+    mov eax, -1
+    add rsp, 144
+    pop rbx
+    ret
+
+; ------------------------------------------------------------
+; rag_str_eq — Compare C-strings with max length
+; rdi = a, rsi = b, ecx = max_len
+; returns eax = 1 if equal, 0 otherwise
+; ------------------------------------------------------------
+rag_str_eq:
+    xor eax, eax
+.rag_str_loop:
+    test ecx, ecx
+    jz .rag_str_eq_true
+    mov al, [rdi]
+    mov ah, [rsi]
+    cmp al, ah
+    jne .rag_str_eq_ret
+    test al, al
+    jz .rag_str_eq_true
+    inc rdi
+    inc rsi
+    dec ecx
+    jmp .rag_str_loop
+.rag_str_eq_true:
+    mov eax, 1
+.rag_str_eq_ret:
     ret
 
 ; ------------------------------------------------------------

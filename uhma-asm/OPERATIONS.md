@@ -6,7 +6,7 @@ Complete guide for operating UHMA (Unified Holographic Memory Architecture).
 
 ---
 
-## Quick Start
+## Quick Start (GUI-Only)
 
 ```bash
 cd /home/peter/Desktop/STARWARS/uhma-asm
@@ -15,22 +15,17 @@ cd /home/peter/Desktop/STARWARS/uhma-asm
 make clean && make
 cd pet/x86 && make && cd ../..
 
-# Option 1: GUI (primary interface)
+# Primary interface
 ./gui/uhma-viz
-
-# Option 2: Interactive REPL
-./uhma
-
-# Option 3: Headless training
-./uhma < /dev/null &
-./tools/feeder --corpus corpus/ --cycles 1
 ```
+
+Everything UHMA can do is reachable through the GUI. REPL/feeder are advanced/headless options only.
 
 ---
 
-## Three Ways to Run
+## Run Modes
 
-### 1. GUI (Command & Control Center)
+### 1. GUI (Command & Control Center) — Primary
 
 ```bash
 cd gui && make && ./uhma-viz
@@ -38,7 +33,8 @@ cd gui && make && ./uhma-viz
 
 The GUI provides visual monitoring and full control. Output is mirrored via the gateway stream and routed by the originating command's subnet; FEED is the live run-log for processing/autonomy, while QUERY/DEBUG are polled.
 
-**Startup**: GUI starts without UHMA. Click **DREAM** for autonomous mode or **FEED** for training.
+**Startup**: GUI starts without UHMA. Click **DREAM** for autonomous mode or **FEED▼** for training.
+**URL**: Click **URL** to ingest web content (type URL in the input bar or use the dialog).
 
 | Feature | Description |
 |---------|-------------|
@@ -67,7 +63,20 @@ The GUI provides visual monitoring and full control. Output is mirrored via the 
 └──────────────────────────────────────────────────────────────┘
 ```
 
-### 2. Interactive REPL
+### GUI-Only Workflows (Examples)
+
+**A/B Learning Check (same file twice):**
+1. Type `corpus/causal-structures.txt` in the input bar.
+2. Click **FILE → DREAM → INTRO**.
+3. Repeat the same three clicks.
+4. Look for non-zero resonance and shifting intro metrics on pass 2.
+
+**Mini-Batch + Consolidation:**
+1. Click **FEED▼ → Quick**.
+2. Click **DREAM → OBSERVE → INTRO** after feed starts.
+3. FEED should stream the live run-log; QUERY/DEBUG should keep updating.
+
+### 2. Interactive REPL (Advanced / Optional)
 
 ```bash
 ./uhma
@@ -80,7 +89,7 @@ uhma> autonomy             # see what UHMA is doing
 uhma> quit                 # exit (auto-saves)
 ```
 
-### 3. Headless Training (feeder)
+### 3. Headless Training (feeder) — Advanced / Optional
 
 ```bash
 # Single pass through corpus
@@ -266,7 +275,7 @@ All REPL commands available: `status`, `why`, `dream`, `observe`, `eat`, `presen
 
 ### Holographic Memory (Claude's own)
 
-Separate 6GB surface for cross-session persistence and code RAG.
+Separate 6GB surface for cross-session persistence and code RAG (accessed via MCP tools only).
 
 | Tool | Description |
 |------|-------------|
@@ -275,9 +284,13 @@ Separate 6GB surface for cross-session persistence and code RAG.
 | `mem_state` | Cognitive state (entry counts by category) |
 | `mem_recent` | Recent entries |
 | `mem_summary` | Summary statistics |
-| `mem_rag_refresh` | Rebuild code RAG entries |
+| `mem_rag_refresh` | Rebuild code RAG traces from existing entries (fast) |
+| `mem_rag_update` | Delta update code RAG from repo (mtime-based) |
+| `mem_rag_rebuild` | Full rebuild code RAG from files |
 
 14 categories: finding, failed, success, insight, warning, session, location, question, todo, context, request, code_high, code_mid, code_low.
+
+**RAG Scope**: `mem_rag_update` and `mem_rag_rebuild` scan repo code in `.` `include/` `tools/` `gui/` `embed/` and `pet/x86/` to refresh UHMA + pet code entries.
 
 ---
 
@@ -289,7 +302,7 @@ UHMA exposes a single TCP gateway on port 9999 for external tools.
 **Note**: response payloads are capped at `GW_MAX_PAYLOAD` (4096). Large outputs are truncated in request/response; use the GUI stream panels for the full run-log.
 
 ```bash
-# Quick check (spawns UHMA if needed, feeds once)
+# Advanced only (headless quick check)
 ./tools/feeder --spawn --cycles 1
 ```
 
@@ -336,4 +349,4 @@ The GUI, feeder, and MCP server all use this gateway.
 
 ---
 
-*Last updated: 2026-02-05*
+*Last updated: 2026-02-07*

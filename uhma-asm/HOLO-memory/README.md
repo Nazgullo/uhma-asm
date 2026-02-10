@@ -4,7 +4,7 @@ Persistent cross-session memory for Claude Code, stored as holographic vectors.
 
 ## Current Implementation
 
-The memory system is now **pure x86-64 assembly** (`holo_mem.asm`), linked into the MCP server (`tools/mcp_server`). No Python dependencies.
+The memory system is **pure x86-64 assembly** (`holo_mem.asm`), linked into the MCP server (`tools/mcp_server`). No Python dependencies. Access is via MCP tools only (no standalone CLI).
 
 ### How It Works
 
@@ -51,7 +51,16 @@ Layout:
 | `mem_state` | Cognitive state (entry counts) |
 | `mem_recent` | Recent entries |
 | `mem_summary` | Summary statistics |
-| `mem_rag_refresh` | Rebuild code RAG entries |
+| `mem_rag_refresh` | Rebuild code RAG traces from existing entries (fast) |
+| `mem_rag_update` | Delta update code RAG from repo (mtime-based) |
+| `mem_rag_rebuild` | Full rebuild code RAG from files |
+
+### Code RAG Scope
+
+RAG update/rebuild scans code in:
+- repo root (`.`)
+- `include/`, `tools/`, `gui/`, `embed/`
+- `pet/x86/` (pet UI + creature engine)
 
 ### Architecture
 
@@ -66,4 +75,4 @@ Claude Code ←→ JSON-RPC ←→ MCP Server (tools/mcp_server)
 
 ---
 
-*Last updated: 2026-02-06*
+*Last updated: 2026-02-07*

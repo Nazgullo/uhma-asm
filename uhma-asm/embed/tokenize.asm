@@ -24,8 +24,7 @@
 ;
 ; GOTCHAS:
 ;   - Vocab is memory-mapped for fast access
-;   - Hash table for O(1) lookups would be faster than linear scan
-;   - Current implementation uses linear scan (slow but simple)
+;   - Hash table provides O(1) lookup after init (linear scan fallback)
 
 %include "syscalls.inc"
 
@@ -34,6 +33,9 @@
 %define TOK_CLS     101
 %define TOK_SEP     102
 %define TOK_MASK    103
+
+%define HASH_SIZE   65536
+%define HASH_MASK   0xFFFF
 
 section .data
     vocab_path_default: db "embed/weights/vocab.bin", 0
@@ -47,8 +49,10 @@ section .bss
     vocab_offsets:  resq 1      ; pointer to offsets array
     vocab_strings:  resq 1      ; pointer to string table
 
-    ; Hash table for fast lookups (optional, not implemented yet)
-    ; hash_table:   resq 65536
+    ; Hash table for fast lookups
+    hash_ready:     resd 1
+    alignb 8
+    hash_table:     resq HASH_SIZE
 
     ; Scratch for tokenization
     word_buf:       resb 256    ; current word being tokenized
@@ -128,6 +132,9 @@ tokenizer_init:
     add rdx, rax
     mov [rel vocab_strings], rdx
 
+    ; Build hash table for O(1) vocab lookups
+    call build_hash_table
+
     ; Close fd (mmap persists)
     mov eax, SYS_CLOSE
     mov edi, ebx
@@ -151,6 +158,102 @@ tokenizer_init:
     add rsp, 8
     pop r12
     pop rbx
+    ret
+
+;; ============================================================================
+;; build_hash_table - Build vocab hash table for O(1) lookup
+;; Uses vocab_offsets + vocab_strings
+;; ============================================================================
+build_hash_table:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+
+    ; Initialize table to empty (0xFFFFFFFF)
+    lea rdi, [rel hash_table]
+    mov ecx, HASH_SIZE
+    mov rax, 0xFFFFFFFFFFFFFFFF
+    rep stosq
+
+    mov dword [rel hash_ready], 0
+    lea r11, [rel hash_table]
+
+    mov r12, [rel vocab_offsets]
+    mov r13, [rel vocab_strings]
+    mov r14d, [rel vocab_count]
+    xor r15d, r15d                  ; token_id
+
+.bh_loop:
+    cmp r15d, r14d
+    jge .bh_done
+
+    ; offset = vocab_offsets[token_id]
+    mov eax, [r12 + r15*4]
+    lea rsi, [r13 + rax]            ; string record
+    movzx edx, word [rsi]           ; len
+    lea rdi, [rsi + 2]              ; string bytes
+    mov esi, edx
+    call hash_word                  ; rax = hash
+    and eax, HASH_MASK
+    mov ebx, eax                    ; idx
+
+.bh_probe:
+    mov rax, [r11 + rbx*8]
+    mov edx, eax                    ; token_id in slot
+    cmp edx, 0xFFFFFFFF
+    jne .bh_next_slot
+
+    ; Pack {offset, token_id} into slot
+    mov eax, [r12 + r15*4]          ; offset
+    mov rdx, rax
+    shl rdx, 32
+    mov eax, r15d                   ; token_id
+    or rdx, rax
+    mov [r11 + rbx*8], rdx
+    jmp .bh_next_token
+
+.bh_next_slot:
+    inc ebx
+    and ebx, HASH_MASK
+    jmp .bh_probe
+
+.bh_next_token:
+    inc r15d
+    jmp .bh_loop
+
+.bh_done:
+    mov dword [rel hash_ready], 1
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================================
+;; hash_word - FNV-1a hash over bytes
+;;
+;; Args:
+;;   rdi = byte pointer
+;;   esi = length
+;; Returns:
+;;   rax = hash
+;; ============================================================================
+hash_word:
+    mov rax, 0xCBF29CE484222325
+    mov rcx, 0x100000001B3
+.hw_loop:
+    test esi, esi
+    jz .hw_done
+    movzx edx, byte [rdi]
+    xor rax, rdx
+    imul rax, rcx
+    inc rdi
+    dec esi
+    jmp .hw_loop
+.hw_done:
     ret
 
 ;; ============================================================================
@@ -228,17 +331,17 @@ tokenize:
     je .end_word
     ; Also stop at common punctuation
     cmp al, '.'
-    je .end_word
+    je .end_word_punct
     cmp al, ','
-    je .end_word
+    je .end_word_punct
     cmp al, '!'
-    je .end_word
+    je .end_word_punct
     cmp al, '?'
-    je .end_word
+    je .end_word_punct
     cmp al, ';'
-    je .end_word
+    je .end_word_punct
     cmp al, ':'
-    je .end_word
+    je .end_word_punct
 
     ; Lowercase
     cmp al, 'A'
@@ -253,6 +356,8 @@ tokenize:
     cmp ecx, 250            ; max word length
     jl .copy_word
 
+.end_word_punct:
+    inc r15d
 .end_word:
     mov byte [rdi + rcx], 0 ; null terminate
     mov [rel word_len], ecx
@@ -325,14 +430,64 @@ vocab_lookup:
     push r12
     push r13
     push r14
+    push r15
 
     mov r10, rdi            ; word
     mov r11d, esi           ; word_len
 
+    ; Use hash table if available
+    cmp dword [rel hash_ready], 0
+    je .linear_scan
+
+    ; Hash lookup
+    mov rdi, r10
+    mov esi, r11d
+    call hash_word
+    and eax, HASH_MASK
+    mov r15d, eax
+    lea r12, [rel hash_table]
+    mov r13, [rel vocab_strings]
+    mov ecx, HASH_SIZE
+
+.hash_probe:
+    mov rax, [r12 + r15*8]
+    mov r9d, eax                    ; token_id
+    cmp r9d, 0xFFFFFFFF
+    je .not_found
+    mov rbx, rax
+    shr rbx, 32                     ; offset
+    lea rsi, [r13 + rbx]
+    movzx eax, word [rsi]           ; length
+    cmp eax, r11d
+    jne .hash_next
+    lea rsi, [rsi + 2]
+    mov rdi, r10
+    mov edx, r11d
+.hash_cmp:
+    test edx, edx
+    jz .hash_found
+    mov al, [rdi]
+    cmp al, [rsi]
+    jne .hash_next
+    inc rdi
+    inc rsi
+    dec edx
+    jmp .hash_cmp
+.hash_found:
+    mov eax, r9d
+    jmp .lookup_done
+
+.hash_next:
+    inc r15d
+    and r15d, HASH_MASK
+    dec ecx
+    jnz .hash_probe
+    jmp .not_found
+
+.linear_scan:
     mov r12, [rel vocab_offsets]
     mov r13, [rel vocab_strings]
     mov r14d, [rel vocab_count]
-
     xor ebx, ebx            ; token_id = 0
 
 .lookup_loop:
@@ -378,6 +533,7 @@ vocab_lookup:
     mov eax, -1
 
 .lookup_done:
+    pop r15
     pop r14
     pop r13
     pop r12

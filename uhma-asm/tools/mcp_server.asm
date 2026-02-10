@@ -12,14 +12,16 @@
 ;     {"jsonrpc":"2.0","id":N,"result":{"content":[{"type":"text","text":"..."}]}}
 ;
 ; TOOLS SUPPORTED:
-;   Pass-through (just send command):
+;   Pass-through (UHMA gateway):
 ;     status, help, self, intro, why, misses, dream, observe,
 ;     presence, drives, metacog, genes, regions, hive, colony,
 ;     compact, reset
 ;   Special handling:
 ;     input (wrap with ccmode)
 ;     raw (send raw command)
-;     mem_rag_refresh (rebuild code RAG in holographic memory)
+;   Holographic memory (standalone, no UHMA required):
+;     mem_add, mem_query, mem_state, mem_recent, mem_summary,
+;     mem_rag_refresh, mem_rag_update, mem_rag_rebuild
 ;
 ; ARCHITECTURE:
 ;   1. Read line from stdin (Content-Length header or raw JSON)
@@ -32,7 +34,8 @@
 ;
 ; GOTCHAS:
 ;   - MCP uses Content-Length framing OR raw JSON lines (detect at runtime)
-;   - UHMA gateway must be listening before server starts
+;   - UHMA gateway must be listening before server starts (for UHMA commands)
+;   - mem_* tools initialize their own 6GB holographic memory surface
 ;   - JSON parsing is minimal - just pattern matching for known fields
 ;   - Response timeout of 10 seconds
 ;
@@ -76,7 +79,9 @@ section .data
                     db '{"name":"mem_state","description":"Get memory cognitive state","inputSchema":{"type":"object","properties":{}}},'
                     db '{"name":"mem_recent","description":"Get recent memory entries","inputSchema":{"type":"object","properties":{"limit":{"type":"integer"}}}},'
                     db '{"name":"mem_summary","description":"Get memory summary","inputSchema":{"type":"object","properties":{}}},'
-                    db '{"name":"mem_rag_refresh","description":"Rebuild code RAG entries","inputSchema":{"type":"object","properties":{}}}', 0
+                    db '{"name":"mem_rag_refresh","description":"Rebuild code RAG traces from existing entries","inputSchema":{"type":"object","properties":{}}},'
+                    db '{"name":"mem_rag_update","description":"Delta update code RAG (mtime-based)","inputSchema":{"type":"object","properties":{}}},'
+                    db '{"name":"mem_rag_rebuild","description":"Full rebuild code RAG from repo files","inputSchema":{"type":"object","properties":{}}}', 0
     tools_list_end: db ']}}', 10, 0
 
     ; Tool names (for matching)
@@ -105,6 +110,8 @@ section .data
     tool_mem_recent: db "mem_recent", 0
     tool_mem_summary: db "mem_summary", 0
     tool_mem_rag_refresh: db "mem_rag_refresh", 0
+    tool_mem_rag_update: db "mem_rag_update", 0
+    tool_mem_rag_rebuild: db "mem_rag_rebuild", 0
 
     ; UHMA command templates
     cmd_ccmode_on:  db "ccmode on", 10, 0
@@ -208,6 +215,8 @@ extern holo_mem_state
 extern holo_mem_recent
 extern holo_mem_summary
 extern holo_mem_rag_refresh
+extern holo_mem_rag_update
+extern holo_mem_rag_rebuild
 
 ; Output buffer capture (from format.asm)
 extern set_output_channel
@@ -882,6 +891,20 @@ dispatch_request:
     test eax, eax
     jnz .do_mem_rag_refresh
 
+    ; mem_rag_update
+    lea rdi, [rel tool_mem_rag_update]
+    mov rsi, rbx
+    call match_tool_name
+    test eax, eax
+    jnz .do_mem_rag_update
+
+    ; mem_rag_rebuild
+    lea rdi, [rel tool_mem_rag_rebuild]
+    mov rsi, rbx
+    call match_tool_name
+    test eax, eax
+    jnz .do_mem_rag_rebuild
+
     ; Unknown tool - return error
     jmp .dispatch_unknown
 
@@ -1157,6 +1180,34 @@ dispatch_request:
     call ensure_holo_mem
     call set_output_buffer
     call holo_mem_rag_refresh
+    call get_output_buffer       ; rax=buf, edx=len
+    call reset_output_channel
+    lea rdi, [rel resp_buf]
+    mov rsi, rax
+    mov ecx, edx
+    rep movsb
+    mov byte [rdi], 0
+    call send_success_response
+    jmp .dispatch_ret
+
+.do_mem_rag_update:
+    call ensure_holo_mem
+    call set_output_buffer
+    call holo_mem_rag_update
+    call get_output_buffer       ; rax=buf, edx=len
+    call reset_output_channel
+    lea rdi, [rel resp_buf]
+    mov rsi, rax
+    mov ecx, edx
+    rep movsb
+    mov byte [rdi], 0
+    call send_success_response
+    jmp .dispatch_ret
+
+.do_mem_rag_rebuild:
+    call ensure_holo_mem
+    call set_output_buffer
+    call holo_mem_rag_rebuild
     call get_output_buffer       ; rax=buf, edx=len
     call reset_output_channel
     lea rdi, [rel resp_buf]

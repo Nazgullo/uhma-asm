@@ -384,7 +384,7 @@ Pure x86-64 assembly MCP server (`tools/mcp_server`) — connects to UHMA via th
 | `status`, `self`, `intro`, `presence`, `drives`, `metacog`, `genes`, `regions`, `hive`, `colony` | System state inspection |
 | `why`, `misses` | Debug via unified trace |
 | `dream`, `observe`, `compact`, `reset` | Trigger consolidation / maintenance cycles |
-| `mem_add`, `mem_query`, `mem_state`, `mem_recent`, `mem_summary`, `mem_rag_refresh` | Holographic memory + code RAG |
+| `mem_add`, `mem_query`, `mem_state`, `mem_recent`, `mem_summary`, `mem_rag_refresh`, `mem_rag_update`, `mem_rag_rebuild` | Holographic memory + code RAG |
 | `raw` | Escape hatch for any REPL command (`eat`, `save`, `load`, `trace`, `receipts`, `step`, `run`, etc.) |
 
 **Config** (`PROJECT_ROOT/.mcp.json`):
@@ -406,7 +406,9 @@ Restart Claude Code after changes. Verify with `/mcp`.
 
 ### Code RAG Refresh
 Code RAG is built inside `holo_mem.asm` and refreshed on demand:
-- Call `mem_rag_refresh` to rescan the repo and rebuild code_high/mid/low entries.
+- `mem_rag_refresh` rebuilds traces from existing entries (fast, no file I/O).
+- `mem_rag_update` scans repo files and re-embeds only changed/new files.
+- `mem_rag_rebuild` clears and rebuilds all code entries from scratch.
 - No Python dependencies or external index files.
 
 ## Claude Holographic Memory (Dual Purpose)
@@ -549,8 +551,8 @@ rm -f uhma.surface && ./uhma
 
 ### Basic Usage
 ```bash
-# Single cycle through corpus
-./tools/feeder --corpus corpus/ --cycles 1 --pause 5
+# Single cycle through corpus with dreams after each file
+./tools/feeder --corpus corpus/ --cycles 1 --pause 5 --dream-per-file 2
 
 # Graceful shutdown
 ./tools/feeder --shutdown
@@ -566,6 +568,7 @@ rm -f uhma.surface && ./uhma
 | `--pause N` | 5 | Seconds between files |
 | `--consolidate N` | 30 | Minutes between observe+dream |
 | `--cycles N` | 1 | Number of cycles (0=infinite) |
+| `--dream-per-file N` | 0 | Dream N times after each file |
 | `--spawn` | off | Spawn UHMA if not running |
 | `--shutdown` | - | Send save+quit to running UHMA |
 
@@ -576,7 +579,7 @@ rm -f uhma.surface && ./uhma
 4. Runs `observe` + `dream` consolidation at intervals and end-of-cycle
 5. `--shutdown` sends `save` + `quit`, then drains final output
 
-**Note**: the gateway is framed; use GUI, `tools/feeder`, or `tools/mcp_server` (raw `nc` won’t work).
+**Note**: the gateway is framed; use GUI, `tools/feeder`, or `tools/mcp_server` (raw `nc` won't work).
 
 ### batch_mode Setting
 In `introspect.asm`, `batch_mode` controls autonomous behavior:
@@ -597,14 +600,15 @@ Toggle in REPL: `batch`
 | Port conflicts | Multiple instances | `pkill -9 uhma` first |
 | Script exits early | Bad corpus path | Verify `--corpus` directory exists |
 | No output | Raw `nc` used on framed gateway | Use GUI/feeder/MCP |
+| Only first chunk produces log output | Gateway disconnect bug (fixed 2026-02-09) | Rebuild with latest repl.asm |
 
-### Live Autonomous Mode
+### Live Autonomous Mode (GUI-First)
 
-After training, UHMA can enter autonomous self-exploration mode:
+After training, UHMA can enter autonomous self-exploration mode without CLI:
 
-1. Start UHMA (GUI **DREAM** or `./uhma`)
-2. Toggle `batch` off (batch_mode=0) or use the GUI **DREAM** spawn
-3. Use `step` or `run [n]` to advance autonomy ticks
+1. Launch GUI (`./gui/uhma-viz`)
+2. Click **DREAM** to spawn UHMA in live/autonomous mode
+3. Use **STEP** or **RUN** buttons for discrete autonomy ticks
 
 ### Soft Shutdown
 ```bash
@@ -678,3 +682,132 @@ After training, UHMA can enter autonomous self-exploration mode:
 - Started Stage 0 (Infant), advanced to Stage 2 (Active) during session
 - Regions: 23,430 → 23,491 (+61 new code regions)
 - Vocabulary: 42,982 → 43,091 (+109 words)
+
+### Session 2026-02-09 QTHM + Gateway Disconnect Fix + Training
+
+**QTHM (Quantum Triplet Holographic Memory)** added as PRIMARY prediction path:
+- `qthm.asm`: store/predict/decay using multi-order holographic context + Born rule
+- Wired into dispatch.asm BEFORE existing prediction paths
+- Learning: reinforce on HIT (0.3), store on MISS (0.15) via learn.asm
+- Dream: decay + crystallization (strong QTHM predictions → emitted fast-path regions)
+- Drives: QTHM entropy feeds accuracy drive pressure
+
+**Gateway disconnect bug (repl.asm, CRITICAL)**:
+When a gateway client disconnects (gateway_read returns 0), repl.asm jumped straight
+to `.loop` without resetting `current_channel` to -1. This meant:
+- Dead client's slot stayed occupied (never freed by gw_close_client)
+- `current_channel` still pointed to dead client fd
+- Flush code at top of `.loop` tried to send to dead client
+- Next feeder connecting got a DIFFERENT slot, but output routing was broken
+- **Symptom**: first feeder connection per UHMA session produces full log output (thousands of lines), all subsequent connections produce only 3-5 lines
+- **Fix**: `mov dword [rel current_channel], -1` before `jmp .loop` on disconnect
+- **Impact**: Every training architecture that spawns separate feeder processes per chunk was broken. Only single-connection feeding worked.
+
+**format.asm stderr mirror**: `print_str` ALWAYS writes to stderr (fd 2) before routing to output_fd. Ensures log capture regardless of gateway buffer mode.
+
+### Feeding & Log Capture Architecture
+
+**How output flows during gateway feeding:**
+```
+feeder sends "eat /path" via framed TCP
+    → UHMA gateway receives, dispatches to repl
+    → repl calls set_output_buffer (output_fd = -1, buffer mode)
+    → digest_file processes tokens, calls print_str for each HIT/MISS/EMIT
+    → print_str: (1) ALWAYS writes to stderr  (2) writes to output_fd buffer
+    → stderr goes to uhma_live.log (via stdbuf -eL ./uhma 2>log)
+    → buffer accumulates gateway response (sent back to feeder)
+    → feeder drains response silently
+```
+
+**Key insight**: The log capture relies on the stderr mirror in format.asm, NOT on stdout.
+UHMA is launched with `stdbuf -oL -eL ./uhma < /dev/null > log 2>&1` — both stdout
+and stderr go to the same file, but the stderr path is what captures gateway-routed output.
+
+### Training Script (qthm_train.sh)
+
+Per-chunk protocol — feed and dream are SEPARATE steps. Log capture happens
+BEFORE dreams so the feedback contains only chunk processing output, not dream output.
+
+```
+For each chunk (419 chunks × 3 passes):
+  1. Record uhma_live.log line count (before)
+  2. feed_one(chunk, 0)              ← feed chunk, NO dreams
+  3. Record uhma_live.log line count (after)
+  4. Capture delta → clog_tmp.txt    ← ONLY chunk processing (HIT/MISS/EMIT)
+  5. dream_only(2)                   ← dream 2x on the chunk
+  6. If delta > 10 lines:
+       feed_one(clog_tmp, 0)         ← feed log back, NO dreams
+       dream_only(3)                 ← dream 3x on the feedback
+     else:
+       dream_only(3)
+  7. Delete clog_tmp.txt
+
+After each pass: 10-minute extended dream session
+```
+
+**CRITICAL**: Capture log BEFORE dreams. Previous version captured after `feed_one(chunk, 2)`
+which included dream output in the feedback — caused 7x amplification loop (5K→35K lines).
+Feeding and dreaming must be separate steps to keep feedback bounded.
+
+**`feed_one(file, N)`**: Creates temp dir, copies file into it, runs `tools/feeder --corpus tmpdir --cycles 1 --pause 0 --dream-per-file N --consolidate 999`. Each call spawns a **separate feeder process** with its own TCP connection — this is why the gateway disconnect fix was critical.
+
+**`dream_only(N)`**: Feeds a tiny dummy file (`; dream\n`) with `--dream-per-file N`.
+
+### Log Files
+
+All under `test_logs/qthm_train/logs/`:
+
+| File | Content | How to read |
+|------|---------|-------------|
+| `uhma_live.log` | ALL UHMA output (HIT/MISS/EMIT/DREAM/DRIVE/SYM) | `tail -f`, `grep -c '\[HIT\]'` |
+| `master.log` | Script progress: chunk timing, line counts, accuracy stats | `tail -f` |
+| `feeder.log` | Feeder connection/disconnect status per chunk | `cat` |
+| `clog_tmp.txt` | Temp: per-chunk UHMA output delta (fed back, then deleted) | transient |
+| `feed_tmp/` | Temp dirs for single-file feeder corpora (auto-cleaned) | transient |
+
+### Monitoring
+
+```bash
+# Live progress
+tail -f test_logs/qthm_train/logs/master.log
+
+# HIT/MISS ratio
+H=$(grep -c '\[HIT\]' test_logs/qthm_train/logs/uhma_live.log)
+M=$(grep -c '\[MISS\]' test_logs/qthm_train/logs/uhma_live.log)
+echo "$H hits / $M misses = $(echo "scale=1; $H*100/($H+$M)" | bc)%"
+
+# Other metrics
+grep -c '\[EMIT\]' test_logs/qthm_train/logs/uhma_live.log        # regions emitted
+grep -c 'DREAM.*Cycle complete' test_logs/qthm_train/logs/uhma_live.log  # dream cycles
+grep 'SELF-AWARE' test_logs/qthm_train/logs/uhma_live.log | tail -1      # self-recognition
+grep 'MATURITY' test_logs/qthm_train/logs/uhma_live.log | tail -1        # maturity stage
+
+# CPU control
+cpulimit -p $(pgrep -x uhma) -l 60 -b    # cap at 60%
+
+# Check health
+kill -0 $(pgrep -x uhma) && echo "alive" || echo "dead"
+wc -l test_logs/qthm_train/logs/uhma_live.log
+```
+
+### Training Performance (observed 2026-02-09)
+- ~25 seconds per chunk at 60% CPU
+- ~2000-5000 log lines per chunk processing (bounded, no dream output in capture)
+- Pass 1 chunk 15: **21.2% accuracy** (8436 HITs / 31327 MISSes)
+- Structurally similar assembly patterns generalize across chunks via QTHM
+- **Lesson**: feedback amplification loop when dreams included in capture — 5K→35K lines per chunk, nearly fatal. Always capture BEFORE dreams.
+
+### DO NOT
+- Use Python for gateway commands
+- Use raw `nc` (framed protocol)
+- Write custom socket code
+- Spawn multiple UHMA instances (port 9999 conflict)
+- `tools/feeder` handles all framed gateway communication correctly
+
+### Session 2026-02-07 GUI-Only Flow + Memory/RAG Refresh
+- Enforced GUI-only control path for DREAM/FEED/OBSERVE/RUN/INTRO (no CLI required)
+- Verified FEED panel as live run-log stream; QUERY/DEBUG remain auto-polled
+- Updated documentation with GUI-first run examples (A/B file pass, mini-batch)
+- Added/updated file headers (including test_trace corpus header)
+- Split code RAG ops: `mem_rag_refresh` (trace rebuild), `mem_rag_update` (delta), `mem_rag_rebuild` (full)
+- Fixed TCP response offset: gateway replies flush immediately after each TCP line

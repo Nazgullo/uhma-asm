@@ -55,13 +55,14 @@ section .data
     msg_done:        db "[FEEDER] Done", 10, 0
     msg_no_corpus:   db "[FEEDER] ERROR: Corpus directory not found", 10, 0
     msg_usage:       db "Usage: feeder [OPTIONS]", 10
-                     db "  --corpus DIR     Training corpus (default: corpus/)", 10
-                     db "  --pause N        Seconds between files (default: 5)", 10
-                     db "  --consolidate N  Minutes between consolidation (default: 30)", 10
-                     db "  --cycles N       Number of cycles (default: 1, 0=infinite)", 10
-                     db "  --spawn          Spawn UHMA if not running", 10
-                     db "  --shutdown       Send save+quit to running UHMA", 10
-                     db "  --help           Show this help", 10, 0
+                     db "  --corpus DIR         Training corpus (default: corpus/)", 10
+                     db "  --pause N            Seconds between files (default: 5)", 10
+                     db "  --consolidate N      Minutes between consolidation (default: 30)", 10
+                     db "  --cycles N           Number of cycles (default: 1, 0=infinite)", 10
+                     db "  --dream-per-file N   Dream N times after each file (default: 0)", 10
+                     db "  --spawn              Spawn UHMA if not running", 10
+                     db "  --shutdown           Send save+quit to running UHMA", 10
+                     db "  --help               Show this help", 10, 0
     newline:         db 10, 0
 
     ; Commands to send
@@ -79,6 +80,7 @@ section .data
     arg_cycles:      db "--cycles", 0
     arg_shutdown:    db "--shutdown", 0
     arg_spawn:       db "--spawn", 0
+    arg_dream_pf:    db "--dream-per-file", 0
     arg_help:        db "--help", 0
 
     ; UHMA binary path for spawn
@@ -97,6 +99,7 @@ section .bss
     max_cycles:      resd 1             ; number of cycles (0=infinite)
     do_shutdown:     resd 1             ; just shutdown flag
     do_spawn:        resd 1             ; spawn UHMA if not running
+    dream_per_file:  resd 1             ; dream cycles after each file (0=none)
     uhma_pid:        resd 1             ; PID of spawned UHMA
 
     ; Gateway socket (single fd)
@@ -141,6 +144,7 @@ _start:
     mov dword [rel max_cycles], default_cycles
     mov dword [rel do_shutdown], 0
     mov dword [rel do_spawn], 0
+    mov dword [rel dream_per_file], 0
     mov dword [rel uhma_pid], 0
 
     ; Parse command line
@@ -235,6 +239,17 @@ _start:
     test eax, eax
     jz .parse_cycles
 
+    ; Check --dream-per-file
+    push rdi
+    push r12
+    lea rdi, [rel arg_dream_pf]
+    mov rsi, [r12 - 8]
+    call strcmp
+    pop r12
+    pop rdi
+    test eax, eax
+    jz .parse_dream_pf
+
     jmp .parse_args
 
 .parse_corpus:
@@ -286,6 +301,20 @@ _start:
     pop r12
     pop rdi
     mov [rel max_cycles], eax
+    jmp .parse_args
+
+.parse_dream_pf:
+    test edi, edi
+    jz .args_done
+    mov rsi, [r12]
+    add r12, 8
+    dec edi
+    push rdi
+    push r12
+    call atoi
+    pop r12
+    pop rdi
+    mov [rel dream_per_file], eax
     jmp .parse_args
 
 .set_shutdown:
@@ -684,6 +713,13 @@ training_loop:
     mov edi, [rel pause_secs]
     call sleep_sec
 
+    ; Run per-file dream cycles if configured
+    mov edi, [rel dream_per_file]
+    test edi, edi
+    jz .no_per_file_dream
+    call run_dream_cycles
+.no_per_file_dream:
+
     ; Check consolidation timing
     call maybe_consolidate
 
@@ -1079,6 +1115,38 @@ maybe_consolidate:
     mov [rel last_consolidate], rax
 
 .no_consolidate:
+    add rsp, 8
+    pop rbx
+    ret
+
+;; ============================================================
+;; run_dream_cycles — Run N dream cycles on current connection
+;; edi = number of dream cycles
+;; ============================================================
+run_dream_cycles:
+    push rbx
+    sub rsp, 8
+
+    mov ebx, edi
+    test ebx, ebx
+    jz .rdc_done
+
+.rdc_loop:
+    ; Send dream command
+    mov edi, SUBNET_CONSOL
+    lea rsi, [rel cmd_dream]
+    call send_cmd
+
+    ; Wait and drain
+    mov edi, 5
+    call sleep_sec
+    mov edi, 100
+    call drain_outputs
+
+    dec ebx
+    jnz .rdc_loop
+
+.rdc_done:
     add rsp, 8
     pop rbx
     ret

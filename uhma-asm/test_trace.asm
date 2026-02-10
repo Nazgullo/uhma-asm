@@ -1,4 +1,13 @@
-; Test file: all tokens either abstract (NUM/HEX) or repeat
+; test_trace.asm — Synthetic token trace corpus (not executable)
+;
+; FLOW:
+;   Intended as input for digest_file/eat (tokenization + trace testing).
+;   Not assembled or executed as a real program.
+;
+; GOTCHAS:
+;   - Labels/functions are undefined on purpose (text-only corpus)
+;   - Use as training input, not as NASM source
+;
 ; Pattern: mov REG, NUM or mov REG, HEX
 mov eax, 100
 mov ebx, 200

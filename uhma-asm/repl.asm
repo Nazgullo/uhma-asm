@@ -277,6 +277,22 @@ repl_run:
     lea rax, [rel .loop]
     mov [rel fault_safe_rip], rax
 
+    ; Immediate flush for TCP clients (avoid one-command-late responses)
+    cmp dword [rel current_channel], -1
+    jle .flush_done
+    call get_output_buffer        ; rax=buf, edx=len
+    test edx, edx
+    jz .flush_clear
+    mov edi, [rel current_channel]
+    mov rsi, rax
+    call gateway_respond
+.flush_clear:
+    ; Reset capture buffer for next TCP line
+    call set_output_buffer
+.flush_done:
+    ; Default to stdout unless a TCP line re-enables buffer mode
+    call reset_output_channel
+
     ; Check if there's remaining data in the buffer
     mov rax, [rel buf_pos]
     mov rcx, [rel buf_end]
@@ -347,7 +363,13 @@ repl_run:
 
     ; Check for disconnect/error
     test eax, eax
-    jle .loop                     ; client gone, poll again
+    jg .read_ok
+    ; Client disconnected or read error — reset current_channel so
+    ; the flush at top of .loop doesn't send to a dead client,
+    ; and gateway_poll's hangup check will close the slot.
+    mov dword [rel current_channel], -1
+    jmp .loop
+.read_ok:
 
     ; Route output to buffer (will be sent back via gateway_respond at top of loop)
     call set_output_buffer
@@ -394,6 +416,12 @@ repl_run:
     ; Skip empty lines
     cmp byte [rbx], 0
     je .loop
+
+    ; TCP line: capture output for this line
+    cmp dword [rel current_channel], -1
+    jle .parse_line
+    call set_output_buffer
+.parse_line:
 
     ; Check for commands
     ; "quit" or "exit"
