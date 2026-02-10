@@ -77,6 +77,8 @@ extern receipt_resonate
 extern emit_receipt_simple
 extern emit_receipt_full
 extern schema_learn_from_context
+extern qthm_decay
+extern qthm_predict
 
 ;; ============================================================
 ;; dream_cycle
@@ -251,6 +253,12 @@ dream_cycle:
     ; Look for pairs of miss entries with same token but similar contexts
     ; If found, emit a generalized pattern (masked context)
     call dream_extract_schemas
+
+    ; --- QTHM decay: prevent trace saturation ---
+    call qthm_decay
+
+    ; --- QTHM crystallization: strong predictions → emitted regions ---
+    call dream_qthm_crystallize
 
     ; Print summary
     lea rdi, [rel dream_end]
@@ -559,6 +567,122 @@ dream_consolidate:
     jmp .consol_loop
 
 .consol_done:
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+;; ============================================================
+;; dream_qthm_crystallize
+;; Scan recent token history, rebuild struct_ctx for each position,
+;; query QTHM — if confidence > CRYSTALLIZE threshold, emit fast-path
+;; region to accelerate proven holographic patterns.
+;; ============================================================
+dream_qthm_crystallize:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    ; 5 pushes (odd) → aligned
+    sub rsp, HOLO_VEC_BYTES    ; temp buffer for struct_ctx rebuild
+
+    mov rbx, SURFACE_BASE
+
+    ; Skip if we don't have enough tokens for meaningful context
+    mov eax, [rbx + STATE_OFFSET + ST_TOKEN_COUNT]
+    cmp eax, 8
+    jl .crystal_done
+
+    ; Scan last 16 positions in token ring
+    mov r12d, [rbx + STATE_OFFSET + ST_TOKEN_POS]
+    xor r13d, r13d            ; scan index
+    xor r15d, r15d            ; crystallized count
+
+.crystal_loop:
+    cmp r13d, 16
+    jge .crystal_done
+    cmp r15d, 4               ; max 4 crystallizations per dream
+    jge .crystal_done
+
+    ; Compute position in token ring (walk backwards)
+    mov eax, r12d
+    sub eax, r13d
+    sub eax, 1
+    and eax, (ST_TOKEN_BUF_CAP - 1)  ; wrap
+    mov r14d, eax             ; ring position
+
+    ; Get token at this position
+    lea rax, [rbx + STATE_OFFSET + ST_TOKEN_BUF]
+    mov ecx, [rax + r14 * 4]
+    test ecx, ecx
+    jz .crystal_next          ; empty slot
+
+    ; Check if struct_ctx is valid (use the live one — it was computed for current step)
+    cmp dword [rbx + STATE_OFFSET + ST_STRUCT_CTX_VALID], 0
+    je .crystal_next
+
+    ; Query QTHM with current struct_ctx
+    lea rdi, [rbx + STATE_OFFSET + ST_STRUCT_CTX_VEC]
+    call qthm_predict
+    ; eax = predicted token, xmm0 = confidence, xmm1 = entropy
+    test eax, eax
+    jz .crystal_next
+
+    ; Check if confidence > CRYSTALLIZE threshold (0.7)
+    mov rcx, QTHM_CRYSTALLIZE_F64
+    movq xmm2, rcx
+    ucomisd xmm0, xmm2
+    jbe .crystal_next
+
+    ; High-confidence QTHM prediction — try to crystallize as emitted region
+    mov r14d, eax             ; predicted token
+
+    ; Compute ctx_hash from actual tokens at this position
+    ; Use previous token hash as context (same as process_token)
+    lea rax, [rbx + STATE_OFFSET + ST_TOKEN_BUF]
+    mov ecx, r12d
+    sub ecx, r13d
+    sub ecx, 2                ; prev token position
+    and ecx, (ST_TOKEN_BUF_CAP - 1)
+    mov edi, [rax + rcx * 4]  ; prev token
+    mov rax, 0x9E3779B97F4A7C15  ; golden ratio prime
+    imul rdi, rax             ; ctx_hash = hash(prev_token)
+
+    ; Check if pattern already exists
+    push rdi                  ; save ctx_hash
+    mov esi, r14d             ; predicted token
+    call find_existing_pattern
+    pop rdi
+    test rax, rax
+    jnz .crystal_next         ; already exists — skip
+
+    ; Check region table capacity
+    lea rax, [rbx + STATE_OFFSET + ST_REGION_COUNT]
+    mov eax, [rax]
+    cmp eax, REGION_TABLE_MAX - 8
+    jge .crystal_done         ; table full
+
+    ; Emit fast-path dispatch pattern
+    mov esi, r14d             ; predicted token
+    lea rax, [rbx + STATE_OFFSET + ST_GLOBAL_STEP]
+    mov edx, [rax]            ; birth step
+    call emit_dispatch_pattern
+    test rax, rax
+    jz .crystal_next
+
+    ; Mark as ACTIVE (proven by QTHM, skip nursery)
+    or word [rax + RHDR_FLAGS], RFLAG_ACTIVE
+    inc r15d
+
+.crystal_next:
+    inc r13d
+    jmp .crystal_loop
+
+.crystal_done:
+    add rsp, HOLO_VEC_BYTES
+    pop r15
+    pop r14
     pop r13
     pop r12
     pop rbx

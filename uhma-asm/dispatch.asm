@@ -66,6 +66,10 @@ section .data
     qsurp_one:           dq 1.0
     qsurp_epsilon:       dq 1.0e-6
 
+    ; QTHM confidence threshold for dispatch (f64)
+    align 8
+    qthm_disp_thresh:    dq 0.1
+
 section .bss
     word_buf:       resb MAX_WORD_LEN
 
@@ -127,6 +131,8 @@ extern qdec_set_amps
 extern qdec_measure
 extern qdec_entropy
 extern qdec_collapse
+extern qthm_predict
+extern qthm_store
 
 ;; ============================================================
 ;; dispatch_init
@@ -573,6 +579,17 @@ process_token:
     movq xmm0, rax
     call holo_store
 
+    ; --- QTHM: Reinforce prediction trace on HIT ---
+    cmp dword [rbx + STATE_OFFSET + ST_STRUCT_CTX_VALID], 0
+    je .skip_qthm_hit
+    lea rdi, [rbx + STATE_OFFSET + ST_STRUCT_CTX_VEC]
+    mov esi, r12d             ; actual token
+    mov rax, QTHM_HIT_REINFORCE_F64
+    movq xmm0, rax
+    call qthm_store
+    inc dword [rbx + STATE_OFFSET + ST_QTHM_HITS]
+.skip_qthm_hit:
+
     ; --- Self-knowledge: track context-type accuracy ---
     ; Extract ctx_type from hash (top 4 bits → 16 types)
     mov rax, [rbx + STATE_OFFSET + ST_CTX_HASH]
@@ -973,6 +990,9 @@ process_token:
     lea rsi, [rbx + STATE_OFFSET + ST_STRUCT_CTX_VEC]    ; src = current struct_ctx
     call holo_superpose_f64
 
+    ; --- QTHM miss counter ---
+    inc dword [rbx + STATE_OFFSET + ST_QTHM_MISSES]
+
     ; === SELF-MODEL CORRECTION: update self-knowledge on self-miss ===
     ; When we fail to predict our own behavior, strengthen the correct pattern in self-model
     cmp dword [rbx + STATE_OFFSET + ST_IS_SELF_REF], 0
@@ -1236,6 +1256,38 @@ dispatch_predict:
     mov eax, r12d
     shr eax, 28               ; top 4 bits
     mov [rsp + 68], eax       ; ctx_type
+
+    ; === QTHM: Holographic prediction via multi-order structural context ===
+    ; Try QTHM FIRST — it uses rich positional context for generalization
+    cmp dword [rbx + STATE_OFFSET + ST_STRUCT_CTX_VALID], 0
+    je .skip_qthm
+
+    ; struct_ctx was already computed in process_token (line ~528)
+    lea rdi, [rbx + STATE_OFFSET + ST_STRUCT_CTX_VEC]
+    call qthm_predict
+    ; eax = predicted token (0 if no prediction)
+    ; xmm0 = confidence, xmm1 = entropy
+    test eax, eax
+    jz .skip_qthm
+
+    ; Store entropy for drives/presence
+    movsd [rbx + STATE_OFFSET + ST_QTHM_ENTROPY], xmm1
+
+    ; Check confidence threshold
+    ucomisd xmm0, [rel qthm_disp_thresh]
+    jbe .skip_qthm
+
+    ; QTHM has a prediction — use it
+    mov [rsp + 0], eax        ; best_token
+    ; Convert f64 confidence → f32 for expect_conf
+    cvtsd2ss xmm2, xmm0
+    movss [rbx + STATE_OFFSET + ST_EXPECT_CONF], xmm2
+    mov [rbx + STATE_OFFSET + ST_EXPECT_TOKEN], eax
+    mov qword [rbx + STATE_OFFSET + ST_PREDICT_REGION], 0  ; no region (holographic)
+    mov qword [rbx + STATE_OFFSET + ST_EXPECT_REGION], 0
+    jmp .predict_return
+
+.skip_qthm:
 
     ; --- RESONANCE QUERY: Check past outcomes for this context ---
     ; Query receipt trace for past HIT events with similar context

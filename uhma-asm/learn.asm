@@ -76,6 +76,7 @@ extern holo_gen_vec
 extern emit_receipt_simple
 extern emit_receipt_full
 extern receipt_resonate
+extern qthm_store
 
 ;; ============================================================
 ;; learn_pattern(ctx_hash, token_id, energy_delta)
@@ -113,6 +114,16 @@ learn_pattern:
     mov esi, r13d             ; token_id
     movsd xmm0, [rel holo_lr]  ; f64 strength
     call holo_store
+
+    ; --- QTHM: Store prediction triplet (structural context → token) ---
+    cmp dword [rbx + STATE_OFFSET + ST_STRUCT_CTX_VALID], 0
+    je .skip_qthm_learn
+    lea rdi, [rbx + STATE_OFFSET + ST_STRUCT_CTX_VEC]
+    mov esi, r13d             ; actual token (learn what IS)
+    mov rax, QTHM_LEARN_RATE_F64
+    movq xmm0, rax
+    call qthm_store
+.skip_qthm_learn:
 
     ; --- SOMATIC GROUNDING: Superpose valence onto trace ---
     ; 1. Convert energy_delta to valence [-1, +1]

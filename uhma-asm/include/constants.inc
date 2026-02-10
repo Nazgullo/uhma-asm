@@ -1273,6 +1273,17 @@
 %define ST_ROLLING_CONF_SAMPLES (ST_ROLLING_CONF + 8)                ; u32: samples seen (warmup < 3)
 %define ST_BLOCK_END            (ST_ROLLING_CONF_SAMPLES + 4)
 
+;; ============================================================
+;; QTHM State Fields (Quantum Triplet Holographic Memory)
+;; Prediction via multi-order holographic context + Born rule
+;; ============================================================
+
+%define ST_QTHM_ENTROPY         ST_BLOCK_END                 ; f64: last prediction entropy
+%define ST_QTHM_HITS            (ST_QTHM_ENTROPY + 8)        ; u32: QTHM-sourced hits
+%define ST_QTHM_MISSES          (ST_QTHM_HITS + 4)           ; u32: QTHM-sourced misses
+%define ST_QTHM_PREDICTIONS     (ST_QTHM_MISSES + 4)         ; u32: total QTHM predictions made
+%define ST_QTHM_END             (ST_QTHM_PREDICTIONS + 4)
+
 %define BLOCK_MIN_TOKENS        3              ; min tokens before boundary detection
 %define BLOCK_ROLE_SEED         0x424C4B08     ; "BLK" + 8 — 9th position role seed
 
@@ -1679,5 +1690,21 @@
 ;; Drive Constants (supplements existing DRIVE_* at line ~1519)
 %define DRIVE_COUNT         4
 %define DRIVE_PRESSURE_FLOOR_HEX 0x3DCCCCCD  ; 0.1 f32
+
+;; ============================================================
+;; QTHM: Quantum Triplet Holographic Memory Constants
+;; Multi-order holographic context as PRIMARY dispatch,
+;; triplet binding for storage/query, Born rule for selection.
+;; ============================================================
+
+%define QTHM_TRACE_IDX            242       ; warm zone trace index for prediction triplets
+%define QTHM_TOP_K                8         ; candidates for Born rule measurement
+%define QTHM_MIN_CONF_F64         0x3FA999999999999A  ; 0.05 f64 — below = no prediction
+%define QTHM_CONF_THRESH_F64      0x3FB999999999999A  ; 0.1 f64 — above = use prediction
+%define QTHM_LEARN_RATE_F64       0x3FC3333333333333  ; 0.15 f64 — store strength on miss
+%define QTHM_HIT_REINFORCE_F64    0x3FD3333333333333  ; 0.3 f64 — reinforce strength on hit
+%define QTHM_DECAY_F64            0x3FEFEFEF00000000  ; ~0.998 f64 — per-dream decay
+%define QTHM_CRYSTALLIZE_F64      0x3FE6666666666666  ; 0.7 f64 — confidence for crystallization
+%define DSRC_QTHM                 6         ; dispatch source: QTHM holographic prediction
 
 %endif

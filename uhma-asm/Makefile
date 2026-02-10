@@ -10,7 +10,7 @@ SRCS = boot.asm io.asm format.asm signal.asm surface.asm repl.asm \
        evolve.asm dreams.asm persist.asm introspect.asm trace.asm \
        symbolic.asm genes.asm factor.asm verify.asm presence.asm \
        receipt.asm maturity.asm gateway.asm hub_client.asm narrate.asm \
-       quantum.asm
+       quantum.asm qthm.asm
 
 # MPNet semantic embeddings (768-dim → 8192-dim projection)
 EMBED_SRCS = embed/matmul.asm embed/attention.asm embed/tokenize.asm embed/embed.asm

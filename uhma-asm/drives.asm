@@ -101,6 +101,13 @@ drives_check:
     cvtss2sd xmm5, xmm5
     subsd xmm4, xmm5           ; deficit
     maxsd xmm4, [rel drive_pressure_floor]
+    ; QTHM entropy contribution: high entropy → more explore pressure
+    ; entropy * 0.5 adds to accuracy pressure (many candidates = uncertain)
+    movsd xmm5, [r12 + ST_QTHM_ENTROPY]
+    mov rax, 0x3FE0000000000000  ; 0.5 f64
+    movq xmm6, rax
+    mulsd xmm5, xmm6            ; entropy * 0.5
+    addsd xmm4, xmm5            ; deficit += entropy contribution
     addsd xmm0, xmm4
 
     ; Efficiency pressure: drive - threshold (high usage = high pressure)

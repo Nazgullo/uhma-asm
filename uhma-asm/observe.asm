@@ -720,10 +720,23 @@ update_presence:
 .pres_cont_s:
     movss [r12 + PRES_CONTINUITY * 4], xmm0
 
-    ; [2] NOVELTY: 1.0 - accuracy (low accuracy = high novelty)
+    ; [2] NOVELTY: 1.0 - accuracy, boosted when QTHM has no prediction
     mov ecx, 0x3F800000       ; 1.0f
     movd xmm0, ecx
-    subss xmm0, xmm7
+    subss xmm0, xmm7          ; base novelty = 1.0 - accuracy
+    ; Boost novelty if QTHM predictions are 0 (truly novel territory)
+    cmp dword [rbx + STATE_OFFSET + ST_QTHM_PREDICTIONS], 0
+    je .pres_novelty_s         ; no QTHM predictions yet, use base
+    mov eax, [rbx + STATE_OFFSET + ST_QTHM_HITS]
+    mov edx, [rbx + STATE_OFFSET + ST_QTHM_PREDICTIONS]
+    cvtsi2ss xmm2, eax
+    cvtsi2ss xmm3, edx
+    divss xmm2, xmm3          ; qthm_accuracy = hits/predictions
+    mov ecx, 0x3F800000       ; 1.0f
+    movd xmm3, ecx
+    subss xmm3, xmm2          ; qthm_novelty = 1.0 - qthm_accuracy
+    maxss xmm0, xmm3          ; novelty = max(base, qthm_novelty)
+.pres_novelty_s:
     movss [r12 + PRES_NOVELTY * 4], xmm0
 
     ; [3] AROUSAL: modification rate (causal_count / step)
@@ -747,8 +760,15 @@ update_presence:
     ; [4] VALENCE: accuracy trending (accuracy itself)
     movss [r12 + PRES_VALENCE * 4], xmm7
 
-    ; [5] UNCERTAINTY: accuracy variance
+    ; [5] UNCERTAINTY: accuracy variance + QTHM entropy contribution
     movss xmm0, [rbx + STATE_OFFSET + ST_ACCURACY_VARIANCE]
+    ; Blend QTHM entropy: uncertainty = max(variance, qthm_entropy * 0.5)
+    movsd xmm2, [rbx + STATE_OFFSET + ST_QTHM_ENTROPY]
+    mov eax, 0x3F000000           ; 0.5f
+    movd xmm3, eax
+    cvtsd2ss xmm2, xmm2          ; f64 entropy → f32
+    mulss xmm2, xmm3             ; entropy * 0.5
+    maxss xmm0, xmm2             ; take the larger signal
     movss [r12 + PRES_UNCERTAINTY * 4], xmm0
 
     ; [6] ENGAGEMENT: trace candidates / region_count (how many dispatches considered)
